@@ -10,7 +10,6 @@ import {
   updateEvent,
   deleteEvent as deleteEvent_api,
   setPassword as dbSetPassword,
-  uploadImage,
 } from "./db.js";
 
 /* ============================================================
@@ -621,7 +620,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "notes" && <NotesTab event={event} update={update} />}
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" />}
-            {tab === "diagrams" && <DiagramsTab event={event} update={update} flash={flash} />}
+            {tab === "diagrams" && <DiagramsTab event={event} update={update} />}
             {tab === "records" && <RecordsTab event={event} update={update} />}
             {tab === "hours" && <HoursTab event={event} update={update} />}
           </main>
@@ -1203,112 +1202,50 @@ function IOTab({ event, update, kind }) {
 /* ============================================================
    DIAGRAMS TAB — upload images or link hosted files
    ============================================================ */
-function DiagramsTab({ event, update, flash }) {
-  const [busy, setBusy] = useState(false);
-  const fileRef = useRef(null);
-
-  const onFiles = async (files) => {
-    setBusy(true);
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        flash(`${file.name}: not an image — use “Add link” for PDFs`);
-        continue;
-      }
-      if (file.size > 3_300_000) {
-        flash(`${file.name} is too large (max ~3MB). Compress it, or paste a link instead.`);
-        continue;
-      }
-      try {
-        const dataUrl = await new Promise((res, rej) => {
-          const r = new FileReader();
-          r.onload = () => res(r.result);
-          r.onerror = rej;
-          r.readAsDataURL(file);
-        });
-        const { url } = await uploadImage(dataUrl, file.name);
-        update((ev) => ev.diagrams.push({ id: uid(), name: file.name.replace(/\.[^.]+$/, ""), caption: "", kind: "image", url }));
-      } catch (e) {
-        flash(e.message || "Upload failed");
-      }
-    }
-    setBusy(false);
-    if (fileRef.current) fileRef.current.value = "";
-  };
-
-  const addLink = () => update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
-
+function DiagramsTab({ event, update }) {
+  const addLink = () =>
+    update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
   return (
     <div className="stack">
-      <div
-        className="dropzone"
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => {
-          e.preventDefault();
-          if (e.dataTransfer.files?.length) onFiles([...e.dataTransfer.files]);
-        }}
-      >
-        <div className="dz-inner">
-          <div className="dz-title">Upload diagrams</div>
-          <div className="dz-sub">Drag images here, or choose files — PNG, JPG, or SVG up to ~3MB each</div>
-          <div className="dz-actions">
-            <button className="btn amber" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
-              {busy ? "Uploading…" : "Choose images"}
-            </button>
-            <button className="btn ghost" onClick={addLink}>+ Add link instead</button>
+      <div className="tab-lead">
+        <p>
+          Link your diagrams — stage plots, rigging, signal flow. Host the file (Google Drive, Dropbox,
+          Vectorworks Cloud…), set sharing to “anyone with the link,” and paste it here so the whole crew can open it.
+        </p>
+        <AddBtn onClick={addLink}>Diagram link</AddBtn>
+      </div>
+      <Panel title="Diagrams">
+        <div className="rows">
+          <div className="rowhead diagramlink-grid">
+            <span>Name</span><span>Link</span><span>Caption</span><span />
           </div>
-          <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => onFiles([...e.target.files])} />
+          {event.diagrams.map((d, i) => (
+            <div className="row diagramlink-grid" key={d.id}>
+              <input value={d.name} placeholder="Diagram name" onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))} />
+              <input
+                value={d.url || ""}
+                placeholder="https://…"
+                onChange={(e) =>
+                  update((ev) => {
+                    ev.diagrams[i].url = e.target.value;
+                    ev.diagrams[i].kind = "link";
+                  })
+                }
+              />
+              <input value={d.caption} placeholder="Caption (optional)" onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))} />
+              <div className="diagram-open">
+                {d.url ? (
+                  <a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>
+                ) : (
+                  <span className="dim">—</span>
+                )}
+                <RemoveBtn onClick={() => update((ev) => ev.diagrams.splice(i, 1))} />
+              </div>
+            </div>
+          ))}
+          {!event.diagrams.length && <Empty>No diagrams yet. Add a link to a hosted stage plot or rigging file.</Empty>}
         </div>
-      </div>
-
-      {!event.diagrams.length && <Empty>No diagrams yet. Upload an image, or add a link to a hosted file.</Empty>}
-
-      <div className="diagram-grid">
-        {event.diagrams.map((d, i) => (
-          <div className="diagram-card" key={d.id}>
-            <div className="diagram-preview">
-              {d.kind === "image" && d.url ? (
-                <a href={d.url} target="_blank" rel="noreferrer">
-                  <img src={d.url} alt={d.name} />
-                </a>
-              ) : d.kind === "link" ? (
-                <div className="diagram-ph link">
-                  <span className="link-badge">LINK</span>
-                  {d.url ? (
-                    <a href={d.url} target="_blank" rel="noreferrer">Open file ↗</a>
-                  ) : (
-                    <span className="dim">Add a URL below</span>
-                  )}
-                </div>
-              ) : (
-                <div className="diagram-ph">No preview</div>
-              )}
-            </div>
-            <div className="diagram-body">
-              <input
-                className="diagram-name"
-                value={d.name}
-                placeholder="Diagram name"
-                onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))}
-              />
-              {d.kind === "link" && (
-                <input
-                  className="diagram-url"
-                  value={d.url || ""}
-                  placeholder="https://…"
-                  onChange={(e) => update((ev) => (ev.diagrams[i].url = e.target.value))}
-                />
-              )}
-              <input
-                className="diagram-cap"
-                value={d.caption}
-                placeholder="Caption (optional)"
-                onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))}
-              />
-            </div>
-            <button className="diagram-x" title="Remove" onClick={() => update((ev) => ev.diagrams.splice(i, 1))}>×</button>
-          </div>
-        ))}
-      </div>
+      </Panel>
     </div>
   );
 }
