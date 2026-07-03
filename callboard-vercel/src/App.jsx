@@ -10,6 +10,7 @@ import {
   updateEvent,
   deleteEvent as deleteEvent_api,
   setPassword as dbSetPassword,
+  uploadImage,
 } from "./db.js";
 
 /* ============================================================
@@ -620,7 +621,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "notes" && <NotesTab event={event} update={update} />}
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" />}
-            {tab === "diagrams" && <DiagramsTab event={event} update={update} />}
+            {tab === "diagrams" && <DiagramsTab event={event} update={update} flash={flash} />}
             {tab === "records" && <RecordsTab event={event} update={update} />}
             {tab === "hours" && <HoursTab event={event} update={update} />}
           </main>
@@ -816,7 +817,39 @@ function BriefTab({ event, update }) {
               <input value={c.position} placeholder="Position" onChange={(e) => update((ev) => (ev.crew[i].position = e.target.value))} />
               <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.crew[i].phone = e.target.value))} />
               <input value={c.email} placeholder="Email" onChange={(e) => update((ev) => (ev.crew[i].email = e.target.value))} />
-              <RemoveBtn onClick={() => update((ev) => ev.crew.splice(i, 1))} />
+              <div className="row-tools">
+                <button
+                  className="movebtn"
+                  title="Move up"
+                  disabled={i === 0}
+                  onClick={() =>
+                    update((ev) => {
+                      const a = ev.crew;
+                      const t = a[i - 1];
+                      a[i - 1] = a[i];
+                      a[i] = t;
+                    })
+                  }
+                >
+                  ▲
+                </button>
+                <button
+                  className="movebtn"
+                  title="Move down"
+                  disabled={i === event.crew.length - 1}
+                  onClick={() =>
+                    update((ev) => {
+                      const a = ev.crew;
+                      const t = a[i + 1];
+                      a[i + 1] = a[i];
+                      a[i] = t;
+                    })
+                  }
+                >
+                  ▼
+                </button>
+                <RemoveBtn onClick={() => update((ev) => ev.crew.splice(i, 1))} />
+              </div>
             </div>
           ))}
           {!event.crew.length && <Empty>No crew yet. Add people here — they’ll show up in Hours automatically.</Empty>}
@@ -930,8 +963,33 @@ function ScheduleTab({ event, update }) {
 /* ============================================================
    ITINERARY TAB — hotels + flights
    ============================================================ */
+function CrewSelect({ crew, value, onChange }) {
+  const named = crew.filter((c) => c.name);
+  const missing = value && !named.some((c) => c.name === value);
+  return (
+    <select value={value || ""} onChange={onChange}>
+      <option value="">— Crew member —</option>
+      {named.map((c) => (
+        <option key={c.id} value={c.name}>
+          {c.name}
+        </option>
+      ))}
+      {missing && <option value={value}>{value}</option>}
+    </select>
+  );
+}
+
 function ItineraryTab({ event, update }) {
   const it = event.itinerary;
+  const addAllCrewStays = () =>
+    update((ev) => {
+      const have = new Set(ev.itinerary.stays.map((s) => s.crewName).filter(Boolean));
+      ev.crew.forEach((c) => {
+        if (c.name && !have.has(c.name)) {
+          ev.itinerary.stays.push({ id: uid(), crewName: c.name, checkIn: ev.startDate, checkOut: ev.endDate, confirmation: "", notes: "" });
+        }
+      });
+    });
   return (
     <div className="stack">
       <Panel title="Hotel">
@@ -948,15 +1006,18 @@ function ItineraryTab({ event, update }) {
       <Panel
         title="Room stays"
         action={
-          <AddBtn
-            onClick={() =>
-              update((ev) =>
-                ev.itinerary.stays.push({ id: uid(), crewName: "", checkIn: ev.startDate, checkOut: ev.endDate, confirmation: "", notes: "" })
-              )
-            }
-          >
-            Stay
-          </AddBtn>
+          <div className="panel-actions">
+            <AddBtn onClick={addAllCrewStays}>All crew</AddBtn>
+            <AddBtn
+              onClick={() =>
+                update((ev) =>
+                  ev.itinerary.stays.push({ id: uid(), crewName: "", checkIn: ev.startDate, checkOut: ev.endDate, confirmation: "", notes: "" })
+                )
+              }
+            >
+              Stay
+            </AddBtn>
+          </div>
         }
       >
         <div className="rows">
@@ -965,7 +1026,7 @@ function ItineraryTab({ event, update }) {
           </div>
           {it.stays.map((s, i) => (
             <div className="row stay-grid" key={s.id}>
-              <input value={s.crewName} placeholder="Name" onChange={(e) => update((ev) => (ev.itinerary.stays[i].crewName = e.target.value))} />
+              <CrewSelect crew={event.crew} value={s.crewName} onChange={(e) => update((ev) => (ev.itinerary.stays[i].crewName = e.target.value))} />
               <input type="date" value={s.checkIn || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkIn = e.target.value))} />
               <input type="date" value={s.checkOut || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkOut = e.target.value))} />
               <input value={s.confirmation} placeholder="Conf" onChange={(e) => update((ev) => (ev.itinerary.stays[i].confirmation = e.target.value))} />
@@ -998,7 +1059,7 @@ function ItineraryTab({ event, update }) {
           </div>
           {it.flights.map((f, i) => (
             <div className="row flight-grid" key={f.id}>
-              <input value={f.crewName} placeholder="Name" onChange={(e) => update((ev) => (ev.itinerary.flights[i].crewName = e.target.value))} />
+              <CrewSelect crew={event.crew} value={f.crewName} onChange={(e) => update((ev) => (ev.itinerary.flights[i].crewName = e.target.value))} />
               <input type="date" value={f.date || ""} onChange={(e) => update((ev) => (ev.itinerary.flights[i].date = e.target.value))} />
               <input value={f.airport} placeholder="A → B" onChange={(e) => update((ev) => (ev.itinerary.flights[i].airport = e.target.value))} />
               <input value={f.flightNo} placeholder="DL0000" onChange={(e) => update((ev) => (ev.itinerary.flights[i].flightNo = e.target.value))} />
@@ -1142,50 +1203,112 @@ function IOTab({ event, update, kind }) {
 /* ============================================================
    DIAGRAMS TAB — upload images or link hosted files
    ============================================================ */
-function DiagramsTab({ event, update }) {
-  const addLink = () =>
-    update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
+function DiagramsTab({ event, update, flash }) {
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+
+  const onFiles = async (files) => {
+    setBusy(true);
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) {
+        flash(`${file.name}: not an image — use “Add link” for PDFs`);
+        continue;
+      }
+      if (file.size > 3_300_000) {
+        flash(`${file.name} is too large (max ~3MB). Compress it, or paste a link instead.`);
+        continue;
+      }
+      try {
+        const dataUrl = await new Promise((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result);
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        });
+        const { url } = await uploadImage(dataUrl, file.name);
+        update((ev) => ev.diagrams.push({ id: uid(), name: file.name.replace(/\.[^.]+$/, ""), caption: "", kind: "image", url }));
+      } catch (e) {
+        flash(e.message || "Upload failed");
+      }
+    }
+    setBusy(false);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const addLink = () => update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
+
   return (
     <div className="stack">
-      <div className="tab-lead">
-        <p>
-          Link your diagrams — stage plots, rigging, signal flow. Host the file (Google Drive, Dropbox,
-          Vectorworks Cloud…), set sharing to “anyone with the link,” and paste it here so the whole crew can open it.
-        </p>
-        <AddBtn onClick={addLink}>Diagram link</AddBtn>
-      </div>
-      <Panel title="Diagrams">
-        <div className="rows">
-          <div className="rowhead diagramlink-grid">
-            <span>Name</span><span>Link</span><span>Caption</span><span />
+      <div
+        className="dropzone"
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (e.dataTransfer.files?.length) onFiles([...e.dataTransfer.files]);
+        }}
+      >
+        <div className="dz-inner">
+          <div className="dz-title">Upload diagrams</div>
+          <div className="dz-sub">Drag images here, or choose files — PNG, JPG, or SVG up to ~3MB each</div>
+          <div className="dz-actions">
+            <button className="btn amber" onClick={() => fileRef.current && fileRef.current.click()} disabled={busy}>
+              {busy ? "Uploading…" : "Choose images"}
+            </button>
+            <button className="btn ghost" onClick={addLink}>+ Add link instead</button>
           </div>
-          {event.diagrams.map((d, i) => (
-            <div className="row diagramlink-grid" key={d.id}>
-              <input value={d.name} placeholder="Diagram name" onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))} />
-              <input
-                value={d.url || ""}
-                placeholder="https://…"
-                onChange={(e) =>
-                  update((ev) => {
-                    ev.diagrams[i].url = e.target.value;
-                    ev.diagrams[i].kind = "link";
-                  })
-                }
-              />
-              <input value={d.caption} placeholder="Caption (optional)" onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))} />
-              <div className="diagram-open">
-                {d.url ? (
-                  <a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>
-                ) : (
-                  <span className="dim">—</span>
-                )}
-                <RemoveBtn onClick={() => update((ev) => ev.diagrams.splice(i, 1))} />
-              </div>
-            </div>
-          ))}
-          {!event.diagrams.length && <Empty>No diagrams yet. Add a link to a hosted stage plot or rigging file.</Empty>}
+          <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => onFiles([...e.target.files])} />
         </div>
-      </Panel>
+      </div>
+
+      {!event.diagrams.length && <Empty>No diagrams yet. Upload an image, or add a link to a hosted file.</Empty>}
+
+      <div className="diagram-grid">
+        {event.diagrams.map((d, i) => (
+          <div className="diagram-card" key={d.id}>
+            <div className="diagram-preview">
+              {d.kind === "image" && d.url ? (
+                <a href={d.url} target="_blank" rel="noreferrer">
+                  <img src={d.url} alt={d.name} />
+                </a>
+              ) : d.kind === "link" ? (
+                <div className="diagram-ph link">
+                  <span className="link-badge">LINK</span>
+                  {d.url ? (
+                    <a href={d.url} target="_blank" rel="noreferrer">Open file ↗</a>
+                  ) : (
+                    <span className="dim">Add a URL below</span>
+                  )}
+                </div>
+              ) : (
+                <div className="diagram-ph">No preview</div>
+              )}
+            </div>
+            <div className="diagram-body">
+              <input
+                className="diagram-name"
+                value={d.name}
+                placeholder="Diagram name"
+                onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))}
+              />
+              {d.kind === "link" && (
+                <input
+                  className="diagram-url"
+                  value={d.url || ""}
+                  placeholder="https://…"
+                  onChange={(e) => update((ev) => (ev.diagrams[i].url = e.target.value))}
+                />
+              )}
+              <input
+                className="diagram-cap"
+                value={d.caption}
+                placeholder="Caption (optional)"
+                onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))}
+              />
+            </div>
+            <button className="diagram-x" title="Remove" onClick={() => update((ev) => ev.diagrams.splice(i, 1))}>×</button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1540,7 +1663,13 @@ const CSS = `
 .cb .rows{display:flex; flex-direction:column; gap:6px;}
 .cb .rowhead{display:grid; gap:8px; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; padding:0 2px 2px;}
 .cb .row{display:grid; gap:8px; align-items:center;}
-.cb .contact-grid, .cb .crew-grid{grid-template-columns:1.1fr 1.1fr 1fr 1.4fr 28px;}
+.cb .contact-grid{grid-template-columns:1.1fr 1.1fr 1fr 1.4fr 28px;}
+.cb .crew-grid{grid-template-columns:1.05fr 1.05fr 0.95fr 1.3fr 82px;}
+.cb .row-tools{display:flex; align-items:center; gap:2px; justify-content:flex-end;}
+.cb .panel-actions{display:flex; gap:6px; align-items:center;}
+.cb .movebtn{background:transparent; border:1px solid transparent; color:var(--faint); width:24px; height:28px; border-radius:6px; cursor:pointer; font-size:11px; line-height:1;}
+.cb .movebtn:hover:not(:disabled){color:var(--amber); background:var(--panel2);}
+.cb .movebtn:disabled{opacity:.28; cursor:default;}
 .cb .link-grid{grid-template-columns:1fr 1.6fr 28px;}
 .cb .sched-grid{grid-template-columns:110px 1fr 28px;}
 .cb .stay-grid{grid-template-columns:1.1fr 130px 130px .8fr 1.2fr 28px;}
@@ -1651,7 +1780,8 @@ const CSS = `
   .cb .rowhead.record-grid{display:none;}
   .cb .grid2{grid-template-columns:1fr;}
   .cb .contact-grid, .cb .crew-grid{grid-template-columns:1fr 1fr; grid-auto-flow:row;}
-  .cb .contact-grid .remove, .cb .crew-grid .remove{grid-column:2; justify-self:end;}
+  .cb .contact-grid .remove{grid-column:2; justify-self:end;}
+  .cb .crew-grid .row-tools{grid-column:1 / -1; justify-content:flex-end;}
   .cb .rowhead.contact-grid, .cb .rowhead.crew-grid{display:none;}
   .cb .stay-grid{grid-template-columns:1fr 1fr; }
   .cb .rowhead.stay-grid{display:none;}
