@@ -1165,6 +1165,21 @@ function sortSchedItems(items) {
     })
     .map((x) => x.it);
 }
+/* canonical display, e.g. "6:00 PM"; leaves blanks/unparseable ("TBD") as typed */
+function fmtSchedTime(raw) {
+  const mins = schedMinutes(raw);
+  if (mins == null) return raw;
+  const h = Math.floor(mins / 60) % 24;
+  const m = mins % 60;
+  const mer = h >= 12 ? "PM" : "AM";
+  let h12 = h % 12;
+  if (h12 === 0) h12 = 12;
+  return h12 + ":" + String(m).padStart(2, "0") + " " + mer;
+}
+/* normalize every time in a day to the canonical format, then order chronologically */
+function tidySchedDay(items) {
+  return sortSchedItems(items.map((it) => ({ ...it, time: fmtSchedTime(it.time) })));
+}
 
 function ScheduleTab({ event, update }) {
   const addDay = () =>
@@ -1195,7 +1210,7 @@ function ScheduleTab({ event, update }) {
                 className="daysort"
                 type="button"
                 title="Sort this day's lines by time"
-                onClick={() => update((ev) => (ev.schedule[di].items = sortSchedItems(ev.schedule[di].items)))}
+                onClick={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
               >
                 ↕ Time
               </button>
@@ -1217,7 +1232,7 @@ function ScheduleTab({ event, update }) {
                   value={it.time}
                   placeholder="Time"
                   onChange={(e) => update((ev) => (ev.schedule[di].items[ii].time = e.target.value))}
-                  onBlur={() => update((ev) => (ev.schedule[di].items = sortSchedItems(ev.schedule[di].items)))}
+                  onBlur={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
                 />
                 <input
                   value={it.activity}
