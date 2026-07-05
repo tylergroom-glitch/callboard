@@ -72,9 +72,10 @@ export function canAccessShow(p, id) {
   return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id));
 }
 
-const AT_URL = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${encodeURIComponent(AIRTABLE_TABLE)}`;
-export async function airtable(method, path = "", body) {
-  const res = await fetch(AT_URL + path, {
+const AT_BASE = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
+export async function airtableTable(table, method, path = "", body) {
+  const url = `${AT_BASE}/${encodeURIComponent(table)}` + path;
+  const res = await fetch(url, {
     method,
     headers: {
       Authorization: `Bearer ${AIRTABLE_TOKEN}`,
@@ -89,6 +90,10 @@ export async function airtable(method, path = "", body) {
     throw e;
   }
   return data;
+}
+// Events table (default). Kept for existing callers.
+export async function airtable(method, path = "", body) {
+  return airtableTable(AIRTABLE_TABLE, method, path, body);
 }
 
 export function summary(rec) {
