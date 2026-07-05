@@ -13,6 +13,8 @@ import {
   listTemplates,
   createTemplate,
   deleteTemplate,
+  getCosting,
+  saveCosting,
 } from "./db.js";
 
 /* ============================================================
@@ -266,9 +268,11 @@ function normalize(e) {
   e.video = e.video || { blocks: [ioBlock("Main")] };
   e.records = e.records || [];
   e.diagrams = e.diagrams || [];
+  e.documents = e.documents || [];
   e.pull = e.pull || { cases: [] };
   if (!Array.isArray(e.pull.cases)) e.pull.cases = [];
   if (typeof e.gearEditUnlocked !== "boolean") e.gearEditUnlocked = false;
+  if (typeof e.scheduleUnlocked !== "boolean") e.scheduleUnlocked = false;
   return e;
 }
 
@@ -283,6 +287,13 @@ function hoursBetween(inStr, outStr) {
   return Math.round((mins / 60) * 100) / 100;
 }
 const fmtHrs = (h) => (h === 0 ? "–" : String(+h.toFixed(2)));
+/* split a day's hours into pay tiers: reg ≤10, OT (×1.5) 10–12, DT (×2) 12+ */
+function otBreakdown(h) {
+  const reg = Math.min(h, 10);
+  const ot = Math.max(0, Math.min(h, 12) - 10);
+  const dt = Math.max(0, h - 12);
+  return { reg, ot, dt };
+}
 
 /* ---------- blank + seed data ---------- */
 function blankEvent() {
@@ -311,8 +322,10 @@ function blankEvent() {
     video: { blocks: [ioBlock("Main")] },
     records: [],
     diagrams: [],
+    documents: [],
     pull: { cases: [] },
     gearEditUnlocked: false,
+    scheduleUnlocked: false,
   };
 }
 
@@ -488,8 +501,10 @@ function seedEvent() {
       { id: uid(), name: "Stein Ballroom — Stage Plot", caption: "Host on Drive/Dropbox and paste the link", kind: "link", url: "" },
       { id: uid(), name: "Rigging Plot (Vectorworks)", caption: "Full rig — hosted PDF", kind: "link", url: "" },
     ],
+    documents: [],
     pull: { cases: clone(PULL_SEED) },
     gearEditUnlocked: false,
+    scheduleUnlocked: false,
   };
 }
 
@@ -821,7 +836,7 @@ function Callboard({ auth, onLogout }) {
 
       {/* body: the home board, or a single section page */}
       {tab === "home" ? (
-        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} />
+        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isAdmin} />
       ) : (
         <>
           <div className="pagebar">
@@ -833,7 +848,8 @@ function Callboard({ auth, onLogout }) {
           </div>
           <main className="content">
             {tab === "brief" && <BriefTab event={event} update={update} />}
-            {tab === "schedule" && <ScheduleTab event={event} update={update} />}
+            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isAdmin} />}
+            {tab === "documents" && <DocumentsTab event={event} update={update} />}
             {tab === "itinerary" && <ItineraryTab event={event} update={update} />}
             {tab === "notes" && <NotesTab event={event} update={update} />}
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" />}
@@ -842,6 +858,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isAdmin} />}
             {tab === "records" && <RecordsTab event={event} update={update} />}
             {tab === "hours" && <HoursTab event={event} update={update} />}
+            {tab === "costing" && isAdmin && <CostingTab event={event} />}
           </main>
         </>
       )}
@@ -857,6 +874,7 @@ function Callboard({ auth, onLogout }) {
 const SECTIONS = [
   { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A" },
   { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC" },
+  { key: "documents", label: "Show Documents", desc: "Show flows & agendas", color: "#4EA8DE" },
   { key: "itinerary", label: "Itinerary", desc: "Hotels & flights", color: "#46C5B8" },
   { key: "notes", label: "Meals & Notes", desc: "Catering, pre-con notes", color: "#F0895C" },
   { key: "video", label: "Video I/O", desc: "Video patch sheets", color: "#D97CC0" },
@@ -865,6 +883,7 @@ const SECTIONS = [
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3" },
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A" },
+  { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
 ];
 const SECTION_LABEL = SECTIONS.reduce((m, s) => ((m[s.key] = s.label), m), {});
 
@@ -875,6 +894,10 @@ function TileIcon({ name }) {
       return (<svg {...p}><rect x="5" y="4" width="14" height="17" rx="2" /><path d="M9 4h6v3H9z" /><path d="M8 11h8M8 15h8" /></svg>);
     case "schedule":
       return (<svg {...p}><rect x="4" y="5" width="16" height="16" rx="2" /><path d="M4 9h16M8 3v4M16 3v4" /></svg>);
+    case "documents":
+      return (<svg {...p}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 3v18M5 9h14M5 15h14" /></svg>);
+    case "costing":
+      return (<svg {...p}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>);
     case "itinerary":
       return (<svg {...p}><path d="M3 13l18-7-7 18-2.5-7.5L3 13z" /></svg>);
     case "notes":
@@ -900,6 +923,7 @@ function tileStat(key, event) {
   switch (key) {
     case "brief": return `${event.crew.length} crew`;
     case "schedule": return `${event.schedule.length} day${event.schedule.length === 1 ? "" : "s"}`;
+    case "documents": return `${event.documents.length} doc${event.documents.length === 1 ? "" : "s"}`;
     case "itinerary": return `${event.itinerary.flights.length} flights · ${event.itinerary.stays.length} stays`;
     case "notes": return `${event.notes.length} notes · ${event.meals.length} meals`;
     case "video": return `${event.video.blocks.length} device${event.video.blocks.length === 1 ? "" : "s"}`;
@@ -920,11 +944,12 @@ function tileStat(key, event) {
         }
       return `${fmtHrs(t)} hrs logged`;
     }
+    case "costing": return "Admin only";
     default: return "";
   }
 }
 
-function HomeScreen({ event, update, go, copyBrief, dateRange }) {
+function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
   return (
     <div className="home">
       <header className="hero">
@@ -948,7 +973,7 @@ function HomeScreen({ event, update, go, copyBrief, dateRange }) {
 
       <div className="board-label">Sections</div>
       <div className="tilegrid">
-        {SECTIONS.map((s) => (
+        {SECTIONS.filter((s) => !s.adminOnly || isAdmin).map((s) => (
           <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
             <span className="tile-ico"><TileIcon name={s.key} /></span>
             <span className="tile-label">{s.label}</span>
@@ -1181,76 +1206,119 @@ function tidySchedDay(items) {
   return sortSchedItems(items.map((it) => ({ ...it, time: fmtSchedTime(it.time) })));
 }
 
-function ScheduleTab({ event, update }) {
+function ScheduleTab({ event, update, isAdmin }) {
+  const unlocked = !!event.scheduleUnlocked;
+  const canEdit = isAdmin || unlocked;
   const addDay = () =>
     update((ev) =>
       ev.schedule.push({ id: uid(), label: "New day", date: ev.startDate, items: [{ id: uid(), time: "", activity: "" }] })
     );
   return (
     <div className="stack">
-      <div className="tab-lead">
-        <p>Daily run of show. Add a day for each date, then list call times and activities.</p>
-        <AddBtn onClick={addDay}>Day</AddBtn>
+      {/* lock bar */}
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.scheduleUnlocked = !unlocked))}>
+              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+            </button>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 Schedule locked — view only</span>
+          )}
+          {isAdmin && (
+            <span className="pl-lockhint">
+              {unlocked ? "Any crew on this show can edit the schedule." : "Only you (admin) can edit the schedule."}
+            </span>
+          )}
+        </div>
       </div>
 
-      {event.schedule.map((day, di) => (
-        <Panel
-          key={day.id}
-          title={
-            <input
-              className="daytitle"
-              value={day.label}
-              onChange={(e) => update((ev) => (ev.schedule[di].label = e.target.value))}
-              placeholder="Day label"
-            />
-          }
-          action={
-            <div className="day-tools">
-              <button
-                className="daysort"
-                type="button"
-                title="Sort this day's lines by time"
-                onClick={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
-              >
-                ↕ Time
-              </button>
+      <div className="tab-lead">
+        <p>Daily run of show. Add a day for each date, then list call times and activities.</p>
+        {canEdit && <AddBtn onClick={addDay}>Day</AddBtn>}
+      </div>
+
+      {event.schedule.map((day, di) =>
+        canEdit ? (
+          <Panel
+            key={day.id}
+            title={
               <input
-                type="date"
-                className="daydate"
-                value={day.date || ""}
-                onChange={(e) => update((ev) => (ev.schedule[di].date = e.target.value))}
+                className="daytitle"
+                value={day.label}
+                onChange={(e) => update((ev) => (ev.schedule[di].label = e.target.value))}
+                placeholder="Day label"
               />
-              <RemoveBtn title="Remove day" onClick={() => update((ev) => ev.schedule.splice(di, 1))} />
-            </div>
-          }
-        >
-          <div className="rows">
-            {day.items.map((it, ii) => (
-              <div className="row sched-grid" key={it.id}>
+            }
+            action={
+              <div className="day-tools">
+                <button
+                  className="daysort"
+                  type="button"
+                  title="Sort this day's lines by time"
+                  onClick={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
+                >
+                  ↕ Time
+                </button>
                 <input
-                  className="time-in-text"
-                  value={it.time}
-                  placeholder="Time"
-                  onChange={(e) => update((ev) => (ev.schedule[di].items[ii].time = e.target.value))}
-                  onBlur={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
+                  type="date"
+                  className="daydate"
+                  value={day.date || ""}
+                  onChange={(e) => update((ev) => (ev.schedule[di].date = e.target.value))}
                 />
-                <input
-                  value={it.activity}
-                  placeholder="Activity"
-                  onChange={(e) => update((ev) => (ev.schedule[di].items[ii].activity = e.target.value))}
-                />
-                <RemoveBtn onClick={() => update((ev) => ev.schedule[di].items.splice(ii, 1))} />
+                <RemoveBtn title="Remove day" onClick={() => update((ev) => ev.schedule.splice(di, 1))} />
               </div>
-            ))}
-          </div>
-          <AddBtn onClick={() => update((ev) => ev.schedule[di].items.push({ id: uid(), time: "", activity: "" }))}>
-            Line
-          </AddBtn>
-        </Panel>
-      ))}
+            }
+          >
+            <div className="rows">
+              {day.items.map((it, ii) => (
+                <div className="row sched-grid" key={it.id}>
+                  <input
+                    className="time-in-text"
+                    value={it.time}
+                    placeholder="Time"
+                    onChange={(e) => update((ev) => (ev.schedule[di].items[ii].time = e.target.value))}
+                    onBlur={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
+                  />
+                  <input
+                    value={it.activity}
+                    placeholder="Activity"
+                    onChange={(e) => update((ev) => (ev.schedule[di].items[ii].activity = e.target.value))}
+                  />
+                  <RemoveBtn onClick={() => update((ev) => ev.schedule[di].items.splice(ii, 1))} />
+                </div>
+              ))}
+            </div>
+            <AddBtn onClick={() => update((ev) => ev.schedule[di].items.push({ id: uid(), time: "", activity: "" }))}>
+              Line
+            </AddBtn>
+          </Panel>
+        ) : (
+          <Panel
+            key={day.id}
+            title={<span className="daytitle-ro">{day.label || "Untitled day"}</span>}
+            action={day.date ? <span className="daydate-ro">{prettyDate(day.date)}</span> : null}
+          >
+            <div className="sched-ro">
+              {day.items.length ? (
+                day.items.map((it) => (
+                  <div className="sched-ro-row" key={it.id}>
+                    <span className="sched-ro-time">{it.time || "—"}</span>
+                    <span className="sched-ro-act">{it.activity || ""}</span>
+                  </div>
+                ))
+              ) : (
+                <Empty>No lines yet.</Empty>
+              )}
+            </div>
+          </Panel>
+        )
+      )}
       {!event.schedule.length && (
         <Panel title="Run of show">
-          <Empty>No days yet. Add your first day to start the schedule.</Empty>
+          <Empty>{canEdit ? "No days yet. Add your first day to start the schedule." : "No schedule posted yet."}</Empty>
         </Panel>
       )}
     </div>
@@ -1500,6 +1568,50 @@ function IOTab({ event, update, kind }) {
 /* ============================================================
    DIAGRAMS TAB — upload images or link hosted files
    ============================================================ */
+/* ---------- inline preview for linked files (Google Sheets/Docs/Slides, Drive, images, PDFs) ---------- */
+function embedFor(url) {
+  if (!url) return null;
+  const u = url.trim();
+  let m = u.match(/https?:\/\/docs\.google\.com\/(document|spreadsheets|presentation)\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return { kind: "iframe", src: `https://docs.google.com/${m[1]}/d/${m[2]}/preview` };
+  m = u.match(/https?:\/\/drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (m) return { kind: "iframe", src: `https://drive.google.com/file/d/${m[1]}/preview` };
+  m = u.match(/https?:\/\/drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/);
+  if (m) return { kind: "iframe", src: `https://drive.google.com/file/d/${m[1]}/preview` };
+  if (/dropbox\.com/.test(u)) {
+    const d = u.replace("www.dropbox.com", "dl.dropboxusercontent.com").replace(/([?&])dl=\d/, "$1raw=1");
+    if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(d)) return { kind: "image", src: d };
+    return { kind: "iframe", src: d };
+  }
+  if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(u)) return { kind: "image", src: u };
+  return { kind: "iframe", src: u };
+}
+
+function LinkPreview({ url, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  if (!url) return null;
+  const info = embedFor(url);
+  return (
+    <div className="linkprev">
+      <button className="previewbtn" type="button" onClick={() => setOpen((o) => !o)}>
+        {open ? "▾ Hide preview" : "▸ Preview"}
+      </button>
+      {open && info && (
+        <div className="linkprev-frame">
+          {info.kind === "image" ? (
+            <img src={info.src} alt="Preview" />
+          ) : (
+            <iframe src={info.src} title="Preview" loading="lazy" allowFullScreen />
+          )}
+          <div className="linkprev-note">
+            If the preview is blank, the file may not allow embedding — use Open ↗. Google files must be shared “anyone with the link.”
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DiagramsTab({ event, update }) {
   const addLink = () =>
     update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
@@ -1518,30 +1630,129 @@ function DiagramsTab({ event, update }) {
             <span>Name</span><span>Link</span><span>Caption</span><span />
           </div>
           {event.diagrams.map((d, i) => (
-            <div className="row diagramlink-grid" key={d.id}>
-              <input value={d.name} placeholder="Diagram name" onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))} />
-              <input
-                value={d.url || ""}
-                placeholder="https://…"
-                onChange={(e) =>
-                  update((ev) => {
-                    ev.diagrams[i].url = e.target.value;
-                    ev.diagrams[i].kind = "link";
-                  })
-                }
-              />
-              <input value={d.caption} placeholder="Caption (optional)" onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))} />
-              <div className="diagram-open">
-                {d.url ? (
-                  <a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>
-                ) : (
-                  <span className="dim">—</span>
-                )}
-                <RemoveBtn onClick={() => update((ev) => ev.diagrams.splice(i, 1))} />
+            <div className="linkrow" key={d.id}>
+              <div className="row diagramlink-grid">
+                <input value={d.name} placeholder="Diagram name" onChange={(e) => update((ev) => (ev.diagrams[i].name = e.target.value))} />
+                <input
+                  value={d.url || ""}
+                  placeholder="https://…"
+                  onChange={(e) =>
+                    update((ev) => {
+                      ev.diagrams[i].url = e.target.value;
+                      ev.diagrams[i].kind = "link";
+                    })
+                  }
+                />
+                <input value={d.caption} placeholder="Caption (optional)" onChange={(e) => update((ev) => (ev.diagrams[i].caption = e.target.value))} />
+                <div className="diagram-open">
+                  {d.url ? (
+                    <a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>
+                  ) : (
+                    <span className="dim">—</span>
+                  )}
+                  <RemoveBtn onClick={() => update((ev) => ev.diagrams.splice(i, 1))} />
+                </div>
               </div>
+              <LinkPreview url={d.url} />
             </div>
           ))}
           {!event.diagrams.length && <Empty>No diagrams yet. Add a link to a hosted stage plot or rigging file.</Empty>}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ============================================================
+   SHOW DOCUMENTS TAB — link show flows & agendas (Google Sheets, etc.)
+   ============================================================ */
+function DocumentsTab({ event, update }) {
+  const addDoc = () =>
+    update((ev) => ev.documents.push({ id: uid(), name: "", category: "Show Flow", url: "", notes: "" }));
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>
+          Link your show flows and agendas. In Google Sheets, hit <b>Share → General access → “Anyone with the link”</b>,
+          copy the link, and paste it here so the whole crew can open the live sheet.
+        </p>
+        <AddBtn onClick={addDoc}>Document link</AddBtn>
+      </div>
+      <Panel title="Show documents" sub="Show flows, agendas, and other shared sheets">
+        <div className="rows">
+          <div className="rowhead doclink-grid">
+            <span>Name</span><span>Type</span><span>Link</span><span>Notes</span><span />
+          </div>
+          {event.documents.map((d, i) => (
+            <div className="linkrow" key={d.id}>
+              <div className="row doclink-grid">
+                <input
+                  value={d.name}
+                  placeholder="e.g. Day 2 Show Flow"
+                  onChange={(e) => update((ev) => (ev.documents[i].name = e.target.value))}
+                />
+                <select value={d.category || "Show Flow"} onChange={(e) => update((ev) => (ev.documents[i].category = e.target.value))}>
+                  <option>Show Flow</option>
+                  <option>Agenda</option>
+                  <option>Other</option>
+                </select>
+                <input
+                  value={d.url || ""}
+                  placeholder="https://docs.google.com/…"
+                  onChange={(e) => update((ev) => (ev.documents[i].url = e.target.value))}
+                />
+                <input
+                  value={d.notes || ""}
+                  placeholder="Notes (optional)"
+                  onChange={(e) => update((ev) => (ev.documents[i].notes = e.target.value))}
+                />
+                <div className="diagram-open">
+                  <button
+                    className="movebtn"
+                    title="Move up"
+                    type="button"
+                    disabled={i === 0}
+                    onClick={() =>
+                      update((ev) => {
+                        const a = ev.documents;
+                        const t = a[i - 1];
+                        a[i - 1] = a[i];
+                        a[i] = t;
+                      })
+                    }
+                  >
+                    ▲
+                  </button>
+                  <button
+                    className="movebtn"
+                    title="Move down"
+                    type="button"
+                    disabled={i === event.documents.length - 1}
+                    onClick={() =>
+                      update((ev) => {
+                        const a = ev.documents;
+                        const t = a[i + 1];
+                        a[i + 1] = a[i];
+                        a[i] = t;
+                      })
+                    }
+                  >
+                    ▼
+                  </button>
+                  {d.url ? (
+                    <a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>
+                  ) : (
+                    <span className="dim">—</span>
+                  )}
+                  <RemoveBtn onClick={() => update((ev) => ev.documents.splice(i, 1))} />
+                </div>
+              </div>
+              <LinkPreview url={d.url} defaultOpen={i === 0} />
+            </div>
+          ))}
+          {!event.documents.length && (
+            <Empty>No documents yet. Add a link to a Google Sheet show flow or agenda.</Empty>
+          )}
         </div>
       </Panel>
     </div>
@@ -1608,6 +1819,27 @@ function HoursTab({ event, update }) {
   const personTotal = (crewId) => days.reduce((s, d) => s + hoursBetween(entry(crewId, d.id).in, entry(crewId, d.id).out), 0);
   const dayTotal = (dayId) => crew.reduce((s, c) => s + hoursBetween(entry(c.id, dayId).in, entry(c.id, dayId).out), 0);
   const grand = crew.reduce((s, c) => s + personTotal(c.id), 0);
+  const personTiers = (crewId) =>
+    days.reduce(
+      (acc, d) => {
+        const b = otBreakdown(hoursBetween(entry(crewId, d.id).in, entry(crewId, d.id).out));
+        acc.reg += b.reg;
+        acc.ot += b.ot;
+        acc.dt += b.dt;
+        return acc;
+      },
+      { reg: 0, ot: 0, dt: 0 }
+    );
+  const grandTiers = crew.reduce(
+    (acc, c) => {
+      const t = personTiers(c.id);
+      acc.reg += t.reg;
+      acc.ot += t.ot;
+      acc.dt += t.dt;
+      return acc;
+    },
+    { reg: 0, ot: 0, dt: 0 }
+  );
 
   const addDay = () => {
     const n = days.length + 1;
@@ -1677,7 +1909,7 @@ function HoursTab({ event, update }) {
                       <td>
                         <input type="time" value={en.out} onChange={(e) => setTime(c.id, d.id, "out", e.target.value)} />
                       </td>
-                      <td className={"hrs " + (h ? "on" : "")}>{fmtHrs(h)}</td>
+                      <td className={"hrs " + (h ? "on " : "") + (h > 12 ? "dt" : h > 10 ? "ot" : "")}>{fmtHrs(h)}</td>
                     </React.Fragment>
                   );
                 })}
@@ -1698,7 +1930,338 @@ function HoursTab({ event, update }) {
           </tfoot>
         </table>
       </div>
+
+      <div className="ot-summary">
+        <div className="panel-title-row"><h3 className="panel-title">Overtime breakdown</h3></div>
+        <div className="ts-wrap">
+          <table className="timesheet ot-table">
+            <thead>
+              <tr>
+                <th className="sticky-col name-col">Crew</th>
+                <th>Regular</th>
+                <th>OT ×1.5<span className="ot-sub">10–12h/day</span></th>
+                <th>DT ×2<span className="ot-sub">12h+/day</span></th>
+                <th className="total-col">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {crew.map((c) => {
+                const t = personTiers(c.id);
+                return (
+                  <tr key={c.id}>
+                    <td className="sticky-col name-col"><div className="crew-name">{c.name || "—"}</div></td>
+                    <td>{fmtHrs(t.reg)}</td>
+                    <td className={t.ot ? "ot on" : ""}>{fmtHrs(t.ot)}</td>
+                    <td className={t.dt ? "dt on" : ""}>{fmtHrs(t.dt)}</td>
+                    <td className="ptotal">{fmtHrs(t.reg + t.ot + t.dt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td className="sticky-col name-col foot">Totals</td>
+                <td className="dtotal">{fmtHrs(grandTiers.reg)}</td>
+                <td className={"dtotal " + (grandTiers.ot ? "ot" : "")}>{fmtHrs(grandTiers.ot)}</td>
+                <td className={"dtotal " + (grandTiers.dt ? "dt" : "")}>{fmtHrs(grandTiers.dt)}</td>
+                <td className="grand">{fmtHrs(grandTiers.reg + grandTiers.ot + grandTiers.dt)}</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <p className="ot-note">Tiers are calculated per day: hours 10–12 count as time-and-a-half, hours past 12 as double time.</p>
+      </div>
       {!days.length && <Empty>No days yet. Add a day to start tracking.</Empty>}
+    </div>
+  );
+}
+
+/* ============================================================
+   P&L / COSTING TAB — admin only. Budget vs actual for a show.
+   Stored in a separate Airtable "Costing" field via /api/costing, so the
+   figures are never sent to crew — only admin tokens can read or write them.
+   ============================================================ */
+function normalizeCosting(x) {
+  x = x || {};
+  const out = {
+    billableEst: x.billableEst || "",
+    billableAct: x.billableAct || "",
+    crewCost: x.crewCost && typeof x.crewCost === "object" ? x.crewCost : {},
+    vendorCost: x.vendorCost && typeof x.vendorCost === "object" ? x.vendorCost : {},
+    laborExtra: Array.isArray(x.laborExtra) ? x.laborExtra : [],
+    vendorExtra: Array.isArray(x.vendorExtra) ? x.vendorExtra : [],
+    misc: Array.isArray(x.misc) ? x.misc : [],
+  };
+  // migrate any earlier free-form rows so nothing is lost
+  if (Array.isArray(x.labor)) out.laborExtra = out.laborExtra.concat(x.labor);
+  if (Array.isArray(x.vendors)) out.vendorExtra = out.vendorExtra.concat(x.vendors);
+  return out;
+}
+const pnlNum = (v) => {
+  const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+const pnlMoney = (n) => (n < 0 ? "\u2212$" : "$") + Math.abs(Math.round(n)).toLocaleString();
+const pnlPct = (r) => (r * 100).toFixed(1) + "%";
+
+function CostingTab({ event }) {
+  const [c, setC] = useState(null);
+  const [state, setState] = useState("loading"); // loading | idle | error
+  const [saving, setSaving] = useState(false);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    let alive = true;
+    setState("loading");
+    getCosting(event.id)
+      .then((r) => {
+        if (!alive) return;
+        setC(normalizeCosting(r.costing));
+        setState("idle");
+      })
+      .catch(() => alive && setState("error"));
+    return () => {
+      alive = false;
+      clearTimeout(timer.current);
+    };
+  }, [event.id]);
+
+  const queueSave = (next) => {
+    setC(next);
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      setSaving(true);
+      saveCosting(event.id, next)
+        .then(() => setSaving(false))
+        .catch(() => setSaving(false));
+    }, 800);
+  };
+  const mutate = (fn) => {
+    const next = JSON.parse(JSON.stringify(c));
+    fn(next);
+    queueSave(next);
+  };
+
+  if (state === "loading") return <Panel title="P&L / Costing"><Empty>Loading…</Empty></Panel>;
+  if (state === "error")
+    return (
+      <Panel title="P&L / Costing">
+        <Empty>Couldn’t load costing. The Airtable “Costing” field may not be set up yet — see the setup note.</Empty>
+      </Panel>
+    );
+
+  const sum = (arr, k) => arr.reduce((s, r) => s + pnlNum(r[k]), 0);
+
+  // ---- pull crew (with hours) from Brief + time tracker ----
+  const crewRows = (event.crew || []).filter((cm) => cm.name && cm.name.trim());
+  const tdays = event.time?.days || [];
+  const tentry = (cid, did) => event.time?.entries?.[cid]?.[did] || { in: "", out: "" };
+  const crewHours = (cid) =>
+    tdays.reduce(
+      (acc, d) => {
+        const h = hoursBetween(tentry(cid, d.id).in, tentry(cid, d.id).out);
+        const b = otBreakdown(h);
+        acc.total += b.reg + b.ot + b.dt;
+        acc.ot += b.ot;
+        acc.dt += b.dt;
+        if (h > 0) acc.days += 1;
+        return acc;
+      },
+      { total: 0, ot: 0, dt: 0, days: 0 }
+    );
+  // actual labor cost from the person's rate + tracked time
+  const crewActual = (cid) => {
+    const cc = c.crewCost[cid] || {};
+    const rate = pnlNum(cc.rate);
+    if (!rate) return null;
+    const h = crewHours(cid);
+    if ((cc.rateType || "hourly") === "day") return rate * h.days;
+    // hourly: regular + OT×1.5 + DT×2  ==  total + 0.5·OT + DT
+    return rate * (h.total + 0.5 * h.ot + h.dt);
+  };
+  const setCrew = (cid, field, val) =>
+    mutate((n) => {
+      if (!n.crewCost[cid]) n.crewCost[cid] = { rateType: "hourly", rate: "", est: "", notes: "" };
+      n.crewCost[cid][field] = val;
+    });
+
+  // ---- pull vendors from the Pull List "Rented From" field (unique, with gear summary) ----
+  const vendorMap = {};
+  (event.pull?.cases || []).forEach((cs) =>
+    (cs.items || []).forEach((it) => {
+      const raw = (it.rentedFrom || "").trim();
+      if (!raw) return;
+      const key = raw.toLowerCase();
+      if (!vendorMap[key]) vendorMap[key] = { name: raw, count: 0, items: [] };
+      vendorMap[key].count += 1;
+      const gear = (it.item || "").trim();
+      if (gear && !vendorMap[key].items.includes(gear)) vendorMap[key].items.push(gear);
+    })
+  );
+  const vendorRows = Object.values(vendorMap).sort((a, b) => a.name.localeCompare(b.name));
+  const gearSummary = (items) => (items.length <= 3 ? items.join(", ") : items.slice(0, 3).join(", ") + " +" + (items.length - 3));
+  const setVend = (name, field, val) =>
+    mutate((n) => {
+      if (!n.vendorCost[name]) n.vendorCost[name] = { est: "", act: "", notes: "" };
+      n.vendorCost[name][field] = val;
+    });
+
+  // ---- totals (roster + manual extras) ----
+  const laborEst = crewRows.reduce((s, cm) => s + pnlNum(c.crewCost[cm.id]?.est), 0) + sum(c.laborExtra, "est");
+  const laborAct = crewRows.reduce((s, cm) => s + (crewActual(cm.id) || 0), 0) + sum(c.laborExtra, "act");
+  const vendEst = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.est), 0) + sum(c.vendorExtra, "est");
+  const vendAct = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.act), 0) + sum(c.vendorExtra, "act");
+  const miscEst = sum(c.misc, "est"), miscAct = sum(c.misc, "act");
+  const billEst = pnlNum(c.billableEst), billAct = pnlNum(c.billableAct);
+  const netEst = billEst - laborEst - vendEst - miscEst;
+  const netAct = billAct - laborAct - vendAct - miscAct;
+  const crewHrsLabel = (hrs) =>
+    hrs.total ? fmtHrs(hrs.total) + "h" + (hrs.ot ? " · " + fmtHrs(hrs.ot) + " OT" : "") + (hrs.dt ? " · " + fmtHrs(hrs.dt) + " DT" : "") : "–";
+
+  const row = (label, est, act, opts = {}) => (
+    <tr className={opts.strong ? "pnl-strong" : ""}>
+      <td className="pnl-sum-label">{label}</td>
+      <td className={"pnl-sum-num " + (opts.neg && est ? "neg" : "")}>{opts.neg && est ? pnlMoney(-est) : pnlMoney(est)}</td>
+      <td className={"pnl-sum-num " + (opts.neg && act ? "neg" : "")}>{opts.neg && act ? pnlMoney(-act) : pnlMoney(act)}</td>
+    </tr>
+  );
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>
+          Budget vs actual for this show. <b>Only admins can see this tab</b> — the figures live in a separate,
+          admin-only store and are never sent to crew.
+          <span className="pnl-save">{saving ? "Saving…" : "Saved"}</span>
+        </p>
+      </div>
+
+      <Panel title="Revenue" sub="What you're billing the client">
+        <div className="pnl-billable">
+          <Field label="Total billable — estimated">
+            <input value={c.billableEst} placeholder="$" onChange={(e) => mutate((n) => (n.billableEst = e.target.value))} />
+          </Field>
+          <Field label="Total billable — actual">
+            <input value={c.billableAct} placeholder="$" onChange={(e) => mutate((n) => (n.billableAct = e.target.value))} />
+          </Field>
+        </div>
+      </Panel>
+
+      <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "" }))}>Non-roster line</AddBtn>}>
+        <div className="rows">
+          <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
+          {crewRows.map((cm) => {
+            const cc = c.crewCost[cm.id] || {};
+            const hrs = crewHours(cm.id);
+            const rt = cc.rateType || "hourly";
+            const act = crewActual(cm.id);
+            return (
+              <div className="row pnl-labor-grid" key={cm.id}>
+                <span className="pnl-person"><b>{cm.name}</b><em>{cm.position || "—"}</em></span>
+                <span className="pnl-time" title={`Regular ${fmtHrs(hrs.total - hrs.ot - hrs.dt)} · OT ${fmtHrs(hrs.ot)} · DT ${fmtHrs(hrs.dt)}`}>
+                  <b>{hrs.total ? fmtHrs(hrs.total) + "h" : "–"}</b>
+                  <em>{hrs.days ? hrs.days + (hrs.days === 1 ? " day" : " days") : ""}</em>
+                </span>
+                <span className="pnl-rate">
+                  <select value={rt} onChange={(e) => setCrew(cm.id, "rateType", e.target.value)}>
+                    <option value="hourly">Hourly</option>
+                    <option value="day">Day rate</option>
+                  </select>
+                  <input className="pnl-money" value={cc.rate || ""} placeholder={"$/" + (rt === "day" ? "day" : "hr")} onChange={(e) => setCrew(cm.id, "rate", e.target.value)} />
+                </span>
+                <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />
+                <span className="pnl-actual" title={rt === "day" ? "days × rate" : "reg + OT×1.5 + DT×2, × rate"}>{act == null ? "–" : pnlMoney(act)}</span>
+                <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />
+                <span className="pnl-tag" title="From the crew roster">roster</span>
+              </div>
+            );
+          })}
+          {c.laborExtra.map((r, i) => (
+            <div className="row pnl-labor-grid" key={r.id}>
+              <span className="pnl-person"><input value={r.contractor} placeholder="Name" onChange={(e) => mutate((n) => (n.laborExtra[i].contractor = e.target.value))} /><input value={r.role} placeholder="Role" onChange={(e) => mutate((n) => (n.laborExtra[i].role = e.target.value))} /></span>
+              <span className="pnl-time dim">—</span>
+              <span className="pnl-rate dim">manual →</span>
+              <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />
+              <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />
+              <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />
+              <RemoveBtn onClick={() => mutate((n) => n.laborExtra.splice(i, 1))} />
+            </div>
+          ))}
+          {!crewRows.length && !c.laborExtra.length && <Empty>Add crew on the Brief tab and they’ll appear here with their hours.</Empty>}
+        </div>
+        <div className="pnl-subtotal">Labor subtotal — est {pnlMoney(laborEst)} · actual {pnlMoney(laborAct)}</div>
+      </Panel>
+
+      <Panel title="Gear & Vendors" sub="Vendors pulled from the “Rented From” field on the Pull List" action={<AddBtn onClick={() => mutate((n) => n.vendorExtra.push({ id: uid(), vendor: "", notes: "", est: "", act: "" }))}>Non-list line</AddBtn>}>
+        <div className="rows">
+          <div className="rowhead pnl-vendor-grid"><span>Vendor</span><span>Gear rented</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
+          {vendorRows.map((v) => {
+            const vc = c.vendorCost[v.name] || {};
+            return (
+              <div className="row pnl-vendor-grid" key={v.name}>
+                <span className="pnl-derived">{v.name}</span>
+                <span className="pnl-gear" title={v.items.join(", ")}>{gearSummary(v.items) || `${v.count} item${v.count === 1 ? "" : "s"}`}</span>
+                <input className="pnl-money" value={vc.est || ""} placeholder="$" onChange={(e) => setVend(v.name, "est", e.target.value)} />
+                <input className="pnl-money" value={vc.act || ""} placeholder="$" onChange={(e) => setVend(v.name, "act", e.target.value)} />
+                <input value={vc.notes || ""} placeholder="Notes" onChange={(e) => setVend(v.name, "notes", e.target.value)} />
+                <span className="pnl-tag" title="From the Pull List">pull</span>
+              </div>
+            );
+          })}
+          {c.vendorExtra.map((r, i) => (
+            <div className="row pnl-vendor-grid" key={r.id}>
+              <input value={r.vendor} placeholder="Vendor" onChange={(e) => mutate((n) => (n.vendorExtra[i].vendor = e.target.value))} />
+              <span className="pnl-gear dim">—</span>
+              <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.vendorExtra[i].est = e.target.value))} />
+              <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.vendorExtra[i].act = e.target.value))} />
+              <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.vendorExtra[i].notes = e.target.value))} />
+              <RemoveBtn onClick={() => mutate((n) => n.vendorExtra.splice(i, 1))} />
+            </div>
+          ))}
+          {!vendorRows.length && !c.vendorExtra.length && <Empty>Set “Rented From” on Pull List items and those vendors will appear here.</Empty>}
+        </div>
+        <div className="pnl-subtotal">Gear subtotal — est {pnlMoney(vendEst)} · actual {pnlMoney(vendAct)}</div>
+      </Panel>
+
+      <Panel title="Misc" sub="Travel, per diem, expendables, etc." action={<AddBtn onClick={() => mutate((n) => n.misc.push({ id: uid(), name: "", est: "", act: "" }))}>Line</AddBtn>}>
+        <div className="rows">
+          <div className="rowhead pnl-misc-grid"><span>Description</span><span>Est. $</span><span>Actual $</span><span /></div>
+          {c.misc.map((r, i) => (
+            <div className="row pnl-misc-grid" key={r.id}>
+              <input value={r.name} placeholder="Description" onChange={(e) => mutate((n) => (n.misc[i].name = e.target.value))} />
+              <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.misc[i].est = e.target.value))} />
+              <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.misc[i].act = e.target.value))} />
+              <RemoveBtn onClick={() => mutate((n) => n.misc.splice(i, 1))} />
+            </div>
+          ))}
+          {!c.misc.length && <Empty>No misc lines yet.</Empty>}
+        </div>
+        <div className="pnl-subtotal">Misc subtotal — est {pnlMoney(miscEst)} · actual {pnlMoney(miscAct)}</div>
+      </Panel>
+
+      <Panel title="Profit & Loss">
+        <table className="pnl-summary">
+          <thead><tr><th /><th>Estimated</th><th>Actual</th></tr></thead>
+          <tbody>
+            {row("Total billable", billEst, billAct)}
+            {row("Labor", laborEst, laborAct, { neg: true })}
+            {row("Gear & vendors", vendEst, vendAct, { neg: true })}
+            {row("Misc", miscEst, miscAct, { neg: true })}
+          </tbody>
+          <tfoot>
+            <tr className="pnl-net">
+              <td className="pnl-sum-label">Net profit</td>
+              <td className={"pnl-sum-num " + (netEst < 0 ? "neg" : "pos")}>{pnlMoney(netEst)}</td>
+              <td className={"pnl-sum-num " + (netAct < 0 ? "neg" : "pos")}>{pnlMoney(netAct)}</td>
+            </tr>
+            <tr className="pnl-pct">
+              <td className="pnl-sum-label">Profit margin</td>
+              <td className="pnl-sum-num">{billEst ? pnlPct(netEst / billEst) : "—"}</td>
+              <td className="pnl-sum-num">{billAct ? pnlPct(netAct / billAct) : "—"}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </Panel>
     </div>
   );
 }
@@ -2388,6 +2951,13 @@ const CSS = `
 .cb .daysort{border:1px solid var(--line,#e2e8f0); background:#fff; color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;}
 .cb .daysort:hover{background:#f1f5f9;}
 .cb .daydate{width:130px;}
+.cb .daytitle-ro{font-family:'Oswald'; font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:15px;}
+.cb .daydate-ro{font-size:12.5px; color:var(--muted,#64748b); font-weight:600;}
+.cb .sched-ro{display:flex; flex-direction:column;}
+.cb .sched-ro-row{display:flex; gap:12px; padding:7px 2px; border-bottom:1px solid var(--line,#eef2f7);}
+.cb .sched-ro-row:last-child{border-bottom:none;}
+.cb .sched-ro-time{flex:0 0 88px; font-weight:700; color:#0F1E35; font-variant-numeric:tabular-nums;}
+.cb .sched-ro-act{flex:1; color:#1e293b;}
 .cb .time-in-text{font-variant-numeric:tabular-nums;}
 
 /* timesheet */
@@ -2414,6 +2984,62 @@ const CSS = `
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
 .cb .dtotal{font-variant-numeric:tabular-nums; color:var(--dim); border-left:1px solid var(--line);}
 .cb .grand{font-variant-numeric:tabular-nums; color:var(--green); font-weight:700; font-size:14px; border-left:1px solid var(--line);}
+.cb .hrs.ot{color:var(--amber);}
+.cb .hrs.dt{color:var(--danger);}
+.cb .ot-summary{margin-top:20px;}
+.cb .ot-table td.ot{color:var(--amber); font-weight:600; font-variant-numeric:tabular-nums;}
+.cb .ot-table td.dt{color:var(--danger); font-weight:600; font-variant-numeric:tabular-nums;}
+.cb .ot-sub{display:block; font-size:9px; color:var(--faint); font-weight:400; letter-spacing:0; text-transform:none; margin-top:1px;}
+.cb .ot-note{font-size:11.5px; color:var(--faint); margin-top:8px;}
+
+/* P&L / costing (admin only) */
+.cb .pnl-save{margin-left:10px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint);}
+.cb .pnl-billable{display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:520px;}
+.cb .pnl-labor-grid{grid-template-columns:1.1fr .7fr 1.1fr 76px 84px .9fr 30px;}
+.cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 30px;}
+.cb .pnl-misc-grid{grid-template-columns:2fr 92px 92px 28px;}
+.cb .pnl-derived{display:flex; align-items:center; font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .pnl-derived.dim{font-weight:400; color:var(--dim);}
+.cb .pnl-person{display:flex; flex-direction:column; justify-content:center; min-width:0; gap:2px;}
+.cb .pnl-person b{font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .pnl-person em{font-style:normal; font-size:11px; color:var(--dim);}
+.cb .pnl-person input{width:100%;}
+.cb .pnl-time{display:flex; flex-direction:column; justify-content:center; font-variant-numeric:tabular-nums;}
+.cb .pnl-time b{font-weight:600; color:var(--amber); font-size:12.5px;}
+.cb .pnl-time em{font-style:normal; font-size:10.5px; color:var(--faint);}
+.cb .pnl-time.dim{color:var(--faint);}
+.cb .pnl-rate{display:flex; gap:4px; align-items:center;}
+.cb .pnl-rate select{width:70px; padding:5px 4px; font-size:11.5px;}
+.cb .pnl-rate .pnl-money{width:52px;}
+.cb .pnl-rate.dim{color:var(--faint); font-size:11px; justify-content:center;}
+.cb .pnl-actual{display:flex; align-items:center; justify-content:flex-end; font-variant-numeric:tabular-nums; font-weight:700; color:var(--green);}
+.cb .pnl-gear{display:flex; align-items:center; font-size:11.5px; color:var(--dim); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .pnl-gear.dim{color:var(--faint);}
+.cb .pnl-hours{display:flex; align-items:center; font-size:11.5px; color:var(--amber); font-variant-numeric:tabular-nums;}
+.cb .pnl-hours.dim{color:var(--faint);}
+.cb .pnl-tag{display:flex; align-items:center; justify-content:center; font-size:9px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint);}
+.cb .pnl-money{font-variant-numeric:tabular-nums; text-align:right;}
+.cb .pnl-subtotal{margin-top:10px; padding-top:8px; border-top:1px solid var(--line); font-size:12px; color:var(--dim); text-align:right; font-variant-numeric:tabular-nums;}
+.cb .pnl-summary{border-collapse:separate; border-spacing:0; width:100%; max-width:520px; font-size:13px;}
+.cb .pnl-summary th{font-family:'Oswald'; font-weight:600; letter-spacing:.04em; color:var(--dim); font-size:11px; text-transform:uppercase; text-align:right; padding:4px 10px;}
+.cb .pnl-summary th:first-child{text-align:left;}
+.cb .pnl-sum-label{text-align:left; color:var(--ink); padding:6px 10px;}
+.cb .pnl-sum-num{text-align:right; font-variant-numeric:tabular-nums; color:var(--dim); padding:6px 10px; min-width:96px;}
+.cb .pnl-summary td{border-bottom:1px solid var(--line);}
+.cb .pnl-sum-num.neg{color:var(--danger);}
+.cb .pnl-net .pnl-sum-label{font-family:'Oswald'; letter-spacing:.03em; color:var(--ink); font-size:14px;}
+.cb .pnl-net .pnl-sum-num{font-weight:700; font-size:15px;}
+.cb .pnl-net .pnl-sum-num.pos{color:var(--green);}
+.cb .pnl-net .pnl-sum-num.neg{color:var(--danger);}
+.cb .pnl-pct .pnl-sum-num{color:var(--amber); font-weight:600;}
+.cb .pnl-pct td{border-bottom:none;}
+@media (max-width:760px){
+  .cb .pnl-billable{grid-template-columns:1fr;}
+  .cb .pnl-labor-grid{grid-template-columns:1fr 1fr; }
+  .cb .rowhead.pnl-labor-grid, .cb .rowhead.pnl-vendor-grid, .cb .rowhead.pnl-misc-grid{display:none;}
+  .cb .pnl-vendor-grid{grid-template-columns:1fr 1fr;}
+  .cb .pnl-misc-grid{grid-template-columns:1fr 1fr;}
+}
 
 /* audio / video I/O */
 .cb .io-cols{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
@@ -2478,6 +3104,9 @@ const CSS = `
   .cb .rowhead.stay-grid{display:none;}
   .cb .meal-grid{grid-template-columns:1fr 1fr;}
   .cb .rowhead.meal-grid{display:none;}
+  .cb .doclink-grid{grid-template-columns:1fr 1fr;}
+  .cb .rowhead.doclink-grid{display:none;}
+  .cb .doclink-grid .diagram-open{grid-column:1 / -1;}
   .cb .evt-name-input{font-size:24px;}
 }
 @media (prefers-reduced-motion:reduce){ .cb *{transition:none !important;} }
@@ -2505,6 +3134,18 @@ const CSS = `
 .cb .diagramlink-grid{grid-template-columns:1.1fr 1.6fr 1.1fr 100px;}
 .cb .diagram-open{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
+
+/* show documents (cloud build) */
+.cb .doclink-grid{grid-template-columns:1.2fr 116px 1.5fr 0.9fr 156px;}
+
+/* inline link previews (cloud build) */
+.cb .linkrow{display:flex; flex-direction:column; gap:4px;}
+.cb .previewbtn{align-self:flex-start; border:1px solid var(--line); background:#fff; color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer;}
+.cb .previewbtn:hover{background:#f1f5f9;}
+.cb .linkprev-frame{margin:2px 0 4px; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff;}
+.cb .linkprev-frame iframe{width:100%; height:min(70vh,560px); border:none; display:block;}
+.cb .linkprev-frame img{width:100%; height:auto; display:block; background:#f8fafc;}
+.cb .linkprev-note{font-size:11px; color:var(--faint); padding:6px 10px; background:#f8fafc; border-top:1px solid var(--line);}
 
 /* ---------- Pull List tab ---------- */
 .pull { gap: 12px; }
