@@ -1119,6 +1119,53 @@ function BriefTab({ event, update }) {
 /* ============================================================
    SCHEDULE TAB — daily run of show
    ============================================================ */
+/* ---------- schedule time sorting ----------
+   Parse the free-text Time field into minutes-since-midnight so lines can be
+   ordered chronologically. Handles "6:00 AM", "6am", "0600", "600", "13:30", "6". */
+function schedMinutes(raw) {
+  if (raw == null) return null;
+  let s = String(raw).trim().toLowerCase().replace(/\s+/g, "");
+  if (!s) return null;
+  let mer = null;
+  const m = s.match(/(a|p)m?\.?$/);
+  if (m) {
+    mer = m[1];
+    s = s.slice(0, m.index);
+  }
+  let h, min;
+  if (s.includes(":")) {
+    const [hh, mm = ""] = s.split(":");
+    h = parseInt(hh, 10);
+    min = parseInt(mm || "0", 10);
+  } else if (/^\d{3,4}$/.test(s)) {
+    h = parseInt(s.slice(0, s.length - 2), 10);
+    min = parseInt(s.slice(-2), 10);
+  } else if (/^\d{1,2}$/.test(s)) {
+    h = parseInt(s, 10);
+    min = 0;
+  } else {
+    return null;
+  }
+  if (Number.isNaN(h) || Number.isNaN(min)) return null;
+  if (mer === "p" && h < 12) h += 12;
+  if (mer === "a" && h === 12) h = 0;
+  if (h === 24 && min === 0) return 24 * 60;
+  if (h > 23 || min > 59) return null;
+  return h * 60 + min;
+}
+/* stable sort: earliest first; blank/unparseable times fall to the bottom in place */
+function sortSchedItems(items) {
+  return items
+    .map((it, i) => ({ it, i, m: schedMinutes(it.time) }))
+    .sort((a, b) => {
+      if (a.m == null && b.m == null) return a.i - b.i;
+      if (a.m == null) return 1;
+      if (b.m == null) return -1;
+      return a.m !== b.m ? a.m - b.m : a.i - b.i;
+    })
+    .map((x) => x.it);
+}
+
 function ScheduleTab({ event, update }) {
   const addDay = () =>
     update((ev) =>
@@ -1144,6 +1191,14 @@ function ScheduleTab({ event, update }) {
           }
           action={
             <div className="day-tools">
+              <button
+                className="daysort"
+                type="button"
+                title="Sort this day's lines by time"
+                onClick={() => update((ev) => (ev.schedule[di].items = sortSchedItems(ev.schedule[di].items)))}
+              >
+                ↕ Time
+              </button>
               <input
                 type="date"
                 className="daydate"
@@ -1162,6 +1217,7 @@ function ScheduleTab({ event, update }) {
                   value={it.time}
                   placeholder="Time"
                   onChange={(e) => update((ev) => (ev.schedule[di].items[ii].time = e.target.value))}
+                  onBlur={() => update((ev) => (ev.schedule[di].items = sortSchedItems(ev.schedule[di].items)))}
                 />
                 <input
                   value={it.activity}
@@ -2314,6 +2370,8 @@ const CSS = `
 .cb .daytitle{font-family:'Oswald'; font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:15px; background:transparent; border:none; padding:0; border-bottom:1px solid transparent; max-width:340px;}
 .cb .daytitle:focus{border-bottom-color:var(--amber); box-shadow:none;}
 .cb .day-tools{display:flex; gap:8px; align-items:center;}
+.cb .daysort{border:1px solid var(--line,#e2e8f0); background:#fff; color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;}
+.cb .daysort:hover{background:#f1f5f9;}
 .cb .daydate{width:130px;}
 .cb .time-in-text{font-variant-numeric:tabular-nums;}
 
