@@ -57,3 +57,8 @@ export const createEvent = (payload) => api("POST", "/api/events", payload);
 export const updateEvent = (id, payload) => api("PATCH", "/api/events?id=" + encodeURIComponent(id), payload);
 export const deleteEvent = (id) => api("DELETE", "/api/events?id=" + encodeURIComponent(id));
 export const setPassword = (id, password) => api("POST", "/api/password", { id, password });
+
+// Shared pull-list templates (global library; saving/deleting is admin-only).
+export const listTemplates = () => api("GET", "/api/templates");
+export const createTemplate = (name, data) => api("POST", "/api/templates", { name, data });
+export const deleteTemplate = (id) => api("DELETE", "/api/templates?id=" + encodeURIComponent(id));
