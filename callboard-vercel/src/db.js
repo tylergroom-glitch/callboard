@@ -62,3 +62,7 @@ export const setPassword = (id, password) => api("POST", "/api/password", { id, 
 export const listTemplates = () => api("GET", "/api/templates");
 export const createTemplate = (name, data) => api("POST", "/api/templates", { name, data });
 export const deleteTemplate = (id) => api("DELETE", "/api/templates?id=" + encodeURIComponent(id));
+
+// Per-show P&L / costing (admin-only endpoint; never exposed to crew).
+export const getCosting = (id) => api("GET", "/api/costing?id=" + encodeURIComponent(id));
+export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + encodeURIComponent(id), { costing });
