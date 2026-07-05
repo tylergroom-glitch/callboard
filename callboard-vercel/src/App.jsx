@@ -10,6 +10,9 @@ import {
   updateEvent,
   deleteEvent as deleteEvent_api,
   setPassword as dbSetPassword,
+  listTemplates,
+  createTemplate,
+  deleteTemplate,
 } from "./db.js";
 
 /* ============================================================
@@ -30,6 +33,214 @@ const ioRow = (num, name = "", patch = "", signal = "", notes = "") => ({
   id: uid(), num: String(num), name, patch, signal, notes,
 });
 const ioBlock = (name, ins = [], outs = []) => ({ id: uid(), name, ins, outs });
+
+/* ---------- pull list: categories + seed gear ---------- */
+const PULL_CATS = {
+  Audio:    { color: "#2563EB", soft: "#EFF4FF", ring: "#BFD3FF" },
+  Video:    { color: "#7C3AED", soft: "#F5F0FF", ring: "#D9C7FF" },
+  Lighting: { color: "#D97706", soft: "#FFF6EA", ring: "#F3D8A8" },
+  Power:    { color: "#DC2626", soft: "#FEF1F1", ring: "#F4BFBF" },
+  Scenic:   { color: "#059669", soft: "#ECFAF4", ring: "#B7E7D4" },
+  Misc:     { color: "#475569", soft: "#F1F4F8", ring: "#CBD5E1" },
+};
+const PULL_CAT_ORDER = ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"];
+const pullItem = () => ({ id: uid(), drawer: null, item: "", qty: "", source: "", rentedFrom: "", notes: "", out: false, in: false });
+const PULL_SEED = [
+  { id: "pc1", caseNo: 1, "case": "AUDIO / SPEAKERS", category: "Audio", items: [
+    { id: "pi1", drawer: null, item: "Syva High", qty: 2, source: "Sub Rental", rentedFrom: "R&R", notes: "", out: false, in: false },
+    { id: "pi2", drawer: null, item: "Syva Low", qty: 2, source: "Sub Rental", rentedFrom: "R&R", notes: "", out: false, in: false },
+    { id: "pi3", drawer: null, item: "L'Acoustics Amps", qty: 2, source: "Sub Rental", rentedFrom: "R&R", notes: "", out: false, in: false },
+    { id: "pi4", drawer: null, item: "L'Acoustics 5XT", qty: 4, source: "Sub Rental", rentedFrom: "KAT", notes: "", out: false, in: false },
+    { id: "pi5", drawer: null, item: "L'Acoustics Amp", qty: 1, source: "Sub Rental", rentedFrom: "KAT", notes: "", out: false, in: false },
+  ] },
+  { id: "pc2", caseNo: 2, "case": "Audio Console", category: "Audio", items: [
+    { id: "pi6", drawer: null, item: "DM7 Compact", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc3", caseNo: 3, "case": "DM 3 RACK", category: "Audio", items: [
+    { id: "pi7", drawer: null, item: "Yamaha DM3-D", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi8", drawer: null, item: "Netgear Switches", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi9", drawer: null, item: "Quad ULX-D", qty: 3, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc4", caseNo: 4, "case": "CLEAR-COM RACK", category: "Audio", items: [
+    { id: "pi10", drawer: null, item: "Arcadia", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi11", drawer: null, item: "4-Channel Helixnet Beltpacks", qty: 8, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi12", drawer: null, item: "2-Channel Helixnet Beltpacks", qty: 4, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi13", drawer: null, item: "Freespeak Beltpacks", qty: 12, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi14", drawer: null, item: "IP Transceivers", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi15", drawer: null, item: "Ubiquiti POE Switch", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi16", drawer: null, item: "Ethernet Cable", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc5", caseNo: 5, "case": "E2 RACK", category: "Video", items: [
+    { id: "pi17", drawer: null, item: "E2", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi18", drawer: null, item: "12x12 SDI Router", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi19", drawer: null, item: "Mini PC", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi20", drawer: null, item: "Touchscreen Monitor", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi21", drawer: null, item: "Laptop", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi22", drawer: null, item: "Ubiquiti Router", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi23", drawer: null, item: "Ubiquiti Switch", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi24", drawer: null, item: "USB-C to DisplayPort Cables", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi25", drawer: null, item: "Yamaha Tio", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc6", caseNo: 6, "case": "RECORD RACK", category: "Video", items: [
+    { id: "pi26", drawer: null, item: "Hyperdeck Studio HD Plus", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi27", drawer: null, item: "CloudStore", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi28", drawer: null, item: "10G Switch", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi29", drawer: null, item: "Ubiquiti Switch", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi30", drawer: null, item: "17\" Monitor", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi31", drawer: null, item: "Mac Mini", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi32", drawer: null, item: "2 M/E Constellation", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc7", caseNo: 7, "case": "MONITOR CASE", category: "Video", items: [
+    { id: "pi33", drawer: null, item: "43\" TV", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi34", drawer: null, item: "27\" Monitor", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi35", drawer: null, item: "22\" Monitor", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc8", caseNo: 8, "case": "BIGGER MONITOR CASE", category: "Video", items: [
+    { id: "pi36", drawer: null, item: "55\" Monitor", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi37", drawer: null, item: "32\" Monitor", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi38", drawer: null, item: "27\" Touchscreen", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi39", drawer: null, item: "Graphics Laptops", qty: 6, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi40", drawer: null, item: "MacBooks", qty: 4, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc9", caseNo: 9, "case": "FIBER", category: "Video", items: [
+    { id: "pi41", drawer: null, item: "Fiber Reel 250ft", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi42", drawer: null, item: "12G Fiber Box", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi43", drawer: null, item: "3G Fiber Box", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc10", caseNo: 10, "case": "SPEAKER TIMER", category: "Misc", items: [
+    { id: "pi44", drawer: null, item: "Speaker Timer Unit", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc11", caseNo: 11, "case": "VIDEO CABLE WORKBOX", category: "Video", items: [
+    { id: "pi45", drawer: "Audio DI (A)", item: "Peavey USB-P", qty: 6, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi46", drawer: "Audio DI (A)", item: "ART USB DI Digital to Analog Converter", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi47", drawer: "Audio DI (B)", item: "LyxPro 4Ch Audio/DMX Extender", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi48", drawer: "Audio DI (B)", item: "ART DualZDirect Dual Channel Passive Direct Box", qty: 3, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi49", drawer: "Audio DI (B)", item: "Blackdog Studio USB-DI", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi50", drawer: "SDI/HDMI 10-25ft", item: "10ft HDMI Cable", qty: 14, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi51", drawer: "SDI/HDMI 10-25ft", item: "25ft HDMI Cable", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi52", drawer: "SDI/HDMI 50ft", item: "50ft HDMI Cable", qty: 14, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi53", drawer: "SDI/HDMI 50ft", item: "50ft SDI Cable", qty: 6, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi54", drawer: "SDI/HDMI 100ft", item: "100ft HDMI Cable", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi55", drawer: "SDI/HDMI 100ft", item: "100ft SDI Cable", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc12", caseNo: 12, "case": "VIDEO WORKBOX", category: "Video", items: [
+    { id: "pi56", drawer: "MD-LX / HDMI Split", item: "MD-LX", qty: 20, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi57", drawer: "MD-LX / HDMI Split", item: "REI 1x4 HDMI Splitter", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi58", drawer: "Dongles / Fiber Con", item: "HDI-SDI Fiber Optic Converter", qty: 25, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi59", drawer: "Dongles / Fiber Con", item: "BlackMagicDesign Mini Converter Fiber Optic", qty: 8, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi60", drawer: "MD-HX & 12G Cross", item: "Decimator 12G-Cross", qty: 4, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi61", drawer: "MD-HX & 12G Cross", item: "Decimator MD-HX", qty: 7, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi62", drawer: "MD-HX & 12G Cross", item: "Decimator DMON-QUAD", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi63", drawer: "MD-HX & 12G Cross", item: "Thunderbolt 3 Mini Dock W/ Dual 4K HDMI", qty: 3, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi64", drawer: "MD-HX & 12G Cross", item: "DJI SDR Transmission", qty: 4, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi65", drawer: "PerfectCues/USB/Stackers", item: "PerfectCue Extender", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi66", drawer: "PerfectCues/USB/Stackers", item: "PerfectCue", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi67", drawer: "PerfectCues/USB/Stackers", item: "PerfectCue Two Button Transmitter", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi68", drawer: "PerfectCues/USB/Stackers", item: "USB C-HDMI Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi69", drawer: "PerfectCues/USB/Stackers", item: "USB C-C Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi70", drawer: "PerfectCues/USB/Stackers", item: "USB C-B Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi71", drawer: "PerfectCues/USB/Stackers", item: "USB A-C Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi72", drawer: "PerfectCues/USB/Stackers", item: "USB A-Micro Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi73", drawer: "PerfectCues/USB/Stackers", item: "USB A-Lightning Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi74", drawer: "PerfectCues/USB/Stackers", item: "USB Power Bricks Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi75", drawer: "Network", item: "AX1800 Wireless Router", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi76", drawer: "Network", item: "Dual-Band WiFi 7 Travel Router", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi77", drawer: "Network", item: "AC1200 Wireless Travel Router + Pwr Supply", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi78", drawer: "Network", item: "1ft CAT Cable Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi79", drawer: "Network", item: "Ethernet Patch Cable Bag", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi80", drawer: "Network", item: "10ft Ethernet Cable", qty: 9, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi81", drawer: "Network", item: "15ft Ethernet Cable", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi82", drawer: "Network", item: "TP-Link 16-Port Switch + Pwr Supply", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi83", drawer: "Network", item: "TP-Link 8-Port Switch + Pwr Supply", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi84", drawer: "Network", item: "REI 1x4 HDMI Splitter + Pwr Supply", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi85", drawer: "Fiber/Screen/SDI Monitor", item: "Fostex 6301B Personal Monitor", qty: 4, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi86", drawer: "Fiber/Screen/SDI Monitor", item: "Fiber Fault Tester / Fiber Optic Cleaner", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi87", drawer: "Fiber/Screen/SDI Monitor", item: "4K On-Camera Monitor 7\"", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi88", drawer: "Fiber/Screen/SDI Monitor", item: "Fiber Optic Cable", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc13", caseNo: 13, "case": "AUDIO WORKBOX", category: "Audio", items: [
+    { id: "pi89", drawer: "XLR", item: "10ft XLR Cable", qty: 20, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi90", drawer: "XLR", item: "25ft XLR Cable", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi91", drawer: "XLR", item: "50ft XLR Cable", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi92", drawer: "XLR", item: "100ft XLR Cable", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc14", caseNo: 14, "case": "PRODUCER WORKBOX", category: "Misc", items: [
+    { id: "pi93", drawer: null, item: "Printer", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi94", drawer: null, item: "Office Supplies", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi95", drawer: null, item: "Misc Audio", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi96", drawer: null, item: "First Aid Kit", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc15", caseNo: 15, "case": "BIG POWER TRUNK", category: "Power", items: [
+    { id: "pi97", drawer: null, item: "200A Distro", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi98", drawer: null, item: "Doghouses", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi99", drawer: null, item: "L21-30 Flat - 25ft", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi100", drawer: null, item: "L21-30 Flat - 50ft", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi101", drawer: null, item: "L21-30 10ft", qty: 3, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi102", drawer: null, item: "L21-30 25ft", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi103", drawer: null, item: "L21-30 50ft", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi104", drawer: null, item: "L21-30 100ft", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi105", drawer: null, item: "Feeder 10ft", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc16", caseNo: 16, "case": "EDISON CABLE TRUNK", category: "Power", items: [
+    { id: "pi106", drawer: null, item: "Power Strips", qty: 20, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi107", drawer: null, item: "10ft Edison", qty: 20, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi108", drawer: null, item: "25ft Edison", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi109", drawer: null, item: "50ft Edison", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi110", drawer: null, item: "100ft Edison", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi111", drawer: null, item: "Stringers", qty: 5, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc17", caseNo: 17, "case": "TRUSS / STAGING", category: "Lighting", items: [
+    { id: "pi112", drawer: null, item: "80ft Gray Drape", qty: "", source: "Venue", rentedFrom: "Encore", notes: "", out: false, in: false },
+    { id: "pi113", drawer: null, item: "Uplights", qty: "", source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi114", drawer: null, item: "DSM Stands", qty: 2, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc18", caseNo: 18, "case": "Scenic", category: "Scenic", items: [
+    { id: "pi115", drawer: null, item: "10' X 20' Backdrop Frames", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi116", drawer: null, item: "10' X 20' Skin/Returns", qty: 1, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+    { id: "pi117", drawer: null, item: "Sandbags", qty: 10, source: "TCG", rentedFrom: "", notes: "", out: false, in: false },
+  ] },
+  { id: "pc19", caseNo: 19, "case": "LED", category: "Video", items: [
+    { id: "pi118", drawer: null, item: "Ground Support Package", qty: "", source: "Sub Rental", rentedFrom: "Matrix", notes: "", out: false, in: false },
+    { id: "pi119", drawer: null, item: "Processor Package", qty: "", source: "Sub Rental", rentedFrom: "Matrix", notes: "", out: false, in: false },
+    { id: "pi120", drawer: null, item: "Distro Package", qty: "", source: "Sub Rental", rentedFrom: "Matrix", notes: "", out: false, in: false },
+    { id: "pi121", drawer: null, item: "10' x 40' LED Wall", qty: "", source: "Sub Rental", rentedFrom: "Matrix", notes: "", out: false, in: false },
+    { id: "pi122", drawer: null, item: "Sandbags", qty: "", source: "Sub Rental", rentedFrom: "Matrix", notes: "", out: false, in: false },
+  ] },
+];
+
+/* ---------- pull list: templates (applied into a show; ids regenerated) ---------- */
+function pullFreshCases(cases) {
+  return clone(cases).map((c, ci) => ({
+    ...c,
+    id: uid(),
+    caseNo: ci + 1,
+    items: c.items.map((it) => ({ ...it, id: uid(), out: false, in: false })),
+  }));
+}
+const PULL_SMALL_CASES = ["Audio Console", "AUDIO / SPEAKERS", "CLEAR-COM RACK", "MONITOR CASE", "AUDIO WORKBOX", "EDISON CABLE TRUNK"];
+const PULL_TEMPLATES = [
+  {
+    key: "full",
+    name: "Full Corporate Rig",
+    desc: "Complete kit — audio, video, LED, power, scenic",
+    count: () => PULL_SEED.reduce((n, c) => n + c.items.length, 0),
+    build: () => pullFreshCases(PULL_SEED),
+  },
+  {
+    key: "small",
+    name: "Small Show",
+    desc: "Single-room kit — console, speakers, comms, monitors, cable & power",
+    count: () => PULL_SEED.filter((c) => PULL_SMALL_CASES.includes(c.case)).reduce((n, c) => n + c.items.length, 0),
+    build: () => pullFreshCases(PULL_SEED.filter((c) => PULL_SMALL_CASES.includes(c.case))),
+  },
+  {
+    key: "blank",
+    name: "Empty (categories only)",
+    desc: "Six empty cases, one per category — build from scratch",
+    count: () => 0,
+    build: () => PULL_CAT_ORDER.map((cat, i) => ({ id: uid(), caseNo: i + 1, case: cat + " Case", category: cat, items: [] })),
+  },
+];
 
 /* backfill any fields a stored event predates, so old data never crashes */
 function normalize(e) {
@@ -55,6 +266,9 @@ function normalize(e) {
   e.video = e.video || { blocks: [ioBlock("Main")] };
   e.records = e.records || [];
   e.diagrams = e.diagrams || [];
+  e.pull = e.pull || { cases: [] };
+  if (!Array.isArray(e.pull.cases)) e.pull.cases = [];
+  if (typeof e.gearEditUnlocked !== "boolean") e.gearEditUnlocked = false;
   return e;
 }
 
@@ -97,6 +311,8 @@ function blankEvent() {
     video: { blocks: [ioBlock("Main")] },
     records: [],
     diagrams: [],
+    pull: { cases: [] },
+    gearEditUnlocked: false,
   };
 }
 
@@ -272,6 +488,8 @@ function seedEvent() {
       { id: uid(), name: "Stein Ballroom — Stage Plot", caption: "Host on Drive/Dropbox and paste the link", kind: "link", url: "" },
       { id: uid(), name: "Rigging Plot (Vectorworks)", caption: "Full rig — hosted PDF", kind: "link", url: "" },
     ],
+    pull: { cases: clone(PULL_SEED) },
+    gearEditUnlocked: false,
   };
 }
 
@@ -621,6 +839,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" />}
             {tab === "diagrams" && <DiagramsTab event={event} update={update} />}
+            {tab === "pull" && <PullTab event={event} update={update} isAdmin={isAdmin} />}
             {tab === "records" && <RecordsTab event={event} update={update} />}
             {tab === "hours" && <HoursTab event={event} update={update} />}
           </main>
@@ -643,6 +862,7 @@ const SECTIONS = [
   { key: "video", label: "Video I/O", desc: "Video patch sheets", color: "#D97CC0" },
   { key: "audio", label: "Audio I/O", desc: "Audio patch sheets", color: "#9C9AA6" },
   { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63" },
+  { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3" },
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A" },
 ];
@@ -665,6 +885,8 @@ function TileIcon({ name }) {
       return (<svg {...p}><path d="M6 4v16M12 4v16M18 4v16" /><circle cx="6" cy="9" r="2" /><circle cx="12" cy="15" r="2" /><circle cx="18" cy="8" r="2" /></svg>);
     case "diagrams":
       return (<svg {...p}><path d="M4 19L14 4l6 15z" /><path d="M4 19h16" /></svg>);
+    case "pull":
+      return (<svg {...p}><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M4 11h16M9 4h6l1 3H8z" /><path d="M9.5 15.5l1.5 1.5 3-3" /></svg>);
     case "records":
       return (<svg {...p}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>);
     case "hours":
@@ -683,6 +905,11 @@ function tileStat(key, event) {
     case "video": return `${event.video.blocks.length} device${event.video.blocks.length === 1 ? "" : "s"}`;
     case "audio": return `${event.audio.blocks.length} device${event.audio.blocks.length === 1 ? "" : "s"}`;
     case "diagrams": return `${event.diagrams.length} file${event.diagrams.length === 1 ? "" : "s"}`;
+    case "pull": {
+      const items = (event.pull?.cases || []).reduce((n, c) => n + c.items.length, 0);
+      const out = (event.pull?.cases || []).reduce((n, c) => n + c.items.filter((i) => i.out && !i.in).length, 0);
+      return out > 0 ? `${items} items · ${out} out` : `${items} item${items === 1 ? "" : "s"}`;
+    }
     case "records": return `${event.records.length} record${event.records.length === 1 ? "" : "s"}`;
     case "hours": {
       let t = 0;
@@ -1450,6 +1677,460 @@ function briefText(e) {
 /* ============================================================
    Styles
    ============================================================ */
+/* ============================================================
+   PULL LIST TAB — gear pull & load-out, color-coded by category.
+   Crew can check gear out/in anytime; editing the list is gated by a
+   per-show lock (event.gearEditUnlocked) that only admin can flip.
+   ============================================================ */
+function groupPullByDrawer(items) {
+  const out = [];
+  let cur = null;
+  for (const it of items) {
+    const d = it.drawer || null;
+    if (!cur || cur.drawer !== d) {
+      cur = { drawer: d, items: [] };
+      out.push(cur);
+    }
+    cur.items.push(it);
+  }
+  return out;
+}
+
+function PullTab({ event, update, isAdmin }) {
+  const cases = event.pull.cases;
+  const unlocked = !!event.gearEditUnlocked;
+  const canEdit = isAdmin || unlocked;
+  const [editing, setEditing] = useState(false);
+  const [open, setOpen] = useState(() => new Set());
+  const [activeCat, setActiveCat] = useState("All");
+  const [query, setQuery] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [savedTpls, setSavedTpls] = useState([]);
+  const [tplState, setTplState] = useState("idle"); // idle | loading | error
+  const tplLoaded = useRef(false);
+  const [picked, setPicked] = useState(() => new Set());
+
+  // if admin re-locks while a crew member is mid-edit, drop them out of edit mode
+  useEffect(() => {
+    if (!canEdit && editing) setEditing(false);
+  }, [canEdit, editing]);
+
+  const editOn = canEdit && editing;
+
+  const toggleCase = (id) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+
+  /* ---- mutations (whole event autosaves via update) ---- */
+  const patchCase = (id, patch) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === id);
+      if (c) Object.assign(c, patch);
+    });
+  const deleteCase = (id) => {
+    if (!window.confirm("Delete this whole case and its items?")) return;
+    update((ev) => {
+      ev.pull.cases = ev.pull.cases.filter((x) => x.id !== id);
+    });
+  };
+  const addCase = () => {
+    const nextNo = Math.max(0, ...cases.map((c) => Number(c.caseNo) || 0)) + 1;
+    const id = uid();
+    update((ev) => ev.pull.cases.push({ id, caseNo: nextNo, case: "New Case", category: "Misc", items: [] }));
+    setOpen((s) => new Set(s).add(id));
+  };
+  const patchItem = (cid, iid, patch) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (!c) return;
+      const it = c.items.find((x) => x.id === iid);
+      if (it) Object.assign(it, patch);
+    });
+  const deleteItem = (cid, iid) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (c) c.items = c.items.filter((x) => x.id !== iid);
+    });
+  const addItem = (cid) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (c) c.items.push(pullItem());
+    });
+
+  const toggleOut = (cid, iid) => {
+    const c = cases.find((x) => x.id === cid);
+    const it = c && c.items.find((x) => x.id === iid);
+    if (!it) return;
+    patchItem(cid, iid, { out: !it.out, in: it.out ? false : it.in });
+  };
+  const toggleIn = (cid, iid) => {
+    const c = cases.find((x) => x.id === cid);
+    const it = c && c.items.find((x) => x.id === iid);
+    if (!it || !it.out) return;
+    patchItem(cid, iid, { in: !it.in });
+  };
+
+  const setLock = (val) => update((ev) => (ev.gearEditUnlocked = val));
+
+  const clearAll = () => {
+    if (!window.confirm("Clear the entire pull list for this show?\nThis removes every case and item and can't be undone.")) return;
+    update((ev) => (ev.pull.cases = []));
+    setOpen(new Set());
+    setActiveCat("All");
+  };
+
+  const applyTemplate = (tpl) => {
+    if (cases.length > 0 && !window.confirm('Replace the current pull list with the "' + tpl.name + '" template?\nThis clears what\'s here now and can\'t be undone.')) return;
+    update((ev) => (ev.pull.cases = tpl.build()));
+    setOpen(new Set());
+    setActiveCat("All");
+    setTemplatesOpen(false);
+  };
+
+  const loadTemplates = async () => {
+    setTplState("loading");
+    try {
+      const list = await listTemplates();
+      setSavedTpls(list);
+      setTplState("idle");
+      tplLoaded.current = true;
+    } catch (e) {
+      setTplState("error");
+    }
+  };
+  const openTemplates = () => {
+    const nx = !templatesOpen;
+    setTemplatesOpen(nx);
+    if (nx && !tplLoaded.current) loadTemplates();
+  };
+  const saveTemplate = async () => {
+    if (!cases.length) {
+      window.alert("Add some gear before saving it as a template.");
+      return;
+    }
+    const name = window.prompt("Name this template (e.g. \u201cKeynote Rig\u201d, \u201c2-Room GS\u201d):", "");
+    if (name === null || !name.trim()) return;
+    try {
+      await createTemplate(name.trim(), cases);
+      await loadTemplates();
+    } catch (e) {
+      window.alert("Couldn't save template: " + (e.message || "error"));
+    }
+  };
+  const removeTemplate = async (t) => {
+    if (!window.confirm('Delete the template "' + t.name + '"? This removes it for everyone.')) return;
+    try {
+      await deleteTemplate(t.id);
+      setSavedTpls((s) => s.filter((x) => x.id !== t.id));
+    } catch (e) {
+      window.alert("Couldn't delete template: " + (e.message || "error"));
+    }
+  };
+  const applySaved = (t) => {
+    if (cases.length > 0 && !window.confirm('Replace the current pull list with "' + t.name + '"?\nThis clears what\'s here now and can\'t be undone.')) return;
+    update((ev) => (ev.pull.cases = pullFreshCases(t.data || [])));
+    setOpen(new Set());
+    setActiveCat("All");
+    setTemplatesOpen(false);
+  };
+  const tplItemCount = (t) => (t.data || []).reduce((n, c) => n + (c.items ? c.items.length : 0), 0);
+
+  /* ---- import from Audio / Video I/O ---- */
+  const devices = [];
+  (event.audio?.blocks || []).forEach((b) => devices.push({ key: "a-" + b.id, kind: "Audio", name: b.name || "Audio device", block: b }));
+  (event.video?.blocks || []).forEach((b) => devices.push({ key: "v-" + b.id, kind: "Video", name: b.name || "Video device", block: b }));
+  const togglePick = (k) =>
+    setPicked((s) => {
+      const n = new Set(s);
+      n.has(k) ? n.delete(k) : n.add(k);
+      return n;
+    });
+  const runImport = () => {
+    const chosen = devices.filter((d) => picked.has(d.key));
+    if (!chosen.length) {
+      setImportOpen(false);
+      return;
+    }
+    update((ev) => {
+      let nextNo = Math.max(0, ...ev.pull.cases.map((c) => Number(c.caseNo) || 0));
+      chosen.forEach((d) => {
+        nextNo += 1;
+        const items = [];
+        (d.block.ins || []).forEach((r) => {
+          if (r.name) items.push({ ...pullItem(), drawer: "Inputs", item: r.name, notes: r.signal || "" });
+        });
+        (d.block.outs || []).forEach((r) => {
+          if (r.name) items.push({ ...pullItem(), drawer: "Outputs", item: r.name, notes: r.signal || "" });
+        });
+        ev.pull.cases.push({ id: uid(), caseNo: nextNo, case: d.name, category: d.kind, items });
+      });
+    });
+    setPicked(new Set());
+    setImportOpen(false);
+  };
+
+  /* ---- derived ---- */
+  const allItems = cases.flatMap((c) => c.items);
+  const totals = {
+    items: allItems.length,
+    out: allItems.filter((i) => i.out).length,
+    back: allItems.filter((i) => i.in).length,
+  };
+  totals.outstanding = totals.out - totals.back;
+  const perCat = {};
+  PULL_CAT_ORDER.forEach((k) => (perCat[k] = 0));
+  cases.forEach((c) => (perCat[c.category] = (perCat[c.category] || 0) + c.items.length));
+
+  const q = query.trim().toLowerCase();
+  const visible = cases
+    .filter((c) => activeCat === "All" || c.category === activeCat)
+    .map((c) => ({
+      ...c,
+      items:
+        q && !editOn
+          ? c.items.filter(
+              (it) =>
+                it.item.toLowerCase().includes(q) ||
+                (it.drawer || "").toLowerCase().includes(q) ||
+                c.case.toLowerCase().includes(q)
+            )
+          : c.items,
+    }))
+    .filter((c) => editOn || c.items.length > 0 || activeCat !== "All");
+
+  const cat = (name) => PULL_CATS[name] || PULL_CATS.Misc;
+  const prog = (c) => ({ out: c.items.filter((i) => i.out).length, back: c.items.filter((i) => i.in).length, total: c.items.length });
+
+  return (
+    <div className="stack pull">
+      {/* lock / mode bar */}
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => setLock(!unlocked)}>
+              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+            </button>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 List locked — check-out only</span>
+          )}
+          {isAdmin && (
+            <span className="pl-lockhint">
+              {unlocked ? "Any crew on this show can edit the gear list." : "Only you (admin) can edit the gear list."}
+            </span>
+          )}
+        </div>
+        {canEdit && (
+          <button className={"pl-editbtn " + (editing ? "on" : "")} onClick={() => setEditing((e) => !e)}>
+            {editing ? "● Editing gear" : "Edit gear"}
+          </button>
+        )}
+      </div>
+
+      {/* tiles */}
+      <div className="pl-tiles">
+        <div className="pl-tile"><b>{totals.items}</b><span>Items</span></div>
+        <div className="pl-tile"><b style={{ color: "#2563EB" }}>{totals.out}/{totals.items}</b><span>Pulled</span></div>
+        <div className="pl-tile"><b style={{ color: "#059669" }}>{totals.back}/{totals.items}</b><span>Returned</span></div>
+        <div className="pl-tile"><b style={{ color: totals.outstanding > 0 ? "#DC2626" : "#94A3B8" }}>{totals.outstanding}</b><span>Out on show</span></div>
+      </div>
+
+      {/* controls */}
+      <div className="pl-controls">
+        <div className="pl-chips">
+          <button className={"pl-chip " + (activeCat === "All" ? "on" : "")} onClick={() => setActiveCat("All")}>All</button>
+          {PULL_CAT_ORDER.map((k) => (
+            <button key={k} className={"pl-chip " + (activeCat === k ? "on" : "")} onClick={() => setActiveCat(activeCat === k ? "All" : k)}>
+              <span className="pl-dot" style={{ background: cat(k).color }} />
+              {k}
+              <span className="pl-chipn">{perCat[k] || 0}</span>
+            </button>
+          ))}
+        </div>
+        {!editOn && (
+          <input className="pl-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search gear, case, or drawer…" />
+        )}
+      </div>
+
+      {/* templates */}
+      {editOn && (
+        <div className="pl-import">
+          <button className="pl-importtoggle" onClick={openTemplates}>
+            {templatesOpen ? "▾ " : "▸ "}Templates
+          </button>
+          {templatesOpen && (
+            <div className="pl-importbody">
+              <div className="pl-tplhdr">Built-in</div>
+              {PULL_TEMPLATES.map((t) => (
+                <div key={t.key} className="pl-tpl">
+                  <div className="pl-tplinfo">
+                    <span className="pl-tplname">{t.name}</span>
+                    <span className="pl-tpldesc">{t.desc}{t.count() > 0 ? " · " + t.count() + " items" : ""}</span>
+                  </div>
+                  <button className="pl-btn" onClick={() => applyTemplate(t)}>Apply</button>
+                </div>
+              ))}
+
+              <div className="pl-tplhdr">Saved templates</div>
+              {tplState === "loading" && <div className="pl-emptycase">Loading…</div>}
+              {tplState === "error" && (
+                <div className="pl-emptycase">Saved templates aren’t available yet — the “Templates” table may not be set up.</div>
+              )}
+              {tplState === "idle" && savedTpls.length === 0 && <div className="pl-emptycase">No saved templates yet.</div>}
+              {savedTpls.map((t) => (
+                <div key={t.id} className="pl-tpl">
+                  <div className="pl-tplinfo">
+                    <span className="pl-tplname">{t.name}</span>
+                    <span className="pl-tpldesc">{tplItemCount(t)} items</span>
+                  </div>
+                  <button className="pl-btn" onClick={() => applySaved(t)}>Apply</button>
+                  {isAdmin && <button className="pl-x" onClick={() => removeTemplate(t)} title="Delete template">×</button>}
+                </div>
+              ))}
+
+              {isAdmin && (
+                <button className="pl-savetpl" onClick={saveTemplate}>+ Save current list as template</button>
+              )}
+              <div className="pl-tplnote">Applying replaces this show’s list. Saved templates sync across devices.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* import from I/O */}
+      {editOn && (
+        <div className="pl-import">
+          <button className="pl-importtoggle" onClick={() => setImportOpen((o) => !o)}>
+            {importOpen ? "▾ " : "▸ "}Pull from Audio / Video I/O
+          </button>
+          {importOpen && (
+            <div className="pl-importbody">
+              {devices.length === 0 ? (
+                <div className="pl-emptycase">No devices on the Audio or Video I/O tabs yet.</div>
+              ) : (
+                <>
+                  {devices.map((d) => (
+                    <label key={d.key} className="pl-improw">
+                      <input type="checkbox" checked={picked.has(d.key)} onChange={() => togglePick(d.key)} />
+                      <span className="pl-dot" style={{ background: cat(d.kind).color }} />
+                      <span className="pl-impname">{d.name}</span>
+                      <span className="pl-impmeta">{d.kind} · {(d.block.ins?.length || 0) + (d.block.outs?.length || 0)} lines</span>
+                    </label>
+                  ))}
+                  <button className="pl-btn" onClick={runImport} disabled={picked.size === 0}>
+                    Add {picked.size || ""} as case{picked.size === 1 ? "" : "s"}
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* cases */}
+      <div className="pl-cases">
+        {visible.map((c) => {
+          const cc = cat(c.category);
+          const p = prog(c);
+          const isOpen = open.has(c.id) || (!!q && !editOn) || editOn;
+          const done = p.total > 0 && p.back === p.total;
+          return (
+            <div className="pl-card" key={c.id} style={{ borderColor: cc.ring }}>
+              {editOn ? (
+                <div className="pl-headedit" style={{ background: cc.soft }}>
+                  <span className="pl-bar2" style={{ background: cc.color }} />
+                  <span className="pl-hash">#</span>
+                  <input className="pl-inp pl-no" value={c.caseNo} onChange={(e) => patchCase(c.id, { caseNo: e.target.value })} />
+                  <input className="pl-inp pl-name" value={c.case} onChange={(e) => patchCase(c.id, { case: e.target.value })} />
+                  <select className="pl-inp pl-cat" style={{ color: cc.color }} value={c.category} onChange={(e) => patchCase(c.id, { category: e.target.value })}>
+                    {PULL_CAT_ORDER.map((k) => <option key={k}>{k}</option>)}
+                  </select>
+                  <button className="pl-del" onClick={() => deleteCase(c.id)}>Delete</button>
+                </div>
+              ) : (
+                <button className="pl-head" style={{ background: cc.soft }} onClick={() => toggleCase(c.id)}>
+                  <span className="pl-bar2" style={{ background: cc.color }} />
+                  <span className="pl-caseno" style={{ background: cc.color }}>#{c.caseNo}</span>
+                  <span className="pl-casename">{c.case}</span>
+                  <span className="pl-tag" style={{ color: cc.color, borderColor: cc.ring }}>{c.category}</span>
+                  <span className="pl-spacer" />
+                  <span className="pl-count">
+                    {p.out}/{p.total} pulled
+                    {p.out > 0 && <em style={{ color: done ? "#059669" : "#64748B" }}> · {p.back}/{p.out} back</em>}
+                  </span>
+                  <span className="pl-chev" style={{ transform: isOpen ? "rotate(90deg)" : "none" }}>›</span>
+                </button>
+              )}
+
+              {isOpen && (
+                <div className="pl-body">
+                  {editOn
+                    ? c.items.map((it) => (
+                        <div className="pl-editrow" key={it.id}>
+                          <div className="pl-editline">
+                            <input className="pl-inp pl-drawer" value={it.drawer || ""} placeholder="Drawer" onChange={(e) => patchItem(c.id, it.id, { drawer: e.target.value || null })} />
+                            <input className="pl-inp pl-item" value={it.item} placeholder="Item name" onChange={(e) => patchItem(c.id, it.id, { item: e.target.value })} />
+                            <input className="pl-inp pl-qty" value={it.qty} placeholder="Qty" onChange={(e) => patchItem(c.id, it.id, { qty: e.target.value })} />
+                            <button className="pl-x" onClick={() => deleteItem(c.id, it.id)} title="Remove">×</button>
+                          </div>
+                          <div className="pl-editline">
+                            <input className="pl-inp" value={it.source} placeholder="Source (TCG, Sub Rental…)" onChange={(e) => patchItem(c.id, it.id, { source: e.target.value })} />
+                            <input className="pl-inp" value={it.rentedFrom} placeholder="Rented from" onChange={(e) => patchItem(c.id, it.id, { rentedFrom: e.target.value })} />
+                            <input className="pl-inp" value={it.notes} placeholder="Notes" onChange={(e) => patchItem(c.id, it.id, { notes: e.target.value })} />
+                          </div>
+                        </div>
+                      ))
+                    : groupPullByDrawer(c.items).map((g, gi) => (
+                        <div key={gi}>
+                          {g.drawer && <div className="pl-drawerlbl">{g.drawer}</div>}
+                          {g.items.map((it) => {
+                            const outstanding = it.out && !it.in;
+                            return (
+                              <div className={"pl-row " + (outstanding ? "out" : "")} key={it.id}>
+                                <div className="pl-itemcol">
+                                  <div className="pl-itemname">{it.item}</div>
+                                  {(it.source || it.rentedFrom || it.notes) && (
+                                    <div className="pl-meta">
+                                      {it.source && it.source !== "TCG" && <span className="pl-badge">{it.source}</span>}
+                                      {it.rentedFrom && <span className="pl-badge">{it.rentedFrom}</span>}
+                                      {it.notes && <span className="pl-note">{it.notes}</span>}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="pl-qtyv">{it.qty !== "" ? "×" + it.qty : "—"}</div>
+                                <button className={"pl-check " + (it.out ? "on" : "")} style={it.out ? { background: cc.color, borderColor: cc.color, color: "#fff" } : {}} onClick={() => toggleOut(c.id, it.id)}>
+                                  {it.out ? "✓ " : ""}Out
+                                </button>
+                                <button className={"pl-check green " + (it.in ? "on" : "") + (!it.out ? " dis" : "")} onClick={() => toggleIn(c.id, it.id)} disabled={!it.out} title={!it.out ? "Pull it out first" : "Check in"}>
+                                  {it.in ? "✓ " : ""}In
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ))}
+                  {editOn && <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>}
+                  {!editOn && c.items.length === 0 && <div className="pl-emptycase">No items</div>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {editOn && <button className="pl-addcase" onClick={addCase}>+ Add case</button>}
+        {editOn && cases.length > 0 && (
+          <button className="pl-clear" onClick={clearAll}>Clear all gear</button>
+        )}
+        {visible.length === 0 && <div className="pl-empty">No gear matches that filter.</div>}
+      </div>
+    </div>
+  );
+}
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
@@ -1751,6 +2432,100 @@ const CSS = `
 .cb .diagramlink-grid{grid-template-columns:1.1fr 1.6fr 1.1fr 100px;}
 .cb .diagram-open{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
+
+/* ---------- Pull List tab ---------- */
+.pull { gap: 12px; }
+.pl-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.pl-lockwrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; }
+.pl-lock { border:1px solid #d8dee7; background:#fff; border-radius:999px; padding:7px 14px; font-size:13px; font-weight:700; cursor:pointer; color:#334155; }
+.pl-lock.open { background:#ECFDF5; border-color:#A7E3C8; color:#047857; }
+.pl-locknote { font-size:12.5px; font-weight:700; color:#64748b; }
+.pl-locknote.open { color:#047857; }
+.pl-lockhint { font-size:12px; color:#94a3b8; }
+.pl-editbtn { border:none; border-radius:999px; padding:7px 16px; font-size:13px; font-weight:700; cursor:pointer; background:#e6edf6; color:#334155; }
+.pl-editbtn.on { background:#38BDF8; color:#0F1E35; }
+
+.pl-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
+.pl-tile { background:#0F1E35; border-radius:12px; padding:10px; text-align:center; }
+.pl-tile b { display:block; font-size:19px; color:#fff; }
+.pl-tile span { display:block; font-size:10.5px; letter-spacing:.5px; text-transform:uppercase; color:#9FB3CE; margin-top:2px; }
+
+.pl-controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; }
+.pl-chips { display:flex; flex-wrap:wrap; gap:6px; }
+.pl-chip { border:1px solid #E2E8F0; background:#fff; border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:600; color:#334155; cursor:pointer; display:inline-flex; align-items:center; }
+.pl-chip.on { background:#0F1E35; color:#fff; border-color:#0F1E35; }
+.pl-dot { width:8px; height:8px; border-radius:999px; display:inline-block; margin-right:6px; }
+.pl-chipn { opacity:.55; margin-left:6px; }
+.pl-search { flex:1 1 200px; min-width:180px; border:1px solid #E2E8F0; border-radius:10px; padding:8px 12px; font-size:13px; outline:none; background:#fff; }
+
+.pl-import { border:1px dashed #C3CDDA; border-radius:12px; background:#F8FAFC; padding:8px 12px; }
+.pl-importtoggle { border:none; background:none; font-size:13px; font-weight:700; color:#334155; cursor:pointer; padding:2px 0; }
+.pl-importbody { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
+.pl-improw { display:flex; align-items:center; gap:8px; font-size:13px; color:#1e293b; padding:4px 0; cursor:pointer; }
+.pl-improw input { width:16px; height:16px; }
+.pl-impname { font-weight:600; }
+.pl-impmeta { color:#94a3b8; font-size:12px; margin-left:auto; }
+.pl-btn { align-self:flex-start; margin-top:4px; border:none; background:#0F1E35; color:#fff; border-radius:8px; padding:7px 14px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-btn:disabled { opacity:.45; cursor:not-allowed; }
+.pl-tpl { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid #edf1f6; }
+.pl-tpl:last-of-type { border-bottom:none; }
+.pl-tplinfo { display:flex; flex-direction:column; min-width:0; flex:1; }
+.pl-tplname { font-size:13px; font-weight:700; color:#1e293b; }
+.pl-tpldesc { font-size:11.5px; color:#94a3b8; }
+.pl-tpl .pl-btn { margin-top:0; }
+.pl-tplnote { font-size:11.5px; color:#94a3b8; margin-top:6px; }
+.pl-tplhdr { font-size:10.5px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#94a3b8; margin:6px 0 2px; }
+.pl-tplhdr:first-child { margin-top:0; }
+.pl-savetpl { margin-top:8px; width:100%; border:1px dashed #B7CBE6; color:#1d4ed8; background:#F5F9FF; border-radius:8px; padding:8px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+
+.pl-cases { display:flex; flex-direction:column; gap:10px; }
+.pl-card { border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; background:#fff; }
+.pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; }
+.pl-headedit { display:flex; align-items:center; gap:8px; padding:9px 12px 9px 0; flex-wrap:wrap; }
+.pl-bar2 { width:5px; align-self:stretch; flex-shrink:0; min-height:34px; border-radius:0; }
+.pl-hash { color:#64748b; font-size:12px; font-weight:700; }
+.pl-caseno { color:#fff; font-size:11.5px; font-weight:700; border-radius:6px; padding:2px 7px; flex-shrink:0; }
+.pl-casename { font-weight:700; font-size:14px; color:#0F1E35; }
+.pl-tag { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; border:1px solid; border-radius:999px; padding:1px 8px; }
+.pl-spacer { flex:1; }
+.pl-count { font-size:12px; color:#64748b; font-weight:600; white-space:nowrap; }
+.pl-count em { font-style:normal; }
+.pl-chev { font-size:20px; color:#94a3b8; margin-right:12px; line-height:1; transition:transform .15s; }
+.pl-del { border:1px solid #F4BFBF; color:#DC2626; background:#fff; border-radius:8px; padding:5px 10px; font-size:11.5px; font-weight:700; cursor:pointer; margin-right:10px; }
+
+.pl-body { padding:4px 14px 10px; }
+.pl-drawerlbl { font-size:11px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:.6px; margin:10px 0 4px; }
+.pl-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border-bottom:1px solid #f1f5f9; }
+.pl-row.out { background:#FFF9F0; }
+.pl-itemcol { min-width:0; flex:1; }
+.pl-itemname { font-size:13.5px; font-weight:600; color:#1e293b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-meta { font-size:11.5px; margin-top:3px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.pl-badge { font-size:10.5px; font-weight:700; background:#EEF2F7; color:#475569; border-radius:5px; padding:1px 6px; }
+.pl-note { color:#64748b; }
+.pl-qtyv { font-size:13px; font-weight:700; color:#0F1E35; width:42px; text-align:right; flex-shrink:0; }
+.pl-check { border:1.5px solid #D8DEE7; background:#fff; color:#64748b; border-radius:8px; padding:5px 10px; font-size:12px; font-weight:700; width:58px; flex-shrink:0; cursor:pointer; }
+.pl-check.green.on { background:#059669; border-color:#059669; color:#fff; }
+.pl-check.dis { opacity:.5; cursor:not-allowed; color:#C3CBD6; }
+
+.pl-editrow { padding:9px 4px; border-bottom:1px solid #eef2f7; }
+.pl-editline { display:flex; gap:6px; align-items:center; margin-top:6px; }
+.pl-editline:first-child { margin-top:0; }
+.pl-inp { border:1px solid #D8DEE7; border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; background:#fff; color:#1e293b; min-width:0; flex:1; }
+.pl-no { flex:none; width:46px; font-weight:700; }
+.pl-name { font-weight:700; }
+.pl-drawer { flex:none; width:110px; }
+.pl-item { font-weight:600; }
+.pl-qty { flex:none; width:52px; text-align:center; }
+.pl-cat { flex:none; width:108px; font-weight:700; }
+.pl-x { border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:7px; width:30px; height:30px; font-size:17px; line-height:1; cursor:pointer; flex-shrink:0; }
+.pl-additem { margin-top:8px; width:100%; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-addcase { border:1px dashed #B9C4D2; color:#0F1E35; background:#fff; border-radius:12px; padding:12px; font-size:13.5px; font-weight:700; cursor:pointer; }
+.pl-clear { align-self:center; margin-top:2px; border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:8px; padding:8px 16px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-clear:hover { background:#FEF1F1; }
+.pl-empty, .pl-emptycase { text-align:center; color:#94a3b8; padding:14px; font-size:13px; }
+.pl-empty { padding:34px; }
+@media (max-width:560px){ .pl-cat{width:96px;} .pl-drawer{width:90px;} }
+
 `;
 
 /* ============================================================
