@@ -1246,6 +1246,14 @@ function CrewNameInput({ value, onChange, onSelect }) {
 }
 
 function BriefTab({ event, update }) {
+  const [emailsCopied, setEmailsCopied] = useState(false);
+  const copyEmails = () => {
+    const emails = event.crew.map((c) => c.email).filter(Boolean).join(", ");
+    if (!emails) return;
+    navigator.clipboard?.writeText(emails).catch(() => {});
+    setEmailsCopied(true);
+    setTimeout(() => setEmailsCopied(false), 2000);
+  };
   return (
     <div className="stack">
       <Panel title="Event details">
@@ -1312,13 +1320,20 @@ function BriefTab({ event, update }) {
         title="Crew roster"
         sub="These people also appear in the Hours timesheet"
         action={
-          <AddBtn
-            onClick={() =>
-              update((ev) => ev.crew.push({ id: uid(), name: "", position: "", phone: "", email: "" }))
-            }
-          >
-            Crew member
-          </AddBtn>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {event.crew.some((c) => c.email) && (
+              <button className="copy-emails-btn" onClick={copyEmails}>
+                {emailsCopied ? "✓ Copied!" : "Copy emails"}
+              </button>
+            )}
+            <AddBtn
+              onClick={() =>
+                update((ev) => ev.crew.push({ id: uid(), name: "", position: "", phone: "", email: "" }))
+              }
+            >
+              Crew member
+            </AddBtn>
+          </div>
         }
       >
         <div className="rows">
@@ -4454,6 +4469,8 @@ const CSS = `
 /* crew autocomplete */
 .cb .crew-ac-wrap { position:relative; width:100%; }
 .cb .crew-ac-drop { position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--panel); border:1px solid var(--amber); border-radius:9px; box-shadow:0 6px 20px rgba(0,0,0,.35); z-index:200; overflow:hidden; }
+.cb .copy-emails-btn { border:1px solid var(--line); background:none; color:var(--dim); border-radius:8px; padding:5px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; transition:color .15s,border-color .15s; }
+.cb .copy-emails-btn:hover { color:var(--amber); border-color:var(--amber); }
 .cb .crew-ac-row { display:flex; align-items:center; justify-content:space-between; width:100%; border:none; background:none; padding:9px 12px; cursor:pointer; text-align:left; gap:10px; }
 .cb .crew-ac-row:hover { background:var(--panel2); }
 .cb .crew-ac-name { font-weight:600; color:var(--ink); font-size:13px; }
