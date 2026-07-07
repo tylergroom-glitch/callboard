@@ -819,6 +819,9 @@ function Callboard({ auth, onLogout }) {
   return (
     <div className="cb">
       <style>{CSS}</style>
+
+      {/* top control bar */}
+      <div className="topbar">
         <div className="brand">
           <span className="brand-tab">CALL</span>
           <span className="brand-rest">BOARD</span>
