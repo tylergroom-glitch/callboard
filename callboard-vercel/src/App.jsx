@@ -15,6 +15,16 @@ import {
   deleteTemplate,
   getCosting,
   saveCosting,
+  importQuote,
+  listInventory,
+  saveInventoryCase,
+  deleteInventoryCase,
+  listRoster,
+  saveRosterMember,
+  deleteRosterMember,
+  getPositions,
+  savePositions,
+  generateOnboardLink,
 } from "./db.js";
 
 /* ============================================================
@@ -219,6 +229,14 @@ function pullFreshCases(cases) {
     items: c.items.map((it) => ({ ...it, id: uid(), out: false, in: false })),
   }));
 }
+function pullFreshItems(items) {
+  return clone(items || []).map((it) => ({ ...it, id: uid(), out: false, in: false }));
+}
+// normalize a template payload to { cases, loose } (older templates were a bare cases array)
+function pullTplData(x) {
+  if (Array.isArray(x)) return { cases: x, loose: [] };
+  return { cases: Array.isArray(x?.cases) ? x.cases : [], loose: Array.isArray(x?.loose) ? x.loose : [] };
+}
 const PULL_SMALL_CASES = ["Audio Console", "AUDIO / SPEAKERS", "CLEAR-COM RACK", "MONITOR CASE", "AUDIO WORKBOX", "EDISON CABLE TRUNK"];
 const PULL_TEMPLATES = [
   {
@@ -226,21 +244,21 @@ const PULL_TEMPLATES = [
     name: "Full Corporate Rig",
     desc: "Complete kit — audio, video, LED, power, scenic",
     count: () => PULL_SEED.reduce((n, c) => n + c.items.length, 0),
-    build: () => pullFreshCases(PULL_SEED),
+    build: () => ({ cases: pullFreshCases(PULL_SEED), loose: [] }),
   },
   {
     key: "small",
     name: "Small Show",
     desc: "Single-room kit — console, speakers, comms, monitors, cable & power",
     count: () => PULL_SEED.filter((c) => PULL_SMALL_CASES.includes(c.case)).reduce((n, c) => n + c.items.length, 0),
-    build: () => pullFreshCases(PULL_SEED.filter((c) => PULL_SMALL_CASES.includes(c.case))),
+    build: () => ({ cases: pullFreshCases(PULL_SEED.filter((c) => PULL_SMALL_CASES.includes(c.case))), loose: [] }),
   },
   {
     key: "blank",
     name: "Empty (categories only)",
     desc: "Six empty cases, one per category — build from scratch",
     count: () => 0,
-    build: () => PULL_CAT_ORDER.map((cat, i) => ({ id: uid(), caseNo: i + 1, case: cat + " Case", category: cat, items: [] })),
+    build: () => ({ cases: PULL_CAT_ORDER.map((cat, i) => ({ id: uid(), caseNo: i + 1, case: cat + " Case", category: cat, drawers: [], items: [] })), loose: [] }),
   },
 ];
 
@@ -266,11 +284,25 @@ function normalize(e) {
   }
   e.audio = e.audio || { blocks: [ioBlock("Main")] };
   e.video = e.video || { blocks: [ioBlock("Main")] };
+  e.crew = e.crew.map((c) => ({
+    rosterId: null, rateType: "day", rate: "", ...c,
+  }));
   e.records = e.records || [];
   e.diagrams = e.diagrams || [];
   e.documents = e.documents || [];
   e.pull = e.pull || { cases: [] };
   if (!Array.isArray(e.pull.cases)) e.pull.cases = [];
+  if (!Array.isArray(e.pull.loose)) e.pull.loose = [];
+  e.pull.cases.forEach((cs) => {
+    if (!Array.isArray(cs.drawers)) {
+      const names = [];
+      (cs.items || []).forEach((it) => {
+        const d = (it.drawer || "").trim();
+        if (d && !names.includes(d)) names.push(d);
+      });
+      cs.drawers = names;
+    }
+  });
   if (typeof e.gearEditUnlocked !== "boolean") e.gearEditUnlocked = false;
   if (typeof e.scheduleUnlocked !== "boolean") e.scheduleUnlocked = false;
   return e;
@@ -278,11 +310,10 @@ function normalize(e) {
 
 /* ---------- time math ---------- */
 function hoursBetween(inStr, outStr) {
-  if (!inStr || !outStr) return 0;
-  const [ih, im] = inStr.split(":").map(Number);
-  const [oh, om] = outStr.split(":").map(Number);
-  if ([ih, im, oh, om].some((n) => Number.isNaN(n))) return 0;
-  let mins = oh * 60 + om - (ih * 60 + im);
+  const a = schedMinutes(inStr);
+  const b = schedMinutes(outStr);
+  if (a == null || b == null) return 0;
+  let mins = b - a;
   if (mins < 0) mins += 24 * 60; // overnight
   return Math.round((mins / 60) * 100) / 100;
 }
@@ -323,7 +354,7 @@ function blankEvent() {
     records: [],
     diagrams: [],
     documents: [],
-    pull: { cases: [] },
+    pull: { cases: [], loose: [] },
     gearEditUnlocked: false,
     scheduleUnlocked: false,
   };
@@ -502,7 +533,7 @@ function seedEvent() {
       { id: uid(), name: "Rigging Plot (Vectorworks)", caption: "Full rig — hosted PDF", kind: "link", url: "" },
     ],
     documents: [],
-    pull: { cases: clone(PULL_SEED) },
+    pull: { cases: clone(PULL_SEED), loose: [] },
     gearEditUnlocked: false,
     scheduleUnlocked: false,
   };
@@ -786,11 +817,9 @@ function Callboard({ auth, onLogout }) {
     event.startDate && event.endDate ? `${prettyDate(event.startDate)} – ${prettyDate(event.endDate)}` : "Dates TBD";
 
   return (
+    <RosterProvider>
     <div className="cb">
       <style>{CSS}</style>
-
-      {/* top control bar */}
-      <div className="topbar">
         <div className="brand">
           <span className="brand-tab">CALL</span>
           <span className="brand-rest">BOARD</span>
@@ -859,12 +888,14 @@ function Callboard({ auth, onLogout }) {
             {tab === "records" && <RecordsTab event={event} update={update} />}
             {tab === "hours" && <HoursTab event={event} update={update} />}
             {tab === "costing" && isAdmin && <CostingTab event={event} />}
+            {tab === "roster" && isAdmin && <RosterTab />}
           </main>
         </>
       )}
 
       {toast && <div className="toast">{toast}</div>}
     </div>
+    </RosterProvider>
   );
 }
 
@@ -884,6 +915,7 @@ const SECTIONS = [
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
+  { key: "roster", label: "Labor Roster", desc: "Crew directory — admin only", color: "#7B5EA7", adminOnly: true },
 ];
 const SECTION_LABEL = SECTIONS.reduce((m, s) => ((m[s.key] = s.label), m), {});
 
@@ -898,6 +930,8 @@ function TileIcon({ name }) {
       return (<svg {...p}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 3v18M5 9h14M5 15h14" /></svg>);
     case "costing":
       return (<svg {...p}><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" /></svg>);
+    case "roster":
+      return (<svg {...p}><circle cx="9" cy="7" r="4"/><path d="M2 21v-2a4 4 0 0 1 4-4h6a4 4 0 0 1 4 4v2"/><path d="M19 8v6M22 11h-6"/></svg>);
     case "itinerary":
       return (<svg {...p}><path d="M3 13l18-7-7 18-2.5-7.5L3 13z" /></svg>);
     case "notes":
@@ -930,8 +964,9 @@ function tileStat(key, event) {
     case "audio": return `${event.audio.blocks.length} device${event.audio.blocks.length === 1 ? "" : "s"}`;
     case "diagrams": return `${event.diagrams.length} file${event.diagrams.length === 1 ? "" : "s"}`;
     case "pull": {
-      const items = (event.pull?.cases || []).reduce((n, c) => n + c.items.length, 0);
-      const out = (event.pull?.cases || []).reduce((n, c) => n + c.items.filter((i) => i.out && !i.in).length, 0);
+      const all = [...(event.pull?.cases || []).flatMap((c) => c.items), ...(event.pull?.loose || [])];
+      const items = all.length;
+      const out = all.filter((i) => i.out && !i.in).length;
       return out > 0 ? `${items} items · ${out} out` : `${items} item${items === 1 ? "" : "s"}`;
     }
     case "records": return `${event.records.length} record${event.records.length === 1 ? "" : "s"}`;
@@ -945,6 +980,7 @@ function tileStat(key, event) {
       return `${fmtHrs(t)} hrs logged`;
     }
     case "costing": return "Admin only";
+    case "roster": return "Admin only";
     default: return "";
   }
 }
@@ -989,6 +1025,225 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
 /* ============================================================
    BRIEF TAB — event details, venue, contacts, crew, links
    ============================================================ */
+/* ---------- weather (Open-Meteo — free, no API key, browser-side) ---------- */
+function wmo(code) {
+  const m = {
+    0: ["☀️", "Clear"], 1: ["🌤️", "Mostly clear"], 2: ["⛅", "Partly cloudy"], 3: ["☁️", "Overcast"],
+    45: ["🌫️", "Fog"], 48: ["🌫️", "Rime fog"],
+    51: ["🌦️", "Light drizzle"], 53: ["🌦️", "Drizzle"], 55: ["🌧️", "Heavy drizzle"],
+    56: ["🌧️", "Freezing drizzle"], 57: ["🌧️", "Freezing drizzle"],
+    61: ["🌧️", "Light rain"], 63: ["🌧️", "Rain"], 65: ["🌧️", "Heavy rain"],
+    66: ["🌧️", "Freezing rain"], 67: ["🌧️", "Freezing rain"],
+    71: ["🌨️", "Light snow"], 73: ["🌨️", "Snow"], 75: ["❄️", "Heavy snow"], 77: ["🌨️", "Snow grains"],
+    80: ["🌦️", "Rain showers"], 81: ["🌧️", "Rain showers"], 82: ["⛈️", "Violent showers"],
+    85: ["🌨️", "Snow showers"], 86: ["❄️", "Snow showers"],
+    95: ["⛈️", "Thunderstorm"], 96: ["⛈️", "Thunderstorm, hail"], 99: ["⛈️", "Severe thunderstorm"],
+  };
+  return m[code] || ["🌡️", "—"];
+}
+
+function WeatherCard({ city, onCity, startDate, endDate }) {
+  const [status, setStatus] = useState("loading"); // loading | ok | nogeo | error
+  const [geoName, setGeoName] = useState("");
+  const [data, setData] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  useEffect(() => {
+    const q = (city || "").trim();
+    if (!q) {
+      setStatus("nogeo");
+      setData(null);
+      return;
+    }
+    let alive = true;
+    setStatus("loading");
+    (async () => {
+      try {
+        const gj = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en&format=json`
+        ).then((r) => r.json());
+        const loc = gj.results && gj.results[0];
+        if (!loc) {
+          if (alive) {
+            setStatus("nogeo");
+            setData(null);
+          }
+          return;
+        }
+        if (!alive) return;
+        setGeoName([loc.name, loc.admin1, loc.country_code].filter(Boolean).join(", "));
+        const url =
+          `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
+          `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
+          `&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=16`;
+        const wj = await fetch(url).then((r) => r.json());
+        if (alive) {
+          setData(wj);
+          setStatus("ok");
+        }
+      } catch {
+        if (alive) setStatus("error");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [city]);
+
+  const rows = [];
+  if (data && data.daily && Array.isArray(data.daily.time)) {
+    const t = data.daily.time;
+    for (let i = 0; i < t.length; i++) {
+      if ((!startDate || t[i] >= startDate) && (!endDate || t[i] <= endDate)) {
+        rows.push({
+          date: t[i],
+          code: data.daily.weather_code[i],
+          hi: data.daily.temperature_2m_max[i],
+          lo: data.daily.temperature_2m_min[i],
+          pop: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[i] : null,
+        });
+      }
+    }
+  }
+
+  return (
+    <Panel
+      title="Weather"
+      sub={geoName ? "Forecast · " + geoName : "Venue forecast"}
+      action={
+        <button
+          className="add"
+          onClick={() => {
+            setDraft(city || "");
+            setEditing((e) => !e);
+          }}
+        >
+          Change
+        </button>
+      }
+    >
+      {editing && (
+        <div className="wx-loc">
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="City for weather (e.g. San Francisco, CA)" />
+          <button
+            className="add"
+            onClick={() => {
+              onCity(draft.trim());
+              setEditing(false);
+            }}
+          >
+            Set
+          </button>
+        </div>
+      )}
+      {status === "loading" && <Empty>Loading forecast…</Empty>}
+      {status === "nogeo" && (
+        <Empty>{city ? `Couldn't find “${city}”. Tap Change to set the venue city.` : "Add the venue city (tap Change) to see the forecast."}</Empty>
+      )}
+      {status === "error" && <Empty>Couldn’t load weather right now.</Empty>}
+      {status === "ok" && (
+        <>
+          {data.current && (
+            <div className="wx-now">
+              <span className="wx-emoji">{wmo(data.current.weather_code)[0]}</span>
+              <span className="wx-nowtemp">{Math.round(data.current.temperature_2m)}°</span>
+              <span className="wx-nowlbl">now · {wmo(data.current.weather_code)[1]}</span>
+            </div>
+          )}
+          {rows.length ? (
+            <div className="wx-days">
+              {rows.map((r) => (
+                <div className="wx-day" key={r.date}>
+                  <span className="wx-emoji">{wmo(r.code)[0]}</span>
+                  <span className="wx-date">{prettyDate(r.date)}</span>
+                  <span className="wx-cond">{wmo(r.code)[1]}</span>
+                  <span className="wx-temp">{Math.round(r.hi)}° / {Math.round(r.lo)}°</span>
+                  <span className="wx-pop">{r.pop != null ? "💧 " + r.pop + "%" : ""}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Empty>No forecast for the show dates yet — it appears within about 16 days of the event.</Empty>
+          )}
+          <div className="wx-src">Source: Open-Meteo</div>
+        </>
+      )}
+    </Panel>
+  );
+}
+
+/* ============================================================
+   ROSTER CONTEXT — loads the global crew roster once per session,
+   shared by the autocomplete in BriefTab and the RosterTab manager.
+   ============================================================ */
+const ROSTER_DEFAULT_POSITIONS = [
+  "Show Caller","Production Manager","Stage Manager",
+  "Technical Director","Video Director",
+  "Audio Engineer (A1)","Monitor Engineer (A2)",
+  "Camera Operator","Camera TD","Graphics Operator",
+  "Lighting Designer","Lighting Tech","LED Tech",
+  "Record Op","Playback Operator",
+  "Rigging Supervisor","Rigger",
+];
+
+const RosterCtx = React.createContext({ roster: [], positions: ROSTER_DEFAULT_POSITIONS, reload: () => {}, reloadPositions: () => {}, loading: false });
+
+function RosterProvider({ children }) {
+  const [roster, setRoster] = useState([]);
+  const [positions, setPositions] = useState(ROSTER_DEFAULT_POSITIONS);
+  const [loading, setLoading] = useState(false);
+  const loaded = useRef(false);
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [list, posData] = await Promise.all([listRoster(), getPositions()]);
+      setRoster(list);
+      if (posData.positions?.length) setPositions(posData.positions);
+      loaded.current = true;
+    } catch { /* silently — roster is non-critical */ }
+    finally { setLoading(false); }
+  };
+  const reloadPositions = async () => {
+    try { const d = await getPositions(); if (d.positions?.length) setPositions(d.positions); } catch {}
+  };
+  useEffect(() => { if (!loaded.current) reload(); }, []);
+  return <RosterCtx.Provider value={{ roster, positions, reload, reloadPositions, loading }}>{children}</RosterCtx.Provider>;
+}
+
+/* Autocomplete input for crew name field */
+function CrewNameInput({ value, onChange, onSelect }) {
+  const { roster } = React.useContext(RosterCtx);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const q = value.trim().toLowerCase();
+  const matches = q.length > 0
+    ? roster.filter((r) => r.name.toLowerCase().includes(q) && r.name.toLowerCase() !== q).slice(0, 7)
+    : [];
+  return (
+    <div className="crew-ac-wrap" ref={ref}>
+      <input
+        value={value}
+        placeholder="Name"
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 160)}
+        autoComplete="off"
+      />
+      {open && matches.length > 0 && (
+        <div className="crew-ac-drop">
+          {matches.map((m) => (
+            <button key={m.id} className="crew-ac-row" onMouseDown={() => { onSelect(m); setOpen(false); }}>
+              <span className="crew-ac-name">{m.name}</span>
+              <span className="crew-ac-pos">{m.data?.position || ""}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BriefTab({ event, update }) {
   return (
     <div className="stack">
@@ -1014,6 +1269,13 @@ function BriefTab({ event, update }) {
           </Field>
         </div>
       </Panel>
+
+      <WeatherCard
+        city={event.venue.weatherCity || event.venue.address || event.venue.name || ""}
+        onCity={(v) => update((ev) => (ev.venue.weatherCity = v))}
+        startDate={event.startDate}
+        endDate={event.endDate}
+      />
 
       <Panel
         title="Key contacts"
@@ -1064,7 +1326,20 @@ function BriefTab({ event, update }) {
           </div>
           {event.crew.map((c, i) => (
             <div className="row crew-grid" key={c.id}>
-              <input value={c.name} placeholder="Name" onChange={(e) => update((ev) => (ev.crew[i].name = e.target.value))} />
+              <CrewNameInput
+                value={c.name}
+                onChange={(v) => update((ev) => (ev.crew[i].name = v))}
+                onSelect={(r) => update((ev) => {
+                  const d = r.data || {};
+                  ev.crew[i].name = r.name;
+                  ev.crew[i].rosterId = r.id;
+                  if (d.position) ev.crew[i].position = d.position;
+                  if (d.phone) ev.crew[i].phone = d.phone;
+                  if (d.email) ev.crew[i].email = d.email;
+                  if (d.rateType) ev.crew[i].rateType = d.rateType;
+                  if (d.rate) ev.crew[i].rate = d.rate;
+                })}
+              />
               <input value={c.position} placeholder="Position" onChange={(e) => update((ev) => (ev.crew[i].position = e.target.value))} />
               <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.crew[i].phone = e.target.value))} />
               <input value={c.email} placeholder="Email" onChange={(e) => update((ev) => (ev.crew[i].email = e.target.value))} />
@@ -1904,10 +2179,10 @@ function HoursTab({ event, update }) {
                   return (
                     <React.Fragment key={d.id}>
                       <td>
-                        <input type="time" value={en.in} onChange={(e) => setTime(c.id, d.id, "in", e.target.value)} />
+                        <input className="time-in-text" value={en.in} placeholder="In" onChange={(e) => setTime(c.id, d.id, "in", e.target.value)} onBlur={(e) => setTime(c.id, d.id, "in", fmtSchedTime(e.target.value))} />
                       </td>
                       <td>
-                        <input type="time" value={en.out} onChange={(e) => setTime(c.id, d.id, "out", e.target.value)} />
+                        <input className="time-in-text" value={en.out} placeholder="Out" onChange={(e) => setTime(c.id, d.id, "out", e.target.value)} onBlur={(e) => setTime(c.id, d.id, "out", fmtSchedTime(e.target.value))} />
                       </td>
                       <td className={"hrs " + (h ? "on " : "") + (h > 12 ? "dt" : h > 10 ? "ot" : "")}>{fmtHrs(h)}</td>
                     </React.Fragment>
@@ -1977,6 +2252,318 @@ function HoursTab({ event, update }) {
 }
 
 /* ============================================================
+   LABOR ROSTER TAB — global crew directory (admin only).
+   Crew members here auto-populate the Brief's crew section.
+   ============================================================ */
+function RosterTab() {
+  const { roster, positions, reload, reloadPositions, loading } = React.useContext(RosterCtx);
+  const [editing, setEditing] = useState({}); // id -> draft data
+  const [adding, setAdding] = useState(null); // null | draft
+  const [busy, setBusy] = useState(false);
+  const [filterPos, setFilterPos] = useState("All");
+  const [posOpen, setPosOpen] = useState(false);
+  const [newPos, setNewPos] = useState("");
+  const [posBusy, setPosBusy] = useState(false);
+  const [linkState, setLinkState] = useState("idle"); // idle | loading | done
+  const [onboardUrl, setOnboardUrl] = useState("");
+
+  const startEdit = (m) =>
+    setEditing((e) => ({ ...e, [m.id]: { name: m.name, ...(m.data || {}) } }));
+  const patchEdit = (id, k, v) =>
+    setEditing((e) => ({ ...e, [id]: { ...e[id], [k]: v } }));
+  const cancelEdit = (id) =>
+    setEditing((e) => { const n = { ...e }; delete n[id]; return n; });
+
+  const saveEdit = async (m) => {
+    const d = editing[m.id];
+    if (!d) return;
+    setBusy(true);
+    const { name, ...data } = d;
+    try { await saveRosterMember(name || m.name, data, m.id); await reload(); cancelEdit(m.id); }
+    catch (e) { window.alert("Save failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const deleteMember = async (m) => {
+    if (!window.confirm(`Remove ${m.name} from the roster?`)) return;
+    setBusy(true);
+    try { await deleteRosterMember(m.id); await reload(); }
+    catch (e) { window.alert("Delete failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const saveNew = async () => {
+    if (!adding?.name?.trim()) { window.alert("Name is required."); return; }
+    setBusy(true);
+    const { name, ...data } = adding;
+    try { await saveRosterMember(name.trim(), data); await reload(); setAdding(null); }
+    catch (e) { window.alert("Save failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const genLink = async () => {
+    setLinkState("loading");
+    try {
+      const r = await generateOnboardLink();
+      setOnboardUrl(r.url);
+      setLinkState("done");
+    } catch (e) {
+      window.alert("Couldn\'t generate link: " + (e.message || "error"));
+      setLinkState("idle");
+    }
+  };
+  const copyLink = () => { navigator.clipboard?.writeText(onboardUrl).catch(() => {}); };
+
+  const addPosition = async () => {
+    const p = newPos.trim();
+    if (!p || positions.includes(p)) return;
+    const next = [...positions, p];
+    setPosBusy(true);
+    try { await savePositions(next); await reloadPositions(); setNewPos(""); }
+    catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+  const removePosition = async (pos) => {
+    if (!window.confirm(`Remove "${pos}" from the positions list?`)) return;
+    const next = positions.filter((p) => p !== pos);
+    setPosBusy(true);
+    try { await savePositions(next); await reloadPositions(); if (filterPos === pos) setFilterPos("All"); }
+    catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+
+  const RosterForm = ({ vals, onChange, onSave, onCancel, saveLabel = "Save" }) => (
+    <div className="roster-form">
+      <div className="roster-sect-lbl">Work info</div>
+      <div className="roster-form-grid">
+        <div className="roster-form-col">
+          <label className="roster-lbl">Name</label>
+          <input className="roster-inp" value={vals.name || ""} placeholder="Full name" onChange={(e) => onChange("name", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Default position</label>
+          <input className="roster-inp" list="roster-pos-list" value={vals.position || ""} placeholder="Select or type…" onChange={(e) => onChange("position", e.target.value)} />
+          <datalist id="roster-pos-list">
+            {positions.map((p) => <option key={p} value={p} />)}
+          </datalist>
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Phone</label>
+          <input className="roster-inp" value={vals.phone || ""} placeholder="(555) 000-0000" onChange={(e) => onChange("phone", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Email</label>
+          <input className="roster-inp" value={vals.email || ""} placeholder="name@email.com" onChange={(e) => onChange("email", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Rate type</label>
+          <select className="roster-inp" value={vals.rateType || "day"} onChange={(e) => onChange("rateType", e.target.value)}>
+            <option value="day">Day rate</option>
+            <option value="hourly">Hourly</option>
+          </select>
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Rate (${vals.rateType === "hourly" ? "hr" : "day"})</label>
+          <input className="roster-inp" value={vals.rate || ""} placeholder="$" onChange={(e) => onChange("rate", e.target.value)} />
+        </div>
+        <div className="roster-form-col full">
+          <label className="roster-lbl">Notes</label>
+          <input className="roster-inp" value={vals.notes || ""} placeholder="Union status, certs, availability…" onChange={(e) => onChange("notes", e.target.value)} />
+        </div>
+      </div>
+
+      <div className="roster-sect-lbl" style={{ marginTop: 14 }}>Personal &amp; travel</div>
+      <div className="roster-form-grid">
+        <div className="roster-form-col">
+          <label className="roster-lbl">Birthday</label>
+          <input className="roster-inp" type="date" value={vals.birthday || ""} onChange={(e) => onChange("birthday", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Shirt size</label>
+          <select className="roster-inp" value={vals.shirtSize || ""} onChange={(e) => onChange("shirtSize", e.target.value)}>
+            <option value="">—</option>
+            {["XS","S","M","L","XL","2XL","3XL"].map((s) => <option key={s}>{s}</option>)}
+          </select>
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Home airport</label>
+          <input className="roster-inp" value={vals.homeAirport || ""} placeholder="LAX, SFO, PHX…" onChange={(e) => onChange("homeAirport", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">TSA PreCheck / KTN</label>
+          <input className="roster-inp" value={vals.tsaPrecheck || ""} placeholder="Known Traveler Number" onChange={(e) => onChange("tsaPrecheck", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Passport expires</label>
+          <input className="roster-inp" type="date" value={vals.passportExp || ""} onChange={(e) => onChange("passportExp", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Dietary restrictions</label>
+          <input className="roster-inp" value={vals.dietary || ""} placeholder="Vegetarian, nut allergy…" onChange={(e) => onChange("dietary", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Emergency contact</label>
+          <input className="roster-inp" value={vals.emergencyName || ""} placeholder="Name" onChange={(e) => onChange("emergencyName", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Emergency phone</label>
+          <input className="roster-inp" value={vals.emergencyPhone || ""} placeholder="(555) 000-0000" onChange={(e) => onChange("emergencyPhone", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">W9 on file</label>
+          <select className="roster-inp" value={vals.w9 || "no"} onChange={(e) => onChange("w9", e.target.value)}>
+            <option value="no">No</option>
+            <option value="yes">Yes</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="roster-form-actions">
+        <button className="pl-btn" onClick={onSave} disabled={busy}>{busy ? "Saving…" : saveLabel}</button>
+        <button className="pl-quotecancelbtn" onClick={onCancel}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>Your global crew directory. Type any name in the Brief's crew section and it auto-completes from here — filling in their position, phone, email, and rate automatically.</p>
+        {!adding && <AddBtn onClick={() => setAdding({ name: "", position: "", phone: "", email: "", rateType: "day", rate: "", notes: "" })}>Crew member</AddBtn>}
+      </div>
+
+      {/* onboarding link */}
+      <div className="pl-import">
+        <button className="pl-importtoggle" onClick={() => { if (linkState === "idle") genLink(); }}>
+          {linkState === "loading" ? "▸ Generating link…" : linkState === "done" ? "▾ Crew onboarding link" : "▸ Share onboarding link with crew"}
+        </button>
+        {linkState === "done" && (
+          <div className="pl-importbody">
+            <p className="pl-tplnote" style={{ margin: "0 0 10px" }}>
+              Send this link to your crew — they fill out their own info and it goes straight into the roster. Valid for 60 days. Regenerate to invalidate old links.
+            </p>
+            <div className="roster-linkbox">
+              <input className="roster-linkurl" readOnly value={onboardUrl} onFocus={(e) => e.target.select()} />
+              <button className="pl-btn" onClick={copyLink}>Copy</button>
+            </div>
+            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+              <button className="pl-quotecancelbtn" onClick={() => { setLinkState("idle"); setOnboardUrl(""); }}>Close</button>
+              <button className="pl-quotecancelbtn" onClick={genLink}>↺ Regenerate</button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* position management */}
+      <div className="roster-posbar">
+        <div className="roster-poschips">
+          <button className={"pl-chip " + (filterPos === "All" ? "on" : "")} onClick={() => setFilterPos("All")}>All</button>
+          {positions.filter((pos) => roster.some((m) => m.data?.position === pos)).map((pos) => (
+            <button key={pos} className={"pl-chip " + (filterPos === pos ? "on" : "")} onClick={() => setFilterPos(filterPos === pos ? "All" : pos)}>{pos}</button>
+          ))}
+        </div>
+        <button className="roster-managepos" onClick={() => setPosOpen((o) => !o)}>
+          ⚙ {posOpen ? "Close" : "Manage positions"}
+        </button>
+      </div>
+
+      {posOpen && (
+        <div className="pl-import" style={{ marginBottom: 0 }}>
+          <div className="pl-importbody">
+            <div className="pl-tplhdr" style={{ margin: "0 0 8px" }}>Position list — used as dropdown options when adding crew</div>
+            <div className="roster-pos-chips">
+              {positions.map((pos) => (
+                <span key={pos} className="roster-pos-chip">
+                  {pos}
+                  <button onClick={() => removePosition(pos)} title="Remove" disabled={posBusy}>×</button>
+                </span>
+              ))}
+            </div>
+            <div className="roster-pos-add">
+              <input
+                className="roster-inp"
+                value={newPos}
+                placeholder="New position…"
+                onChange={(e) => setNewPos(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && addPosition()}
+              />
+              <button className="pl-btn" onClick={addPosition} disabled={posBusy || !newPos.trim()}>Add</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {adding && (
+        <Panel title="New crew member">
+          <RosterForm
+            vals={adding}
+            onChange={(k, v) => setAdding((a) => ({ ...a, [k]: v }))}
+            onSave={saveNew}
+            onCancel={() => setAdding(null)}
+            saveLabel="Add to roster"
+          />
+        </Panel>
+      )}
+
+      <Panel title="Crew roster" sub={loading ? "Loading…" : `${roster.length} member${roster.length === 1 ? "" : "s"}`}>
+        {roster.length === 0 && !loading && (
+          <Empty>No crew yet. Add your first member above.</Empty>
+        )}
+        <div className="roster-list">
+          {roster.filter((m) => filterPos === "All" || m.data?.position === filterPos).map((m) => {
+            const d = m.data || {};
+            const isEdit = !!editing[m.id];
+            return (
+              <div key={m.id} className={"roster-row " + (isEdit ? "editing" : "")}>
+                {isEdit ? (
+                  <RosterForm
+                    vals={editing[m.id]}
+                    onChange={(k, v) => patchEdit(m.id, k, v)}
+                    onSave={() => saveEdit(m)}
+                    onCancel={() => cancelEdit(m.id)}
+                  />
+                ) : (
+                  <>
+                    <div className="roster-person">
+                      <span className="roster-name">{m.name}</span>
+                      <span className="roster-pos">{d.position || ""}</span>
+                    </div>
+                    <div className="roster-contact">
+                      {d.phone && <a href={"tel:" + d.phone} className="roster-link">📞 {d.phone}</a>}
+                      {d.email && <a href={"mailto:" + d.email} className="roster-link">✉ {d.email}</a>}
+                    </div>
+                    <div className="roster-rate">
+                      {d.rate ? (d.rateType === "hourly" ? `$${d.rate}/hr` : `$${d.rate}/day`) : <span className="roster-none">No rate</span>}
+                    </div>
+                    {d.notes && <div className="roster-notes">{d.notes}</div>}
+                    <div className="roster-actions">
+                      <button className="daysort" onClick={() => startEdit(m)}>Edit</button>
+                      <button className="pl-x" style={{ width: 28, height: 28 }} onClick={() => deleteMember(m)} title="Remove">×</button>
+                    </div>
+                    {(d.birthday || d.shirtSize || d.homeAirport || d.tsaPrecheck || d.passportExp || d.dietary || d.emergencyName || d.w9 === "yes") && (
+                      <div className="roster-extras">
+                        {d.birthday && <span className="roster-chip">🎂 {new Date(d.birthday + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>}
+                        {d.shirtSize && <span className="roster-chip">👕 {d.shirtSize}</span>}
+                        {d.homeAirport && <span className="roster-chip">✈ {d.homeAirport.toUpperCase()}</span>}
+                        {d.tsaPrecheck && <span className="roster-chip">🔒 TSA {d.tsaPrecheck}</span>}
+                        {d.passportExp && <span className="roster-chip">🛂 exp {new Date(d.passportExp + "T12:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" })}</span>}
+                        {d.dietary && <span className="roster-chip">🍽 {d.dietary}</span>}
+                        {d.emergencyName && <span className="roster-chip">🚨 {d.emergencyName}{d.emergencyPhone ? " · " + d.emergencyPhone : ""}</span>}
+                        {d.w9 === "yes" && <span className="roster-chip">W9 ✓</span>}
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ============================================================
    P&L / COSTING TAB — admin only. Budget vs actual for a show.
    Stored in a separate Airtable "Costing" field via /api/costing, so the
    figures are never sent to crew — only admin tokens can read or write them.
@@ -1986,6 +2573,7 @@ function normalizeCosting(x) {
   const out = {
     billableEst: x.billableEst || "",
     billableAct: x.billableAct || "",
+    perDiemRate: x.perDiemRate || "",
     crewCost: x.crewCost && typeof x.crewCost === "object" ? x.crewCost : {},
     vendorCost: x.vendorCost && typeof x.vendorCost === "object" ? x.vendorCost : {},
     laborExtra: Array.isArray(x.laborExtra) ? x.laborExtra : [],
@@ -2009,6 +2597,8 @@ function CostingTab({ event }) {
   const [state, setState] = useState("loading"); // loading | idle | error
   const [saving, setSaving] = useState(false);
   const timer = useRef(null);
+  const [pnlImp, setPnlImp] = useState({ open: false, phase: "idle", preview: null, error: "" });
+  const pnlInputRef = useRef(null);
 
   useEffect(() => {
     let alive = true;
@@ -2040,6 +2630,37 @@ function CostingTab({ event }) {
     const next = JSON.parse(JSON.stringify(c));
     fn(next);
     queueSave(next);
+  };
+
+  /* ---- quote PDF import for P&L ---- */
+  const setPnl = (patch) => setPnlImp((p) => ({ ...p, ...patch }));
+  const resetPnlImp = () => setPnlImp({ open: false, phase: "idle", preview: null, error: "" });
+  const handlePnlFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (pnlInputRef.current) pnlInputRef.current.value = "";
+    if (file.type !== "application/pdf") { setPnl({ error: "Please select a PDF file." }); return; }
+    if (file.size > 4 * 1024 * 1024) { setPnl({ error: "PDF too large — max 4 MB." }); return; }
+    setPnl({ phase: "loading", error: "" });
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = (ev) => res(ev.target.result.split(",")[1]);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const result = await importQuote(base64);
+      if (!result.costing) throw new Error("No financial data found in this quote.");
+      setPnl({ phase: "preview", preview: result, error: "" });
+    } catch (err) {
+      setPnl({ phase: "error", error: err.message || "Failed to parse quote." });
+    }
+  };
+  const applyPnlImport = () => {
+    const pnl = pnlImp.preview?.costing;
+    if (!pnl?.billableEst) return;
+    mutate((n) => { n.billableEst = String(pnl.billableEst); });
+    resetPnlImp();
   };
 
   if (state === "loading") return <Panel title="P&L / Costing"><Empty>Loading…</Empty></Panel>;
@@ -2084,20 +2705,34 @@ function CostingTab({ event }) {
       if (!n.crewCost[cid]) n.crewCost[cid] = { rateType: "hourly", rate: "", est: "", notes: "" };
       n.crewCost[cid][field] = val;
     });
+  // per diem = days worked × the global rate; travel is a manual per-person figure
+  const perDiemRate = pnlNum(c.perDiemRate);
+  const crewPerDiem = (cid) => crewHours(cid).days * perDiemRate;
+  const crewTravel = (cid) => pnlNum((c.crewCost[cid] || {}).travel);
+  const crewTotalActual = (cid) => (crewActual(cid) || 0) + crewPerDiem(cid) + crewTravel(cid);
+
+  // GSA per-diem lookup, seeded with the event location + fiscal year
+  const gsaLoc = (event.venue?.address || event.venue?.name || "").trim();
+  const gsaYear = (() => {
+    const d = event.startDate ? new Date(event.startDate) : new Date();
+    const y = d.getFullYear();
+    return d.getMonth() + 1 >= 10 ? y + 1 : y; // GSA fiscal year: Oct–Sep
+  })();
+  const gsaUrl = "https://www.gsa.gov/travel/plan-book/per-diem-rates";
 
   // ---- pull vendors from the Pull List "Rented From" field (unique, with gear summary) ----
   const vendorMap = {};
-  (event.pull?.cases || []).forEach((cs) =>
-    (cs.items || []).forEach((it) => {
-      const raw = (it.rentedFrom || "").trim();
-      if (!raw) return;
-      const key = raw.toLowerCase();
-      if (!vendorMap[key]) vendorMap[key] = { name: raw, count: 0, items: [] };
-      vendorMap[key].count += 1;
-      const gear = (it.item || "").trim();
-      if (gear && !vendorMap[key].items.includes(gear)) vendorMap[key].items.push(gear);
-    })
-  );
+  const collectVendor = (it) => {
+    const raw = (it.rentedFrom || "").trim();
+    if (!raw) return;
+    const key = raw.toLowerCase();
+    if (!vendorMap[key]) vendorMap[key] = { name: raw, count: 0, items: [] };
+    vendorMap[key].count += 1;
+    const gear = (it.item || "").trim();
+    if (gear && !vendorMap[key].items.includes(gear)) vendorMap[key].items.push(gear);
+  };
+  (event.pull?.cases || []).forEach((cs) => (cs.items || []).forEach(collectVendor));
+  (event.pull?.loose || []).forEach(collectVendor);
   const vendorRows = Object.values(vendorMap).sort((a, b) => a.name.localeCompare(b.name));
   const gearSummary = (items) => (items.length <= 3 ? items.join(", ") : items.slice(0, 3).join(", ") + " +" + (items.length - 3));
   const setVend = (name, field, val) =>
@@ -2108,7 +2743,7 @@ function CostingTab({ event }) {
 
   // ---- totals (roster + manual extras) ----
   const laborEst = crewRows.reduce((s, cm) => s + pnlNum(c.crewCost[cm.id]?.est), 0) + sum(c.laborExtra, "est");
-  const laborAct = crewRows.reduce((s, cm) => s + (crewActual(cm.id) || 0), 0) + sum(c.laborExtra, "act");
+  const laborAct = crewRows.reduce((s, cm) => s + crewTotalActual(cm.id), 0) + sum(c.laborExtra, "act");
   const vendEst = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.est), 0) + sum(c.vendorExtra, "est");
   const vendAct = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.act), 0) + sum(c.vendorExtra, "act");
   const miscEst = sum(c.misc, "est"), miscAct = sum(c.misc, "act");
@@ -2136,6 +2771,72 @@ function CostingTab({ event }) {
         </p>
       </div>
 
+      <div className="tab-lead">
+        <p>
+          Budget vs actual for this show. <b>Only admins can see this tab</b> — the figures live in a separate,
+          admin-only store and are never sent to crew.
+          <span className="pnl-save">{saving ? "Saving…" : "Saved"}</span>
+        </p>
+      </div>
+
+      {/* import from quote PDF */}
+      <div className="pl-import">
+        <button className="pl-importtoggle" onClick={() => { setPnl({ open: !pnlImp.open }); if (pnlImp.open) resetPnlImp(); }}>
+          {pnlImp.open ? "▾ " : "▸ "}Import from quote PDF
+        </button>
+        {pnlImp.open && (
+          <div className="pl-importbody">
+            {pnlImp.phase === "idle" && (
+              <>
+                <p className="pl-tplnote" style={{ margin: "4px 0 10px" }}>
+                  Upload your quote PDF and it will automatically populate the billable total, labor sections, gear/vendor sections, and misc costs into this P&L.
+                </p>
+                <label className="pl-quotelabel">
+                  <input ref={pnlInputRef} type="file" accept=".pdf,application/pdf" onChange={handlePnlFile} style={{ display: "none" }} />
+                  <span className="pl-btn">📄 Choose PDF quote…</span>
+                </label>
+                {pnlImp.error && <div className="pl-quoteerr">{pnlImp.error}</div>}
+              </>
+            )}
+            {pnlImp.phase === "loading" && (
+              <div className="pl-quoteloading"><span className="pl-quotespinner" />Reading quote… this usually takes 5–15 seconds.</div>
+            )}
+            {pnlImp.phase === "error" && (
+              <>
+                <div className="pl-quoteerr">{pnlImp.error || "Failed to parse quote."}</div>
+                <button className="pl-btn" style={{ marginTop: 8 }} onClick={() => setPnl({ phase: "idle", error: "" })}>Try again</button>
+              </>
+            )}
+            {pnlImp.phase === "preview" && pnlImp.preview?.costing && (() => {
+              const pnl = pnlImp.preview.costing;
+              const hasPullData = (pnlImp.preview.cases || []).length > 0;
+              return (
+                <>
+                  <div className="pl-tplhdr" style={{ marginBottom: 8 }}>Extracted from quote</div>
+                  <div className="pnl-qpreview">
+                    {pnl.billableEst ? (
+                      <div className="pnl-qrow grand">
+                        <span>Grand total (billable estimated)</span>
+                        <span>{pnlMoney(pnl.billableEst)}</span>
+                      </div>
+                    ) : (
+                      <div className="pnl-qrow"><span style={{ color: "#DC2626" }}>No grand total found in this quote.</span></div>
+                    )}
+                    {hasPullData && (
+                      <div className="pnl-qrow"><span style={{ color: "#059669", fontSize: 12 }}>✓ Gear items also available — import them on the Pull List tab</span></div>
+                    )}
+                  </div>
+                  <div className="pl-quoteactions" style={{ marginTop: 10 }}>
+                    {pnl.billableEst && <button className="pl-btn" onClick={applyPnlImport}>Apply to P&L</button>}
+                    <button className="pl-quotecancelbtn" onClick={resetPnlImp}>Cancel</button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+
       <Panel title="Revenue" sub="What you're billing the client">
         <div className="pnl-billable">
           <Field label="Total billable — estimated">
@@ -2148,48 +2849,61 @@ function CostingTab({ event }) {
       </Panel>
 
       <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "" }))}>Non-roster line</AddBtn>}>
-        <div className="rows">
-          <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
-          {crewRows.map((cm) => {
-            const cc = c.crewCost[cm.id] || {};
-            const hrs = crewHours(cm.id);
-            const rt = cc.rateType || "hourly";
-            const act = crewActual(cm.id);
-            return (
-              <div className="row pnl-labor-grid" key={cm.id}>
-                <span className="pnl-person"><b>{cm.name}</b><em>{cm.position || "—"}</em></span>
-                <span className="pnl-time" title={`Regular ${fmtHrs(hrs.total - hrs.ot - hrs.dt)} · OT ${fmtHrs(hrs.ot)} · DT ${fmtHrs(hrs.dt)}`}>
-                  <b>{hrs.total ? fmtHrs(hrs.total) + "h" : "–"}</b>
-                  <em>{hrs.days ? hrs.days + (hrs.days === 1 ? " day" : " days") : ""}</em>
-                </span>
-                <span className="pnl-rate">
-                  <select value={rt} onChange={(e) => setCrew(cm.id, "rateType", e.target.value)}>
-                    <option value="hourly">Hourly</option>
-                    <option value="day">Day rate</option>
-                  </select>
-                  <input className="pnl-money" value={cc.rate || ""} placeholder={"$/" + (rt === "day" ? "day" : "hr")} onChange={(e) => setCrew(cm.id, "rate", e.target.value)} />
-                </span>
-                <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />
-                <span className="pnl-actual" title={rt === "day" ? "days × rate" : "reg + OT×1.5 + DT×2, × rate"}>{act == null ? "–" : pnlMoney(act)}</span>
-                <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />
-                <span className="pnl-tag" title="From the crew roster">roster</span>
-              </div>
-            );
-          })}
-          {c.laborExtra.map((r, i) => (
-            <div className="row pnl-labor-grid" key={r.id}>
-              <span className="pnl-person"><input value={r.contractor} placeholder="Name" onChange={(e) => mutate((n) => (n.laborExtra[i].contractor = e.target.value))} /><input value={r.role} placeholder="Role" onChange={(e) => mutate((n) => (n.laborExtra[i].role = e.target.value))} /></span>
-              <span className="pnl-time dim">—</span>
-              <span className="pnl-rate dim">manual →</span>
-              <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />
-              <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />
-              <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />
-              <RemoveBtn onClick={() => mutate((n) => n.laborExtra.splice(i, 1))} />
-            </div>
-          ))}
-          {!crewRows.length && !c.laborExtra.length && <Empty>Add crew on the Brief tab and they’ll appear here with their hours.</Empty>}
+        <div className="pnl-pdbar">
+          <span className="pnl-pdlabel">Per diem rate</span>
+          <input className="pnl-money" value={c.perDiemRate || ""} placeholder="$/day" onChange={(e) => mutate((n) => (n.perDiemRate = e.target.value))} />
+          <span className="pnl-pdhint">per day worked</span>
+          <a className="pnl-gsalink" href={gsaUrl} target="_blank" rel="noreferrer">
+            Look up GSA rate{gsaLoc ? " for " + gsaLoc : ""} (FY{gsaYear}) ↗
+          </a>
         </div>
-        <div className="pnl-subtotal">Labor subtotal — est {pnlMoney(laborEst)} · actual {pnlMoney(laborAct)}</div>
+        <div className="pnl-hscroll">
+          <div className="rows">
+            <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Per diem</span><span>Travel</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
+            {crewRows.map((cm) => {
+              const cc = c.crewCost[cm.id] || {};
+              const hrs = crewHours(cm.id);
+              const rt = cc.rateType || "hourly";
+              return (
+                <div className="row pnl-labor-grid" key={cm.id}>
+                  <span className="pnl-person"><b>{cm.name}</b><em>{cm.position || "—"}</em></span>
+                  <span className="pnl-time" title={`Regular ${fmtHrs(hrs.total - hrs.ot - hrs.dt)} · OT ${fmtHrs(hrs.ot)} · DT ${fmtHrs(hrs.dt)}`}>
+                    <b>{hrs.total ? fmtHrs(hrs.total) + "h" : "–"}</b>
+                    <em>{hrs.days ? hrs.days + (hrs.days === 1 ? " day" : " days") : ""}</em>
+                  </span>
+                  <span className="pnl-rate">
+                    <select value={rt} onChange={(e) => setCrew(cm.id, "rateType", e.target.value)}>
+                      <option value="hourly">Hourly</option>
+                      <option value="day">Day rate</option>
+                    </select>
+                    <input className="pnl-money" value={cc.rate || ""} placeholder={"$/" + (rt === "day" ? "day" : "hr")} onChange={(e) => setCrew(cm.id, "rate", e.target.value)} />
+                  </span>
+                  <span className="pnl-actual pd" title={`${hrs.days} day${hrs.days === 1 ? "" : "s"} × ${pnlMoney(perDiemRate)}`}>{perDiemRate && hrs.days ? pnlMoney(crewPerDiem(cm.id)) : "–"}</span>
+                  <input className="pnl-money" value={cc.travel || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "travel", e.target.value)} />
+                  <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />
+                  <span className="pnl-actual" title="labor + per diem + travel">{pnlMoney(crewTotalActual(cm.id))}</span>
+                  <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />
+                  <span className="pnl-tag" title="From the crew roster">roster</span>
+                </div>
+              );
+            })}
+            {c.laborExtra.map((r, i) => (
+              <div className="row pnl-labor-grid" key={r.id}>
+                <span className="pnl-person"><input value={r.contractor} placeholder="Name" onChange={(e) => mutate((n) => (n.laborExtra[i].contractor = e.target.value))} /><input value={r.role} placeholder="Role" onChange={(e) => mutate((n) => (n.laborExtra[i].role = e.target.value))} /></span>
+                <span className="pnl-time dim">—</span>
+                <span className="pnl-rate dim">manual →</span>
+                <span className="pnl-actual pd dim">—</span>
+                <input className="pnl-money" value={r.travel || ""} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].travel = e.target.value))} />
+                <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />
+                <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />
+                <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />
+                <RemoveBtn onClick={() => mutate((n) => n.laborExtra.splice(i, 1))} />
+              </div>
+            ))}
+            {!crewRows.length && !c.laborExtra.length && <Empty>Add crew on the Brief tab and they’ll appear here with their hours.</Empty>}
+          </div>
+        </div>
+        <div className="pnl-subtotal">Labor subtotal (incl. per diem &amp; travel) — est {pnlMoney(laborEst)} · actual {pnlMoney(laborAct)}</div>
       </Panel>
 
       <Panel title="Gear & Vendors" sub="Vendors pulled from the “Rented From” field on the Pull List" action={<AddBtn onClick={() => mutate((n) => n.vendorExtra.push({ id: uid(), vendor: "", notes: "", est: "", act: "" }))}>Non-list line</AddBtn>}>
@@ -2332,6 +3046,8 @@ function groupPullByDrawer(items) {
 
 function PullTab({ event, update, isAdmin }) {
   const cases = event.pull.cases;
+  const loose = event.pull.loose || [];
+  const loose = event.pull.loose || [];
   const unlocked = !!event.gearEditUnlocked;
   const canEdit = isAdmin || unlocked;
   const [editing, setEditing] = useState(false);
@@ -2340,6 +3056,17 @@ function PullTab({ event, update, isAdmin }) {
   const [query, setQuery] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(false);
+  const [invOpen, setInvOpen] = useState(false);
+  const [invState, setInvState] = useState("idle"); // idle | loading | error
+  const [invCases, setInvCases] = useState([]);
+  const [invPicked, setInvPicked] = useState(() => new Set());
+  const [invSeeding, setInvSeeding] = useState(false);
+  const invLoaded = useRef(false);
+  const [quoteOpen, setQuoteOpen] = useState(false);
+  const [quoteState, setQuoteState] = useState("idle"); // idle | loading | preview | error
+  const [quotePreview, setQuotePreview] = useState(null);
+  const [quoteError, setQuoteError] = useState("");
+  const quoteInputRef = useRef(null);
   const [savedTpls, setSavedTpls] = useState([]);
   const [tplState, setTplState] = useState("idle"); // idle | loading | error
   const tplLoaded = useRef(false);
@@ -2366,7 +3093,7 @@ function PullTab({ event, update, isAdmin }) {
       if (c) Object.assign(c, patch);
     });
   const deleteCase = (id) => {
-    if (!window.confirm("Delete this whole case and its items?")) return;
+    if (!window.confirm("Delete this whole case and its gear?")) return;
     update((ev) => {
       ev.pull.cases = ev.pull.cases.filter((x) => x.id !== id);
     });
@@ -2374,52 +3101,244 @@ function PullTab({ event, update, isAdmin }) {
   const addCase = () => {
     const nextNo = Math.max(0, ...cases.map((c) => Number(c.caseNo) || 0)) + 1;
     const id = uid();
-    update((ev) => ev.pull.cases.push({ id, caseNo: nextNo, case: "New Case", category: "Misc", items: [] }));
+    update((ev) => ev.pull.cases.push({ id, caseNo: nextNo, case: "New Case", category: "Misc", drawers: [], items: [] }));
     setOpen((s) => new Set(s).add(id));
   };
+
+  // items live either in a case's items array, or in pull.loose (cid === "loose")
+  const listIn = (ev, cid) => (cid === "loose" ? ev.pull.loose : ev.pull.cases.find((x) => x.id === cid)?.items);
+  const addItem = (cid, drawer = "") =>
+    update((ev) => {
+      const a = listIn(ev, cid);
+      if (a) a.push({ ...pullItem(), drawer });
+    });
+  const addLoose = () =>
+    update((ev) => {
+      if (!Array.isArray(ev.pull.loose)) ev.pull.loose = [];
+      ev.pull.loose.push(pullItem());
+    });
   const patchItem = (cid, iid, patch) =>
     update((ev) => {
-      const c = ev.pull.cases.find((x) => x.id === cid);
-      if (!c) return;
-      const it = c.items.find((x) => x.id === iid);
+      const a = listIn(ev, cid);
+      const it = a && a.find((x) => x.id === iid);
       if (it) Object.assign(it, patch);
     });
   const deleteItem = (cid, iid) =>
     update((ev) => {
-      const c = ev.pull.cases.find((x) => x.id === cid);
-      if (c) c.items = c.items.filter((x) => x.id !== iid);
-    });
-  const addItem = (cid) =>
-    update((ev) => {
-      const c = ev.pull.cases.find((x) => x.id === cid);
-      if (c) c.items.push(pullItem());
+      if (cid === "loose") ev.pull.loose = (ev.pull.loose || []).filter((x) => x.id !== iid);
+      else {
+        const c = ev.pull.cases.find((x) => x.id === cid);
+        if (c) c.items = c.items.filter((x) => x.id !== iid);
+      }
     });
 
+  // drawers (named groups inside a case)
+  const caseDrawerNames = (c) => {
+    const explicit = Array.isArray(c.drawers) ? c.drawers : [];
+    const fromItems = c.items.map((it) => (it.drawer || "").trim()).filter(Boolean);
+    return [...new Set([...explicit, ...fromItems])];
+  };
+  const addDrawer = (cid) => {
+    const name = window.prompt("Drawer name (e.g. XLR, Network, Inputs):", "");
+    if (name === null || !name.trim()) return;
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (!c) return;
+      if (!Array.isArray(c.drawers)) c.drawers = [];
+      if (!c.drawers.includes(name.trim())) c.drawers.push(name.trim());
+    });
+  };
+  const renameDrawer = (cid, oldName, newName) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (!c) return;
+      if (!Array.isArray(c.drawers)) c.drawers = [];
+      const i = c.drawers.indexOf(oldName);
+      if (i >= 0) c.drawers[i] = newName;
+      else if (!c.drawers.includes(newName)) c.drawers.push(newName);
+      c.items.forEach((it) => {
+        if ((it.drawer || "") === oldName) it.drawer = newName;
+      });
+    });
+  const deleteDrawer = (cid, name) =>
+    update((ev) => {
+      const c = ev.pull.cases.find((x) => x.id === cid);
+      if (!c) return;
+      if (Array.isArray(c.drawers)) c.drawers = c.drawers.filter((d) => d !== name);
+      c.items.forEach((it) => {
+        if ((it.drawer || "") === name) it.drawer = "";
+      });
+    });
+
+  const findItemState = (cid, iid) => {
+    const a = cid === "loose" ? loose : cases.find((x) => x.id === cid)?.items || [];
+    return (a || []).find((x) => x.id === iid);
+  };
   const toggleOut = (cid, iid) => {
-    const c = cases.find((x) => x.id === cid);
-    const it = c && c.items.find((x) => x.id === iid);
+    const it = findItemState(cid, iid);
     if (!it) return;
     patchItem(cid, iid, { out: !it.out, in: it.out ? false : it.in });
   };
   const toggleIn = (cid, iid) => {
-    const c = cases.find((x) => x.id === cid);
-    const it = c && c.items.find((x) => x.id === iid);
+    const it = findItemState(cid, iid);
     if (!it || !it.out) return;
     patchItem(cid, iid, { in: !it.in });
   };
 
   const setLock = (val) => update((ev) => (ev.gearEditUnlocked = val));
 
+  /* ---- inventory ---- */
+  const loadInv = async () => {
+    setInvState("loading");
+    try {
+      const list = await listInventory();
+      setInvCases(list);
+      setInvState("idle");
+      invLoaded.current = true;
+    } catch {
+      setInvState("error");
+    }
+  };
+  const openInv = () => {
+    const nx = !invOpen;
+    setInvOpen(nx);
+    if (nx && !invLoaded.current) loadInv();
+  };
+  const toggleInvPick = (id) =>
+    setInvPicked((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const addFromInv = () => {
+    const chosen = invCases.filter((it) => invPicked.has(it.id));
+    if (!chosen.length) return;
+    update((ev) => {
+      let nextNo = Math.max(0, ...ev.pull.cases.map((c) => Number(c.caseNo) || 0));
+      chosen.forEach((inv) => {
+        nextNo += 1;
+        ev.pull.cases.push({
+          id: uid(),
+          caseNo: nextNo,
+          case: inv.name,
+          category: inv.category,
+          drawers: Array.isArray(inv.data?.drawers) ? [...inv.data.drawers] : [],
+          items: (inv.data?.items || []).map((it) => ({ ...it, id: uid(), out: false, in: false })),
+        });
+      });
+    });
+    setInvPicked(new Set());
+    setInvOpen(false);
+  };
+  const saveCaseToInv = async (c) => {
+    const existing = invCases.find((x) => x.name.toLowerCase() === c.case.toLowerCase());
+    const msg = existing
+      ? `Update "${existing.name}" in inventory with the current contents of this case?`
+      : `Save "${c.case}" to your inventory?`;
+    if (!window.confirm(msg)) return;
+    const data = {
+      drawers: Array.isArray(c.drawers) ? c.drawers : [],
+      items: c.items.map(({ drawer, item, qty, source, rentedFrom, notes }) => ({ drawer, item, qty, source, rentedFrom, notes })),
+    };
+    try {
+      await saveInventoryCase(c.case, c.category, data, existing?.id);
+      invLoaded.current = false;
+      if (invOpen) await loadInv();
+      window.alert(`"${c.case}" ${existing ? "updated" : "saved"} in inventory.`);
+    } catch (e) {
+      window.alert("Couldn't save to inventory: " + (e.message || "error"));
+    }
+  };
+  const deleteFromInv = async (id, name) => {
+    if (!window.confirm(`Remove "${name}" from your inventory?`)) return;
+    try {
+      await deleteInventoryCase(id);
+      setInvCases((s) => s.filter((x) => x.id !== id));
+      setInvPicked((s) => { const n = new Set(s); n.delete(id); return n; });
+    } catch (e) {
+      window.alert("Couldn't remove: " + (e.message || "error"));
+    }
+  };
+  const seedInventory = async () => {
+    if (!window.confirm(`Seed your inventory from the built-in gear list?\nThis will add ${PULL_SEED.length} cases to Airtable. Run once to get started.`)) return;
+    setInvSeeding(true);
+    try {
+      for (const c of PULL_SEED) {
+        await saveInventoryCase(c.case, c.category, {
+          drawers: Array.isArray(c.drawers) ? c.drawers : [],
+          items: c.items.map(({ drawer, item, qty, source, rentedFrom, notes }) => ({ drawer, item, qty, source, rentedFrom, notes })),
+        });
+      }
+      invLoaded.current = false;
+      await loadInv();
+    } catch (e) {
+      window.alert("Seed error: " + (e.message || "error"));
+    } finally {
+      setInvSeeding(false);
+    }
+  };
+  const resetQuote = () => {
+    setQuoteState("idle");
+    setQuotePreview(null);
+    setQuoteError("");
+  };
+  const handleQuoteFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (quoteInputRef.current) quoteInputRef.current.value = "";
+    if (file.type !== "application/pdf") { setQuoteError("Please select a PDF file."); return; }
+    if (file.size > 4 * 1024 * 1024) { setQuoteError("PDF too large — max 4 MB. Try a smaller file."); return; }
+    setQuoteState("loading");
+    setQuoteError("");
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = (ev) => res(ev.target.result.split(",")[1]);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      const result = await importQuote(base64);
+      setQuotePreview(result);
+      setQuoteState("preview");
+    } catch (err) {
+      setQuoteError(err.message || "Failed to parse quote.");
+      setQuoteState("error");
+    }
+  };
+  const applyQuotePreview = (replace) => {
+    if (!quotePreview) return;
+    const freshCases = pullFreshCases(quotePreview.cases || []);
+    const freshLoose = pullFreshItems(quotePreview.loose || []);
+    update((ev) => {
+      if (replace) {
+        ev.pull.cases = freshCases;
+        ev.pull.loose = freshLoose;
+      } else {
+        const nextNo = Math.max(0, ...ev.pull.cases.map((c) => Number(c.caseNo) || 0));
+        freshCases.forEach((c, i) => { c.caseNo = nextNo + i + 1; });
+        ev.pull.cases.push(...freshCases);
+        if (!Array.isArray(ev.pull.loose)) ev.pull.loose = [];
+        ev.pull.loose.push(...freshLoose);
+      }
+    });
+    setOpen(new Set());
+    setQuoteOpen(false);
+    resetQuote();
+  };
+
   const clearAll = () => {
-    if (!window.confirm("Clear the entire pull list for this show?\nThis removes every case and item and can't be undone.")) return;
-    update((ev) => (ev.pull.cases = []));
+    if (!window.confirm("Clear the entire pull list for this show?\nThis removes every case, drawer and item and can't be undone.")) return;
+    update((ev) => {
+      ev.pull.cases = [];
+      ev.pull.loose = [];
+    });
     setOpen(new Set());
     setActiveCat("All");
   };
 
   const applyTemplate = (tpl) => {
-    if (cases.length > 0 && !window.confirm('Replace the current pull list with the "' + tpl.name + '" template?\nThis clears what\'s here now and can\'t be undone.')) return;
-    update((ev) => (ev.pull.cases = tpl.build()));
+    if ((cases.length > 0 || loose.length > 0) && !window.confirm('Replace the current pull list with the "' + tpl.name + '" template?\nThis clears what\'s here now and can\'t be undone.')) return;
+    const d = tpl.build();
+    update((ev) => {
+      ev.pull.cases = d.cases;
+      ev.pull.loose = d.loose || [];
+    });
     setOpen(new Set());
     setActiveCat("All");
     setTemplatesOpen(false);
@@ -2442,14 +3361,14 @@ function PullTab({ event, update, isAdmin }) {
     if (nx && !tplLoaded.current) loadTemplates();
   };
   const saveTemplate = async () => {
-    if (!cases.length) {
+    if (!cases.length && !loose.length) {
       window.alert("Add some gear before saving it as a template.");
       return;
     }
     const name = window.prompt("Name this template (e.g. \u201cKeynote Rig\u201d, \u201c2-Room GS\u201d):", "");
     if (name === null || !name.trim()) return;
     try {
-      await createTemplate(name.trim(), cases);
+      await createTemplate(name.trim(), { cases, loose });
       await loadTemplates();
     } catch (e) {
       window.alert("Couldn't save template: " + (e.message || "error"));
@@ -2465,13 +3384,20 @@ function PullTab({ event, update, isAdmin }) {
     }
   };
   const applySaved = (t) => {
-    if (cases.length > 0 && !window.confirm('Replace the current pull list with "' + t.name + '"?\nThis clears what\'s here now and can\'t be undone.')) return;
-    update((ev) => (ev.pull.cases = pullFreshCases(t.data || [])));
+    if ((cases.length > 0 || loose.length > 0) && !window.confirm('Replace the current pull list with "' + t.name + '"?\nThis clears what\'s here now and can\'t be undone.')) return;
+    const d = pullTplData(t.data);
+    update((ev) => {
+      ev.pull.cases = pullFreshCases(d.cases);
+      ev.pull.loose = pullFreshItems(d.loose);
+    });
     setOpen(new Set());
     setActiveCat("All");
     setTemplatesOpen(false);
   };
-  const tplItemCount = (t) => (t.data || []).reduce((n, c) => n + (c.items ? c.items.length : 0), 0);
+  const tplItemCount = (t) => {
+    const d = pullTplData(t.data);
+    return d.cases.reduce((n, c) => n + (c.items ? c.items.length : 0), 0) + d.loose.length;
+  };
 
   /* ---- import from Audio / Video I/O ---- */
   const devices = [];
@@ -2508,7 +3434,7 @@ function PullTab({ event, update, isAdmin }) {
   };
 
   /* ---- derived ---- */
-  const allItems = cases.flatMap((c) => c.items);
+  const allItems = [...cases.flatMap((c) => c.items), ...loose];
   const totals = {
     items: allItems.length,
     out: allItems.filter((i) => i.out).length,
@@ -2520,24 +3446,96 @@ function PullTab({ event, update, isAdmin }) {
   cases.forEach((c) => (perCat[c.category] = (perCat[c.category] || 0) + c.items.length));
 
   const q = query.trim().toLowerCase();
+  const matchItem = (it, caseName) =>
+    it.item.toLowerCase().includes(q) ||
+    (it.drawer || "").toLowerCase().includes(q) ||
+    (it.rentedFrom || "").toLowerCase().includes(q) ||
+    (caseName || "").toLowerCase().includes(q);
   const visible = cases
     .filter((c) => activeCat === "All" || c.category === activeCat)
-    .map((c) => ({
-      ...c,
-      items:
-        q && !editOn
-          ? c.items.filter(
-              (it) =>
-                it.item.toLowerCase().includes(q) ||
-                (it.drawer || "").toLowerCase().includes(q) ||
-                c.case.toLowerCase().includes(q)
-            )
-          : c.items,
-    }))
+    .map((c) => ({ ...c, items: q && !editOn ? c.items.filter((it) => matchItem(it, c.case)) : c.items }))
     .filter((c) => editOn || c.items.length > 0 || activeCat !== "All");
+  const looseVisible = q && !editOn ? loose.filter((it) => matchItem(it, "")) : loose;
+  const showLoose = editOn || (activeCat === "All" && looseVisible.length > 0);
 
   const cat = (name) => PULL_CATS[name] || PULL_CATS.Misc;
   const prog = (c) => ({ out: c.items.filter((i) => i.out).length, back: c.items.filter((i) => i.in).length, total: c.items.length });
+
+  /* ---- render helpers ---- */
+  const itemEdit = (cid, it) => (
+    <div className="pl-item-edit" key={it.id}>
+      <div className="pl-ie1">
+        <input className="pl-inp" value={it.item} placeholder="Item name" onChange={(e) => patchItem(cid, it.id, { item: e.target.value })} />
+        <input className="pl-inp pl-ieqty" value={it.qty} placeholder="Qty" onChange={(e) => patchItem(cid, it.id, { qty: e.target.value })} />
+        <button className="pl-x" onClick={() => deleteItem(cid, it.id)} title="Remove item">×</button>
+      </div>
+      <div className="pl-ie2">
+        <input className="pl-inp" value={it.source} placeholder="Source (TCG…)" onChange={(e) => patchItem(cid, it.id, { source: e.target.value })} />
+        <input className="pl-inp" value={it.rentedFrom} placeholder="Rented from" onChange={(e) => patchItem(cid, it.id, { rentedFrom: e.target.value })} />
+        <input className="pl-inp" value={it.notes} placeholder="Notes" onChange={(e) => patchItem(cid, it.id, { notes: e.target.value })} />
+      </div>
+    </div>
+  );
+  const itemRead = (cid, it, cc) => {
+    const outstanding = it.out && !it.in;
+    return (
+      <div className={"pl-row " + (outstanding ? "out" : "")} key={it.id}>
+        <div className="pl-itemcol">
+          <div className="pl-itemname">{it.item || "—"}</div>
+          {(it.source || it.rentedFrom || it.notes) && (
+            <div className="pl-meta">
+              {it.source && it.source !== "TCG" && <span className="pl-badge">{it.source}</span>}
+              {it.rentedFrom && <span className="pl-badge">{it.rentedFrom}</span>}
+              {it.notes && <span className="pl-note">{it.notes}</span>}
+            </div>
+          )}
+        </div>
+        <div className="pl-qtyv">{it.qty !== "" ? "×" + it.qty : "—"}</div>
+        <button className={"pl-check " + (it.out ? "on" : "")} style={it.out ? { background: cc.color, borderColor: cc.color, color: "#fff" } : {}} onClick={() => toggleOut(cid, it.id)}>{it.out ? "✓ " : ""}Out</button>
+        <button className={"pl-check green " + (it.in ? "on" : "") + (!it.out ? " dis" : "")} onClick={() => toggleIn(cid, it.id)} disabled={!it.out} title={!it.out ? "Pull it out first" : "Check in"}>{it.in ? "✓ " : ""}In</button>
+      </div>
+    );
+  };
+  const caseBodyEdit = (c) => {
+    const drawers = caseDrawerNames(c);
+    const noDrawer = c.items.filter((it) => !(it.drawer || "").trim());
+    return (
+      <div className="pl-body">
+        {noDrawer.map((it) => itemEdit(c.id, it))}
+        <div className="pl-addrow">
+          <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>
+          <button className="pl-adddrawer" onClick={() => addDrawer(c.id)}>+ Add drawer</button>
+          {isAdmin && (
+            <button className="pl-invsave" onClick={() => saveCaseToInv(c)} title="Save this case to your inventory">
+              📦 Save to inventory
+            </button>
+          )}
+        </div>
+        {drawers.map((dn) => (
+          <div className="pl-drawergrp" key={dn}>
+            <div className="pl-drawerhead">
+              <span className="pl-drawerchev">▾</span>
+              <input className="pl-inp pl-drawername" value={dn} onChange={(e) => renameDrawer(c.id, dn, e.target.value)} />
+              <button className="pl-x" onClick={() => deleteDrawer(c.id, dn)} title="Delete drawer (moves its items out)">×</button>
+            </div>
+            {c.items.filter((it) => (it.drawer || "").trim() === dn).map((it) => itemEdit(c.id, it))}
+            <button className="pl-additem sub" onClick={() => addItem(c.id, dn)}>+ Add item to {dn}</button>
+          </div>
+        ))}
+      </div>
+    );
+  };
+  const caseBodyRead = (c, cc) => (
+    <div className="pl-body">
+      {groupPullByDrawer(c.items).map((g, gi) => (
+        <div key={gi}>
+          {g.drawer && <div className="pl-drawerlbl">{g.drawer}</div>}
+          {g.items.map((it) => itemRead(c.id, it, cc))}
+        </div>
+      ))}
+      {c.items.length === 0 && <div className="pl-emptycase">No items</div>}
+    </div>
+  );
 
   return (
     <div className="stack pull">
@@ -2666,8 +3664,191 @@ function PullTab({ event, update, isAdmin }) {
         </div>
       )}
 
+      {/* inventory picker */}
+      {editOn && (
+        <div className="pl-import">
+          <button className="pl-importtoggle" onClick={openInv}>
+            {invOpen ? "▾ " : "▸ "}Browse inventory
+          </button>
+          {invOpen && (
+            <div className="pl-importbody">
+              {invState === "loading" && <div className="pl-emptycase">Loading inventory…</div>}
+              {invState === "error" && (
+                <div className="pl-emptycase">
+                  Couldn't load inventory — is the "Inventory" table set up in Airtable?
+                  <button className="pl-btn" style={{ marginTop: 8 }} onClick={loadInv}>Retry</button>
+                </div>
+              )}
+              {invState === "idle" && invCases.length === 0 && (
+                <div className="pl-emptycase">
+                  <p style={{ margin: "0 0 10px" }}>Inventory is empty. Save cases from your pull list, or seed from the built-in gear list.</p>
+                  {isAdmin && (
+                    <button className="pl-btn" onClick={seedInventory} disabled={invSeeding}>
+                      {invSeeding ? "Seeding…" : `Seed from built-in gear list (${PULL_SEED.length} cases)`}
+                    </button>
+                  )}
+                </div>
+              )}
+              {invState === "idle" && invCases.length > 0 && (
+                <>
+                  <div className="pl-invcontrols">
+                    <span className="pl-tplhdr" style={{ margin: 0 }}>{invCases.length} case{invCases.length === 1 ? "" : "s"} in inventory</span>
+                    {isAdmin && (
+                      <button className="pl-invseedbtn" onClick={seedInventory} disabled={invSeeding} title="Re-seed from built-in gear list">
+                        {invSeeding ? "Seeding…" : "↺ Re-seed"}
+                      </button>
+                    )}
+                  </div>
+                  {PULL_CAT_ORDER.filter((k) => invCases.some((x) => x.category === k)).map((k) => {
+                    const cc = PULL_CATS[k];
+                    return (
+                      <div key={k} className="pl-invcat-grp">
+                        <div className="pl-invcat" style={{ color: cc.color }}>
+                          <span className="pl-dot" style={{ background: cc.color }} />
+                          {k}
+                        </div>
+                        {invCases.filter((x) => x.category === k).map((inv) => (
+                          <label key={inv.id} className="pl-invrow">
+                            <input type="checkbox" checked={invPicked.has(inv.id)} onChange={() => toggleInvPick(inv.id)} />
+                            <span className="pl-invname">{inv.name}</span>
+                            <span className="pl-invmeta">
+                              {(inv.data?.items || []).length} items
+                              {(inv.data?.drawers || []).length > 0 ? ` · ${inv.data.drawers.length} drawer${inv.data.drawers.length === 1 ? "" : "s"}` : ""}
+                            </span>
+                            {isAdmin && (
+                              <button className="pl-x" style={{ width: 26, height: 26, fontSize: 14 }}
+                                onClick={(e) => { e.preventDefault(); deleteFromInv(inv.id, inv.name); }}
+                                title="Remove from inventory">×</button>
+                            )}
+                          </label>
+                        ))}
+                      </div>
+                    );
+                  })}
+                  <button className="pl-btn" onClick={addFromInv} disabled={invPicked.size === 0} style={{ marginTop: 8 }}>
+                    Add {invPicked.size || ""} case{invPicked.size === 1 ? "" : "s"} to this show
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* import from quote PDF */}
+      {editOn && (
+        <div className="pl-import">
+          <button className="pl-importtoggle" onClick={() => { setQuoteOpen((o) => !o); resetQuote(); }}>
+            {quoteOpen ? "▾ " : "▸ "}Import from quote PDF
+          </button>
+          {quoteOpen && (
+            <div className="pl-importbody">
+              {quoteState === "idle" && (
+                <>
+                  <p className="pl-tplnote" style={{ margin: "4px 0 10px" }}>
+                    Upload a PDF quote (Current RMS or any format) and gear items will be automatically extracted and categorized. Labor and expense lines are skipped.
+                  </p>
+                  <label className="pl-quotelabel">
+                    <input ref={quoteInputRef} type="file" accept=".pdf,application/pdf" onChange={handleQuoteFile} style={{ display: "none" }} />
+                    <span className="pl-btn">📄 Choose PDF quote…</span>
+                  </label>
+                  {quoteError && <div className="pl-quoteerr">{quoteError}</div>}
+                </>
+              )}
+              {quoteState === "loading" && (
+                <div className="pl-quoteloading">
+                  <span className="pl-quotespinner" />
+                  Reading quote… this usually takes 5–15 seconds.
+                </div>
+              )}
+              {quoteState === "error" && (
+                <>
+                  <div className="pl-quoteerr">{quoteError || "Failed to parse quote."}</div>
+                  <button className="pl-btn" style={{ marginTop: 8 }} onClick={resetQuote}>Try again</button>
+                </>
+              )}
+              {quoteState === "preview" && quotePreview && (() => {
+                const totalItems = (quotePreview.cases || []).reduce((n, c) => n + (c.items || []).length, 0) + (quotePreview.loose || []).length;
+                return (
+                  <>
+                    <div className="pl-tplhdr" style={{ marginBottom: 8 }}>
+                      {quotePreview.cases.length} case{quotePreview.cases.length === 1 ? "" : "s"} · {totalItems} item{totalItems === 1 ? "" : "s"} extracted
+                    </div>
+                    <div className="pl-quotepreview">
+                      {(quotePreview.cases || []).map((c, i) => {
+                        const cc = PULL_CATS[c.category] || PULL_CATS.Misc;
+                        return (
+                          <div key={i} className="pl-quotecase">
+                            <div className="pl-quotecasehead">
+                              <span className="pl-quotedot" style={{ background: cc.color }} />
+                              <span className="pl-quotecasename">{c.case}</span>
+                              <span className="pl-quotecatetag" style={{ color: cc.color }}>{c.category}</span>
+                              <span className="pl-quotecasecount">{(c.items || []).length} items</span>
+                            </div>
+                            <div className="pl-quoteitems">
+                              {(c.items || []).slice(0, 4).map((it, j) => (
+                                <span key={j} className="pl-quoteitem">
+                                  {it.qty > 1 ? <b>{it.qty}×</b> : null}{it.qty > 1 ? " " : ""}{it.item}
+                                </span>
+                              ))}
+                              {(c.items || []).length > 4 && (
+                                <span className="pl-quoteitem more">+{c.items.length - 4} more</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="pl-quoteactions">
+                      <button className="pl-btn" onClick={() => applyQuotePreview(false)}>
+                        Add to existing list
+                      </button>
+                      <button className="pl-btn" style={{ background: "#DC2626" }} onClick={() => {
+                        if ((cases.length > 0 || loose.length > 0) && !window.confirm("Replace the current pull list with the items from this quote?")) return;
+                        applyQuotePreview(true);
+                      }}>
+                        Replace list
+                      </button>
+                      <button className="pl-quotecancelbtn" onClick={() => { setQuoteOpen(false); resetQuote(); }}>Cancel</button>
+                    </div>
+                  </>
+                );
+              })()}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* cases */}
       <div className="pl-cases">
+        {editOn && (
+          <div className="pl-toolbar">
+            <button className="pl-tbbtn" onClick={addCase}>+ Add case</button>
+            <button className="pl-tbbtn" onClick={addLoose}>+ Add loose gear</button>
+          </div>
+        )}
+
+        {/* loose gear (not in a case) */}
+        {showLoose && (
+          <div className="pl-card pl-loosecard">
+            <div className="pl-loosehead">
+              <span className="pl-loosetitle">Loose gear</span>
+              <span className="pl-loosesub">not in a case</span>
+            </div>
+            {editOn ? (
+              <div className="pl-body">
+                {loose.map((it) => itemEdit("loose", it))}
+                <button className="pl-additem" onClick={addLoose}>+ Add loose gear</button>
+              </div>
+            ) : (
+              <div className="pl-body">
+                {looseVisible.map((it) => itemRead("loose", it, cat("Misc")))}
+                {looseVisible.length === 0 && <div className="pl-emptycase">No loose gear</div>}
+              </div>
+            )}
+          </div>
+        )}
+
         {visible.map((c) => {
           const cc = cat(c.category);
           const p = prog(c);
@@ -2680,11 +3861,11 @@ function PullTab({ event, update, isAdmin }) {
                   <span className="pl-bar2" style={{ background: cc.color }} />
                   <span className="pl-hash">#</span>
                   <input className="pl-inp pl-no" value={c.caseNo} onChange={(e) => patchCase(c.id, { caseNo: e.target.value })} />
-                  <input className="pl-inp pl-name" value={c.case} onChange={(e) => patchCase(c.id, { case: e.target.value })} />
+                  <input className="pl-inp pl-name" value={c.case} placeholder="Case name" onChange={(e) => patchCase(c.id, { case: e.target.value })} />
                   <select className="pl-inp pl-cat" style={{ color: cc.color }} value={c.category} onChange={(e) => patchCase(c.id, { category: e.target.value })}>
                     {PULL_CAT_ORDER.map((k) => <option key={k}>{k}</option>)}
                   </select>
-                  <button className="pl-del" onClick={() => deleteCase(c.id)}>Delete</button>
+                  <button className="pl-del" onClick={() => deleteCase(c.id)} title="Delete case">Delete</button>
                 </div>
               ) : (
                 <button className="pl-head" style={{ background: cc.soft }} onClick={() => toggleCase(c.id)}>
@@ -2700,66 +3881,13 @@ function PullTab({ event, update, isAdmin }) {
                   <span className="pl-chev" style={{ transform: isOpen ? "rotate(90deg)" : "none" }}>›</span>
                 </button>
               )}
-
-              {isOpen && (
-                <div className="pl-body">
-                  {editOn
-                    ? c.items.map((it) => (
-                        <div className="pl-editrow" key={it.id}>
-                          <div className="pl-editline">
-                            <input className="pl-inp pl-drawer" value={it.drawer || ""} placeholder="Drawer" onChange={(e) => patchItem(c.id, it.id, { drawer: e.target.value || null })} />
-                            <input className="pl-inp pl-item" value={it.item} placeholder="Item name" onChange={(e) => patchItem(c.id, it.id, { item: e.target.value })} />
-                            <input className="pl-inp pl-qty" value={it.qty} placeholder="Qty" onChange={(e) => patchItem(c.id, it.id, { qty: e.target.value })} />
-                            <button className="pl-x" onClick={() => deleteItem(c.id, it.id)} title="Remove">×</button>
-                          </div>
-                          <div className="pl-editline">
-                            <input className="pl-inp" value={it.source} placeholder="Source (TCG, Sub Rental…)" onChange={(e) => patchItem(c.id, it.id, { source: e.target.value })} />
-                            <input className="pl-inp" value={it.rentedFrom} placeholder="Rented from" onChange={(e) => patchItem(c.id, it.id, { rentedFrom: e.target.value })} />
-                            <input className="pl-inp" value={it.notes} placeholder="Notes" onChange={(e) => patchItem(c.id, it.id, { notes: e.target.value })} />
-                          </div>
-                        </div>
-                      ))
-                    : groupPullByDrawer(c.items).map((g, gi) => (
-                        <div key={gi}>
-                          {g.drawer && <div className="pl-drawerlbl">{g.drawer}</div>}
-                          {g.items.map((it) => {
-                            const outstanding = it.out && !it.in;
-                            return (
-                              <div className={"pl-row " + (outstanding ? "out" : "")} key={it.id}>
-                                <div className="pl-itemcol">
-                                  <div className="pl-itemname">{it.item}</div>
-                                  {(it.source || it.rentedFrom || it.notes) && (
-                                    <div className="pl-meta">
-                                      {it.source && it.source !== "TCG" && <span className="pl-badge">{it.source}</span>}
-                                      {it.rentedFrom && <span className="pl-badge">{it.rentedFrom}</span>}
-                                      {it.notes && <span className="pl-note">{it.notes}</span>}
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="pl-qtyv">{it.qty !== "" ? "×" + it.qty : "—"}</div>
-                                <button className={"pl-check " + (it.out ? "on" : "")} style={it.out ? { background: cc.color, borderColor: cc.color, color: "#fff" } : {}} onClick={() => toggleOut(c.id, it.id)}>
-                                  {it.out ? "✓ " : ""}Out
-                                </button>
-                                <button className={"pl-check green " + (it.in ? "on" : "") + (!it.out ? " dis" : "")} onClick={() => toggleIn(c.id, it.id)} disabled={!it.out} title={!it.out ? "Pull it out first" : "Check in"}>
-                                  {it.in ? "✓ " : ""}In
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ))}
-                  {editOn && <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>}
-                  {!editOn && c.items.length === 0 && <div className="pl-emptycase">No items</div>}
-                </div>
-              )}
+              {isOpen && (editOn ? caseBodyEdit(c) : caseBodyRead(c, cc))}
             </div>
           );
         })}
-        {editOn && <button className="pl-addcase" onClick={addCase}>+ Add case</button>}
-        {editOn && cases.length > 0 && (
-          <button className="pl-clear" onClick={clearAll}>Clear all gear</button>
-        )}
-        {visible.length === 0 && <div className="pl-empty">No gear matches that filter.</div>}
+
+        {editOn && cases.length > 0 && <button className="pl-clear" onClick={clearAll}>Clear all gear</button>}
+        {!editOn && visible.length === 0 && !showLoose && <div className="pl-empty">No gear matches that filter.</div>}
       </div>
     </div>
   );
@@ -2992,12 +4120,40 @@ const CSS = `
 .cb .ot-sub{display:block; font-size:9px; color:var(--faint); font-weight:400; letter-spacing:0; text-transform:none; margin-top:1px;}
 .cb .ot-note{font-size:11.5px; color:var(--faint); margin-top:8px;}
 
+/* weather */
+.cb .wx-loc{display:flex; gap:8px; margin-bottom:10px;}
+.cb .wx-now{display:flex; align-items:center; gap:10px; padding:2px 2px 12px; border-bottom:1px solid var(--line); margin-bottom:8px;}
+.cb .wx-emoji{font-size:20px; line-height:1;}
+.cb .wx-nowtemp{font-family:'Oswald'; font-size:22px; font-weight:600; color:var(--ink);}
+.cb .wx-nowlbl{color:var(--dim); font-size:12.5px;}
+.cb .wx-days{display:flex; flex-direction:column;}
+.cb .wx-day{display:grid; grid-template-columns:24px minmax(84px,auto) 1fr auto 56px; gap:10px; align-items:center; padding:7px 2px; border-bottom:1px solid var(--line);}
+.cb .wx-day:last-child{border-bottom:none;}
+.cb .wx-date{font-weight:600; color:var(--ink); font-size:13px; white-space:nowrap;}
+.cb .wx-cond{color:var(--dim); font-size:12.5px;}
+.cb .wx-temp{font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap;}
+.cb .wx-pop{color:#5AA9E6; font-size:11.5px; white-space:nowrap; text-align:right;}
+.cb .wx-src{margin-top:8px; font-size:10.5px; color:var(--faint);}
+@media (max-width:560px){
+  .cb .wx-day{grid-template-columns:22px 1fr auto;}
+  .cb .wx-cond, .cb .wx-pop{display:none;}
+}
+
 /* P&L / costing (admin only) */
 .cb .pnl-save{margin-left:10px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint);}
 .cb .pnl-billable{display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:520px;}
-.cb .pnl-labor-grid{grid-template-columns:1.1fr .7fr 1.1fr 76px 84px .9fr 30px;}
+.cb .pnl-hscroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+.cb .pnl-labor-grid{grid-template-columns:minmax(120px,1.1fr) 66px 120px 68px 66px 66px 78px minmax(110px,.9fr) 30px; min-width:780px;}
 .cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 30px;}
 .cb .pnl-misc-grid{grid-template-columns:2fr 92px 92px 28px;}
+.cb .pnl-pdbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--line);}
+.cb .pnl-pdlabel{font-family:'Oswald'; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
+.cb .pnl-pdbar .pnl-money{width:80px;}
+.cb .pnl-pdhint{font-size:11.5px; color:var(--faint);}
+.cb .pnl-gsalink{margin-left:auto; font-size:12px; color:var(--amber); text-decoration:none; font-weight:600;}
+.cb .pnl-gsalink:hover{text-decoration:underline;}
+.cb .pnl-actual.pd{color:var(--dim); font-weight:600;}
+.cb .pnl-actual.pd.dim{color:var(--faint);}
 .cb .pnl-derived{display:flex; align-items:center; font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .cb .pnl-derived.dim{font-weight:400; color:var(--dim);}
 .cb .pnl-person{display:flex; flex-direction:column; justify-content:center; min-width:0; gap:2px;}
@@ -3035,8 +4191,7 @@ const CSS = `
 .cb .pnl-pct td{border-bottom:none;}
 @media (max-width:760px){
   .cb .pnl-billable{grid-template-columns:1fr;}
-  .cb .pnl-labor-grid{grid-template-columns:1fr 1fr; }
-  .cb .rowhead.pnl-labor-grid, .cb .rowhead.pnl-vendor-grid, .cb .rowhead.pnl-misc-grid{display:none;}
+  .cb .rowhead.pnl-vendor-grid, .cb .rowhead.pnl-misc-grid{display:none;}
   .cb .pnl-vendor-grid{grid-template-columns:1fr 1fr;}
   .cb .pnl-misc-grid{grid-template-columns:1fr 1fr;}
 }
@@ -3195,7 +4350,7 @@ const CSS = `
 .pl-cases { display:flex; flex-direction:column; gap:10px; }
 .pl-card { border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; background:#fff; }
 .pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; }
-.pl-headedit { display:flex; align-items:center; gap:8px; padding:9px 12px 9px 0; flex-wrap:wrap; }
+.pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto; gap:8px; align-items:center; padding:9px 12px 9px 0; }
 .pl-bar2 { width:5px; align-self:stretch; flex-shrink:0; min-height:34px; border-radius:0; }
 .pl-hash { color:#64748b; font-size:12px; font-weight:700; }
 .pl-caseno { color:#fff; font-size:11.5px; font-weight:700; border-radius:6px; padding:2px 7px; flex-shrink:0; }
@@ -3221,24 +4376,130 @@ const CSS = `
 .pl-check.green.on { background:#059669; border-color:#059669; color:#fff; }
 .pl-check.dis { opacity:.5; cursor:not-allowed; color:#C3CBD6; }
 
-.pl-editrow { padding:9px 4px; border-bottom:1px solid #eef2f7; }
-.pl-editline { display:flex; gap:6px; align-items:center; margin-top:6px; }
-.pl-editline:first-child { margin-top:0; }
-.pl-inp { border:1px solid #D8DEE7; border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; background:#fff; color:#1e293b; min-width:0; flex:1; }
-.pl-no { flex:none; width:46px; font-weight:700; }
+.pl-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
+.pl-tbbtn { border:1px dashed #B9C4D2; color:#0F1E35; background:#fff; border-radius:10px; padding:10px 14px; font-size:13px; font-weight:700; cursor:pointer; flex:1; min-width:140px; }
+.pl-tbbtn:hover { background:#F5F8FC; }
+
+.pl-loosecard { border:1px solid #e2e8f0; }
+.pl-loosehead { display:flex; align-items:baseline; gap:8px; padding:10px 14px; background:#F1F4F9; border-bottom:1px solid #e8edf3; }
+.pl-loosetitle { font-weight:700; font-size:14px; color:#0F1E35; }
+.pl-loosesub { font-size:11px; color:#94a3b8; }
+
+.pl-item-edit { padding:8px; border-radius:8px; border:1px solid #eef2f7; margin-bottom:6px; }
+.pl-ie1 { display:grid; grid-template-columns:minmax(0,1fr) 62px 32px; gap:6px; align-items:center; }
+.pl-ie2 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; margin-top:6px; }
+.pl-inp { border:1px solid #D8DEE7; border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; min-width:0; }
+.pl-ieqty { text-align:center; }
+.pl-no { font-weight:700; text-align:center; }
 .pl-name { font-weight:700; }
-.pl-drawer { flex:none; width:110px; }
-.pl-item { font-weight:600; }
-.pl-qty { flex:none; width:52px; text-align:center; }
-.pl-cat { flex:none; width:108px; font-weight:700; }
-.pl-x { border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:7px; width:30px; height:30px; font-size:17px; line-height:1; cursor:pointer; flex-shrink:0; }
-.pl-additem { margin-top:8px; width:100%; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
-.pl-addcase { border:1px dashed #B9C4D2; color:#0F1E35; background:#fff; border-radius:12px; padding:12px; font-size:13.5px; font-weight:700; cursor:pointer; }
-.pl-clear { align-self:center; margin-top:2px; border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:8px; padding:8px 16px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-cat { font-weight:700; }
+.pl-x { border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:7px; width:32px; height:32px; font-size:17px; line-height:1; cursor:pointer; flex-shrink:0; padding:0; }
+
+.pl-addrow { display:flex; gap:6px; margin-top:2px; }
+.pl-additem { width:100%; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-additem.sub { margin-top:4px; background:#fff; }
+.pl-adddrawer { white-space:nowrap; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-invsave { white-space:nowrap; border:1px solid #D8DEE7; color:#334155; background:#fff; border-radius:8px; padding:7px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+.pl-invsave:hover { background:#F1F5F9; }
+
+/* inventory picker */
+.pl-invcontrols { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.pl-invseedbtn { border:1px solid #D8DEE7; background:#fff; color:#64748b; border-radius:7px; padding:4px 10px; font-size:11.5px; font-weight:600; cursor:pointer; }
+.pl-invseedbtn:disabled { opacity:.5; cursor:not-allowed; }
+.pl-invcat-grp { margin-bottom:6px; }
+.pl-invcat { display:flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; padding:4px 0 2px; }
+.pl-invrow { display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #F1F5F9; cursor:pointer; }
+.pl-invrow:last-child { border-bottom:none; }
+.pl-invrow input { width:16px; height:16px; flex-shrink:0; cursor:pointer; }
+.pl-invname { flex:1; font-size:13px; font-weight:600; color:#1e293b; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pl-invmeta { font-size:11.5px; color:#94a3b8; flex-shrink:0; }
+
+.pl-drawergrp { margin-top:10px; padding:8px; border:1px solid #eef2f7; border-radius:10px; background:#FAFBFD; }
+.pl-drawerhead { display:grid; grid-template-columns:auto minmax(0,1fr) 32px; gap:6px; align-items:center; margin-bottom:6px; }
+.pl-drawerchev { color:#94a3b8; font-size:12px; }
+.pl-drawername { font-weight:700; color:#0F1E35; }
+
+.pl-clear { display:block; margin:6px auto 0; border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:8px; padding:8px 16px; font-size:12.5px; font-weight:700; cursor:pointer; }
 .pl-clear:hover { background:#FEF1F1; }
+
+/* quote PDF import */
+.pl-quotelabel { display:inline-block; cursor:pointer; }
+.pl-quoteerr { margin-top:8px; font-size:12.5px; color:#DC2626; font-weight:600; }
+.pl-quoteloading { display:flex; align-items:center; gap:10px; font-size:13px; color:#475569; padding:8px 0; }
+.pl-quotespinner { display:inline-block; width:16px; height:16px; border:2px solid #D8DEE7; border-top-color:#2563EB; border-radius:50%; animation:pl-spin .7s linear infinite; flex-shrink:0; }
+@keyframes pl-spin { to { transform:rotate(360deg); } }
+.pl-quotepreview { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
+.pl-quotecase { border:1px solid #E2E8F0; border-radius:8px; overflow:hidden; }
+.pl-quotecasehead { display:flex; align-items:center; gap:8px; padding:7px 10px; background:#F8FAFC; }
+.pl-quotedot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+.pl-quotecasename { font-weight:700; font-size:13px; color:#0F1E35; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pl-quotecatetag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+.pl-quotecasecount { font-size:11.5px; color:#94A3B8; font-weight:600; flex-shrink:0; }
+.pl-quoteitems { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px; background:#fff; }
+.pl-quoteitem { font-size:11.5px; color:#475569; background:#F1F5F9; border-radius:5px; padding:2px 7px; }
+.pl-quoteitem.more { color:#94A3B8; }
+.pl-quoteactions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.pl-quotecancelbtn { border:1px solid #D8DEE7; background:#fff; color:#64748B; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+
+/* P&L quote import preview */
+.pnl-qpreview { display:flex; flex-direction:column; gap:6px; margin-bottom:4px; border:1px solid #E2E8F0; border-radius:10px; overflow:hidden; }
+.pnl-qrow { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; font-size:13px; }
+.pnl-qrow.grand { background:#F0F9F4; font-weight:700; color:#047857; font-size:14px; }
+.pnl-qsect { border-top:1px solid #E2E8F0; }
+.pnl-qsecthead { display:flex; justify-content:space-between; align-items:center; padding:7px 12px; background:#F8FAFC; font-size:12.5px; font-weight:700; color:#334155; }
+.pnl-qitem { display:flex; justify-content:space-between; align-items:baseline; padding:5px 12px 5px 20px; font-size:12px; color:#475569; border-top:1px solid #F1F5F9; }
+.pnl-qitem span:last-child { font-weight:600; color:#334155; flex-shrink:0; margin-left:8px; }
+.pnl-qnotes { font-weight:400; color:#94A3B8; }
+
+/* crew autocomplete */
+.cb .crew-ac-wrap { position:relative; width:100%; }
+.cb .crew-ac-drop { position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--panel); border:1px solid var(--amber); border-radius:9px; box-shadow:0 6px 20px rgba(0,0,0,.35); z-index:200; overflow:hidden; }
+.cb .crew-ac-row { display:flex; align-items:center; justify-content:space-between; width:100%; border:none; background:none; padding:9px 12px; cursor:pointer; text-align:left; gap:10px; }
+.cb .crew-ac-row:hover { background:var(--panel2); }
+.cb .crew-ac-name { font-weight:600; color:var(--ink); font-size:13px; }
+.cb .crew-ac-pos { font-size:11.5px; color:var(--dim); flex-shrink:0; }
+
+/* roster tab */
+.cb .roster-list { display:flex; flex-direction:column; gap:2px; }
+.cb .roster-row { display:grid; grid-template-columns:1.2fr 1.2fr 100px auto auto; align-items:center; gap:10px; padding:10px 6px; border-bottom:1px solid var(--line); }
+.cb .roster-row.editing { display:block; border:1px solid var(--amber); border-radius:10px; padding:10px; margin:4px 0; }
+.cb .roster-person { display:flex; flex-direction:column; gap:2px; min-width:0; }
+.cb .roster-name { font-weight:700; color:var(--ink); font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cb .roster-pos { font-size:11.5px; color:var(--dim); }
+.cb .roster-contact { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.cb .roster-link { color:var(--amber); font-size:12px; text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cb .roster-link:hover { text-decoration:underline; }
+.cb .roster-rate { font-size:12.5px; font-weight:600; color:var(--green); font-variant-numeric:tabular-nums; }
+.cb .roster-none { color:var(--faint); font-weight:400; }
+.cb .roster-notes { font-size:11.5px; color:var(--faint); grid-column:1 / -2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cb .roster-actions { display:flex; gap:6px; align-items:center; justify-content:flex-end; }
+.cb .roster-extras { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:5px; padding-top:4px; }
+.cb .roster-chip { font-size:11.5px; color:var(--dim); background:var(--panel2); border:1px solid var(--line); border-radius:6px; padding:2px 8px; white-space:nowrap; }
+.cb .roster-sect-lbl { font-family:'Oswald'; font-size:11.5px; font-weight:600; letter-spacing:.05em; text-transform:uppercase; color:var(--dim); margin-bottom:6px; padding-bottom:5px; border-bottom:1px solid var(--line); }
+.cb .roster-posbar { display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.cb .roster-poschips { display:flex; flex-wrap:wrap; gap:6px; }
+.cb .roster-managepos { border:1px solid var(--line); background:none; color:var(--dim); border-radius:8px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.cb .roster-managepos:hover { background:var(--panel2); }
+.cb .roster-linkbox { display:flex; gap:8px; align-items:center; }
+.cb .roster-linkurl { flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--dim); font-family:monospace; }
+.cb .roster-pos-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.cb .roster-pos-chip { display:inline-flex; align-items:center; gap:5px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:3px 8px 3px 11px; font-size:12.5px; color:var(--ink); }
+.cb .roster-pos-chip button { background:none; border:none; color:var(--faint); cursor:pointer; font-size:14px; line-height:1; padding:0; }
+.cb .roster-pos-chip button:hover { color:var(--danger); }
+.cb .roster-pos-add { display:flex; gap:8px; align-items:center; }
+.cb .roster-pos-add .roster-inp { flex:1; }
+.cb .roster-form { display:flex; flex-direction:column; gap:10px; }
+.cb .roster-form-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+.cb .roster-form-col { display:flex; flex-direction:column; gap:4px; }
+.cb .roster-form-col.full { grid-column:1 / -1; }
+.cb .roster-lbl { font-size:11px; font-weight:700; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
+.cb .roster-inp { background:var(--panel2); border:1px solid var(--line); border-radius:7px; color:var(--ink); font-family:'Inter'; font-size:13px; padding:7px 9px; width:100%; }
+.cb .roster-inp:focus { outline:none; border-color:var(--amber); }
+.cb .roster-form-actions { display:flex; gap:8px; align-items:center; }
+@media (max-width:700px){ .cb .roster-row{ grid-template-columns:1fr auto; grid-auto-flow:row; } .cb .roster-form-grid{ grid-template-columns:1fr 1fr; } }
 .pl-empty, .pl-emptycase { text-align:center; color:#94a3b8; padding:14px; font-size:13px; }
 .pl-empty { padding:34px; }
-@media (max-width:560px){ .pl-cat{width:96px;} .pl-drawer{width:90px;} }
+@media (max-width:560px){ .pl-headedit{ grid-template-columns:5px auto 44px 1fr 92px auto; } }
 
 `;
 
