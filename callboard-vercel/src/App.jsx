@@ -25,6 +25,8 @@ import {
   getPositions,
   savePositions,
   generateOnboardLink,
+  previewInventoryImport,
+  confirmInventoryImport,
 } from "./db.js";
 
 /* ============================================================
@@ -1178,7 +1180,10 @@ function WeatherCard({ city, onCity, startDate, endDate }) {
    ROSTER CONTEXT — loads the global crew roster once per session,
    shared by the autocomplete in BriefTab and the RosterTab manager.
    ============================================================ */
-const ROSTER_DEFAULT_POSITIONS = [
+/* Normalize roster member positions: handles both old string field and new array field */
+const memberPositions = (data) =>
+  Array.isArray(data?.positions) ? data.positions :
+  (data?.position ? [data.position] : []);
   "Show Caller","Production Manager","Stage Manager",
   "Technical Director","Video Director",
   "Audio Engineer (A1)","Monitor Engineer (A2)",
@@ -1236,7 +1241,7 @@ function CrewNameInput({ value, onChange, onSelect }) {
           {matches.map((m) => (
             <button key={m.id} className="crew-ac-row" onMouseDown={() => { onSelect(m); setOpen(false); }}>
               <span className="crew-ac-name">{m.name}</span>
-              <span className="crew-ac-pos">{m.data?.position || ""}</span>
+              <span className="crew-ac-pos">{memberPositions(m.data).join(", ") || ""}</span>
             </button>
           ))}
         </div>
@@ -1349,7 +1354,8 @@ function BriefTab({ event, update }) {
                   const d = r.data || {};
                   ev.crew[i].name = r.name;
                   ev.crew[i].rosterId = r.id;
-                  if (d.position) ev.crew[i].position = d.position;
+                  const pos = memberPositions(d)[0] || d.position || "";
+                  if (pos) ev.crew[i].position = pos;
                   if (d.phone) ev.crew[i].phone = d.phone;
                   if (d.email) ev.crew[i].email = d.email;
                   if (d.rateType) ev.crew[i].rateType = d.rateType;
@@ -2271,84 +2277,10 @@ function HoursTab({ event, update }) {
    LABOR ROSTER TAB — global crew directory (admin only).
    Crew members here auto-populate the Brief's crew section.
    ============================================================ */
-function RosterTab() {
-  const { roster, positions, reload, reloadPositions, loading } = React.useContext(RosterCtx);
-  const [editing, setEditing] = useState({}); // id -> draft data
-  const [adding, setAdding] = useState(null); // null | draft
-  const [busy, setBusy] = useState(false);
-  const [filterPos, setFilterPos] = useState("All");
-  const [posOpen, setPosOpen] = useState(false);
-  const [newPos, setNewPos] = useState("");
-  const [posBusy, setPosBusy] = useState(false);
-  const [linkState, setLinkState] = useState("idle"); // idle | loading | done
-  const [onboardUrl, setOnboardUrl] = useState("");
-
-  const startEdit = (m) =>
-    setEditing((e) => ({ ...e, [m.id]: { name: m.name, ...(m.data || {}) } }));
-  const patchEdit = (id, k, v) =>
-    setEditing((e) => ({ ...e, [id]: { ...e[id], [k]: v } }));
-  const cancelEdit = (id) =>
-    setEditing((e) => { const n = { ...e }; delete n[id]; return n; });
-
-  const saveEdit = async (m) => {
-    const d = editing[m.id];
-    if (!d) return;
-    setBusy(true);
-    const { name, ...data } = d;
-    try { await saveRosterMember(name || m.name, data, m.id); await reload(); cancelEdit(m.id); }
-    catch (e) { window.alert("Save failed: " + e.message); }
-    finally { setBusy(false); }
-  };
-
-  const deleteMember = async (m) => {
-    if (!window.confirm(`Remove ${m.name} from the roster?`)) return;
-    setBusy(true);
-    try { await deleteRosterMember(m.id); await reload(); }
-    catch (e) { window.alert("Delete failed: " + e.message); }
-    finally { setBusy(false); }
-  };
-
-  const saveNew = async () => {
-    if (!adding?.name?.trim()) { window.alert("Name is required."); return; }
-    setBusy(true);
-    const { name, ...data } = adding;
-    try { await saveRosterMember(name.trim(), data); await reload(); setAdding(null); }
-    catch (e) { window.alert("Save failed: " + e.message); }
-    finally { setBusy(false); }
-  };
-
-  const genLink = async () => {
-    setLinkState("loading");
-    try {
-      const r = await generateOnboardLink();
-      setOnboardUrl(r.url);
-      setLinkState("done");
-    } catch (e) {
-      window.alert("Couldn\'t generate link: " + (e.message || "error"));
-      setLinkState("idle");
-    }
-  };
-  const copyLink = () => { navigator.clipboard?.writeText(onboardUrl).catch(() => {}); };
-
-  const addPosition = async () => {
-    const p = newPos.trim();
-    if (!p || positions.includes(p)) return;
-    const next = [...positions, p];
-    setPosBusy(true);
-    try { await savePositions(next); await reloadPositions(); setNewPos(""); }
-    catch (e) { window.alert("Couldn't save: " + e.message); }
-    finally { setPosBusy(false); }
-  };
-  const removePosition = async (pos) => {
-    if (!window.confirm(`Remove "${pos}" from the positions list?`)) return;
-    const next = positions.filter((p) => p !== pos);
-    setPosBusy(true);
-    try { await savePositions(next); await reloadPositions(); if (filterPos === pos) setFilterPos("All"); }
-    catch (e) { window.alert("Couldn't save: " + e.message); }
-    finally { setPosBusy(false); }
-  };
-
-  const RosterForm = ({ vals, onChange, onSave, onCancel, saveLabel = "Save" }) => (
+/* RosterForm must be a top-level component (not defined inside RosterTab)
+   so React doesn't remount it on every keystroke and lose input focus. */
+function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy, positions }) {
+  return (
     <div className="roster-form">
       <div className="roster-sect-lbl">Work info</div>
       <div className="roster-form-grid">
@@ -2357,11 +2289,23 @@ function RosterTab() {
           <input className="roster-inp" value={vals.name || ""} placeholder="Full name" onChange={(e) => onChange("name", e.target.value)} />
         </div>
         <div className="roster-form-col">
-          <label className="roster-lbl">Default position</label>
-          <input className="roster-inp" list="roster-pos-list" value={vals.position || ""} placeholder="Select or type…" onChange={(e) => onChange("position", e.target.value)} />
-          <datalist id="roster-pos-list">
-            {positions.map((p) => <option key={p} value={p} />)}
-          </datalist>
+        <div className="roster-form-col full">
+          <label className="roster-lbl">Positions — tap to select (multiple allowed)</label>
+          <div className="roster-pos-sel">
+            {(positions || []).map((p) => {
+              const cur = Array.isArray(vals.positions) ? vals.positions : (vals.position ? [vals.position] : []);
+              const on = cur.includes(p);
+              return (
+                <button key={p} type="button" className={"roster-pos-opt " + (on ? "on" : "")}
+                  onClick={() => {
+                    const next = on ? cur.filter((x) => x !== p) : [...cur, p];
+                    onChange("positions", next);
+                  }}>
+                  {p}
+                </button>
+              );
+            })}
+          </div>
         </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Phone</label>
@@ -2440,6 +2384,85 @@ function RosterTab() {
       </div>
     </div>
   );
+}
+
+function RosterTab() {
+  const { roster, positions, reload, reloadPositions, loading } = React.useContext(RosterCtx);
+  const [editing, setEditing] = useState({}); // id -> draft data
+  const [adding, setAdding] = useState(null); // null | draft
+  const [busy, setBusy] = useState(false);
+  const [filterPos, setFilterPos] = useState("All");
+  const [posOpen, setPosOpen] = useState(false);
+  const [newPos, setNewPos] = useState("");
+  const [posBusy, setPosBusy] = useState(false);
+  const [linkState, setLinkState] = useState("idle"); // idle | loading | done
+  const [onboardUrl, setOnboardUrl] = useState("");
+
+  const startEdit = (m) =>
+    setEditing((e) => ({ ...e, [m.id]: { name: m.name, ...(m.data || {}) } }));
+  const patchEdit = (id, k, v) =>
+    setEditing((e) => ({ ...e, [id]: { ...e[id], [k]: v } }));
+  const cancelEdit = (id) =>
+    setEditing((e) => { const n = { ...e }; delete n[id]; return n; });
+
+  const saveEdit = async (m) => {
+    const d = editing[m.id];
+    if (!d) return;
+    setBusy(true);
+    const { name, ...data } = d;
+    try { await saveRosterMember(name || m.name, data, m.id); await reload(); cancelEdit(m.id); }
+    catch (e) { window.alert("Save failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const deleteMember = async (m) => {
+    if (!window.confirm(`Remove ${m.name} from the roster?`)) return;
+    setBusy(true);
+    try { await deleteRosterMember(m.id); await reload(); }
+    catch (e) { window.alert("Delete failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const saveNew = async () => {
+    if (!adding?.name?.trim()) { window.alert("Name is required."); return; }
+    setBusy(true);
+    const { name, ...data } = adding;
+    try { await saveRosterMember(name.trim(), data); await reload(); setAdding(null); }
+    catch (e) { window.alert("Save failed: " + e.message); }
+    finally { setBusy(false); }
+  };
+
+  const genLink = async () => {
+    setLinkState("loading");
+    try {
+      const r = await generateOnboardLink();
+      setOnboardUrl(r.url);
+      setLinkState("done");
+    } catch (e) {
+      window.alert("Couldn\'t generate link: " + (e.message || "error"));
+      setLinkState("idle");
+    }
+  };
+  const copyLink = () => { navigator.clipboard?.writeText(onboardUrl).catch(() => {}); };
+
+  const addPosition = async () => {
+    const p = newPos.trim();
+    if (!p || positions.includes(p)) return;
+    const next = [...positions, p];
+    setPosBusy(true);
+    try { await savePositions(next); await reloadPositions(); setNewPos(""); }
+    catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+  const removePosition = async (pos) => {
+    if (!window.confirm(`Remove "${pos}" from the positions list?`)) return;
+    const next = positions.filter((p) => p !== pos);
+    setPosBusy(true);
+    try { await savePositions(next); await reloadPositions(); if (filterPos === pos) setFilterPos("All"); }
+    catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+
 
   return (
     <div className="stack">
@@ -2474,7 +2497,7 @@ function RosterTab() {
       <div className="roster-posbar">
         <div className="roster-poschips">
           <button className={"pl-chip " + (filterPos === "All" ? "on" : "")} onClick={() => setFilterPos("All")}>All</button>
-          {positions.filter((pos) => roster.some((m) => m.data?.position === pos)).map((pos) => (
+          {positions.filter((pos) => roster.some((m) => memberPositions(m.data).includes(pos))).map((pos) => (
             <button key={pos} className={"pl-chip " + (filterPos === pos ? "on" : "")} onClick={() => setFilterPos(filterPos === pos ? "All" : pos)}>{pos}</button>
           ))}
         </div>
@@ -2517,6 +2540,8 @@ function RosterTab() {
             onSave={saveNew}
             onCancel={() => setAdding(null)}
             saveLabel="Add to roster"
+            busy={busy}
+            positions={positions}
           />
         </Panel>
       )}
@@ -2526,7 +2551,7 @@ function RosterTab() {
           <Empty>No crew yet. Add your first member above.</Empty>
         )}
         <div className="roster-list">
-          {roster.filter((m) => filterPos === "All" || m.data?.position === filterPos).map((m) => {
+          {roster.filter((m) => filterPos === "All" || memberPositions(m.data).includes(filterPos)).map((m) => {
             const d = m.data || {};
             const isEdit = !!editing[m.id];
             return (
@@ -2537,12 +2562,18 @@ function RosterTab() {
                     onChange={(k, v) => patchEdit(m.id, k, v)}
                     onSave={() => saveEdit(m)}
                     onCancel={() => cancelEdit(m.id)}
+                    busy={busy}
+                    positions={positions}
                   />
                 ) : (
                   <>
                     <div className="roster-person">
                       <span className="roster-name">{m.name}</span>
-                      <span className="roster-pos">{d.position || ""}</span>
+                      <div className="roster-pos-tags">
+                        {memberPositions(d).length > 0
+                          ? memberPositions(d).map((p) => <span key={p} className="roster-pos-tag">{p}</span>)
+                          : <span className="roster-pos" />}
+                      </div>
                     </div>
                     <div className="roster-contact">
                       {d.phone && <a href={"tel:" + d.phone} className="roster-link">📞 {d.phone}</a>}
@@ -3077,6 +3108,10 @@ function PullTab({ event, update, isAdmin }) {
   const [invPicked, setInvPicked] = useState(() => new Set());
   const [invSeeding, setInvSeeding] = useState(false);
   const invLoaded = useRef(false);
+  const [sheetUrl, setSheetUrl] = useState("");
+  const [sheetState, setSheetState] = useState("idle"); // idle | previewing | preview | importing | done | error
+  const [sheetPreview, setSheetPreview] = useState(null);
+  const [sheetError, setSheetError] = useState("");
   const [quoteOpen, setQuoteOpen] = useState(false);
   const [quoteState, setQuoteState] = useState("idle"); // idle | loading | preview | error
   const [quotePreview, setQuotePreview] = useState(null);
@@ -3288,6 +3323,25 @@ function PullTab({ event, update, isAdmin }) {
       setInvSeeding(false);
     }
   };
+  const previewSheet = async () => {
+    if (!sheetUrl.trim()) return;
+    setSheetState("previewing"); setSheetError("");
+    try {
+      const r = await previewInventoryImport(sheetUrl.trim());
+      setSheetPreview(r); setSheetState("preview");
+    } catch (e) { setSheetError(e.message || "Failed to read sheet."); setSheetState("error"); }
+  };
+  const importSheet = async () => {
+    if (!window.confirm(`Replace all ${sheetPreview?.cases || ""}  sheet-imported inventory cases with the latest data from the sheet?\nManual cases you added in the app are untouched.`)) return;
+    setSheetState("importing"); setSheetError("");
+    try {
+      await confirmInventoryImport(sheetUrl.trim());
+      invLoaded.current = false;
+      await loadInv();
+      setSheetState("done");
+      setTimeout(() => { setSheetState("idle"); setSheetPreview(null); }, 3000);
+    } catch (e) { setSheetError(e.message || "Import failed."); setSheetState("error"); }
+  };
   const resetQuote = () => {
     setQuoteState("idle");
     setQuotePreview(null);
@@ -3477,18 +3531,22 @@ function PullTab({ event, update, isAdmin }) {
   const prog = (c) => ({ out: c.items.filter((i) => i.out).length, back: c.items.filter((i) => i.in).length, total: c.items.length });
 
   /* ---- render helpers ---- */
+  const SOURCE_OPTS = ["TCG", "Sub-Rental", "Venue", "Other"];
+  const needsRentedFrom = (src) => src && src !== "TCG";
   const itemEdit = (cid, it) => (
     <div className="pl-item-edit" key={it.id}>
-      <div className="pl-ie1">
-        <input className="pl-inp" value={it.item} placeholder="Item name" onChange={(e) => patchItem(cid, it.id, { item: e.target.value })} />
+      <div className={"pl-ie1" + (needsRentedFrom(it.source) ? " with-rent" : "")}>
+        <input className="pl-inp pl-iename" value={it.item} placeholder="Item name" onChange={(e) => patchItem(cid, it.id, { item: e.target.value })} />
         <input className="pl-inp pl-ieqty" value={it.qty} placeholder="Qty" onChange={(e) => patchItem(cid, it.id, { qty: e.target.value })} />
+        <select className="pl-inp pl-iesrc" value={SOURCE_OPTS.includes(it.source) ? it.source : (it.source ? "Other" : "TCG")} onChange={(e) => patchItem(cid, it.id, { source: e.target.value, rentedFrom: e.target.value === "TCG" ? "" : it.rentedFrom })}>
+          {SOURCE_OPTS.map((s) => <option key={s}>{s}</option>)}
+        </select>
+        {needsRentedFrom(it.source) && (
+          <input className="pl-inp pl-ierent" value={it.rentedFrom} placeholder="Vendor" onChange={(e) => patchItem(cid, it.id, { rentedFrom: e.target.value })} />
+        )}
         <button className="pl-x" onClick={() => deleteItem(cid, it.id)} title="Remove item">×</button>
       </div>
-      <div className="pl-ie2">
-        <input className="pl-inp" value={it.source} placeholder="Source (TCG…)" onChange={(e) => patchItem(cid, it.id, { source: e.target.value })} />
-        <input className="pl-inp" value={it.rentedFrom} placeholder="Rented from" onChange={(e) => patchItem(cid, it.id, { rentedFrom: e.target.value })} />
-        <input className="pl-inp" value={it.notes} placeholder="Notes" onChange={(e) => patchItem(cid, it.id, { notes: e.target.value })} />
-      </div>
+      <input className="pl-inp pl-ienotes" value={it.notes} placeholder="Notes (optional)" onChange={(e) => patchItem(cid, it.id, { notes: e.target.value })} />
     </div>
   );
   const itemRead = (cid, it, cc) => {
@@ -3706,6 +3764,53 @@ function PullTab({ event, update, isAdmin }) {
               )}
               {invState === "idle" && invCases.length > 0 && (
                 <>
+                  {/* Google Sheet sync — admin only */}
+                  {isAdmin && (
+                    <div className="pl-sheetimport">
+                      <div className="pl-tplhdr" style={{ margin: "0 0 6px" }}>Sync from Google Sheet</div>
+                      <div className="pl-sheetrow">
+                        <input
+                          className="pl-search"
+                          style={{ flex: 1, fontSize: 12 }}
+                          value={sheetUrl}
+                          onChange={(e) => { setSheetUrl(e.target.value); setSheetState("idle"); setSheetPreview(null); }}
+                          placeholder="Paste Google Sheet URL…"
+                        />
+                        <button className="pl-btn" onClick={previewSheet} disabled={!sheetUrl.trim() || sheetState === "previewing"}>
+                          {sheetState === "previewing" ? "Reading…" : "Preview"}
+                        </button>
+                      </div>
+                      {sheetState === "error" && <div className="pl-quoteerr" style={{ marginTop: 6 }}>{sheetError}</div>}
+                      {sheetState === "preview" && sheetPreview && (
+                        <div className="pl-sheetpreview">
+                          <div className="pl-sheetstat">
+                            Found <b>{sheetPreview.cases}</b> cases · <b>{sheetPreview.items}</b> items
+                            {sheetPreview.caseNames.some(c => c.name === "Unassigned Gear") && <span className="pl-sheetdim"> (incl. unassigned items)</span>}
+                          </div>
+                          <div className="pl-sheetchips">
+                            {sheetPreview.caseNames.map((c) => {
+                              const cc = PULL_CATS[c.category] || PULL_CATS.Misc;
+                              return (
+                                <span key={c.name} className="pl-sheetchip" style={{ borderColor: cc.ring }}>
+                                  <span className="pl-dot" style={{ background: cc.color }} />
+                                  {c.name}
+                                  <span className="pl-sheetdim"> {c.count}</span>
+                                </span>
+                              );
+                            })}
+                          </div>
+                          <div className="pl-sheetactions">
+                            <button className="pl-btn" onClick={importSheet} disabled={sheetState === "importing"}>
+                              {sheetState === "importing" ? "Importing…" : "Replace sheet cases"}
+                            </button>
+                            <button className="pl-quotecancelbtn" onClick={() => { setSheetState("idle"); setSheetPreview(null); }}>Cancel</button>
+                          </div>
+                          <p className="pl-tplnote" style={{ marginTop: 6 }}>Sheet-imported cases are replaced. Cases you added manually are kept.</p>
+                        </div>
+                      )}
+                      {sheetState === "done" && <div style={{ color: "var(--green)", fontSize: 12.5, marginTop: 6, fontWeight: 600 }}>✓ Inventory synced from sheet</div>}
+                    </div>
+                  )}
                   <div className="pl-invcontrols">
                     <span className="pl-tplhdr" style={{ margin: 0 }}>{invCases.length} case{invCases.length === 1 ? "" : "s"} in inventory</span>
                     {isAdmin && (
@@ -3872,7 +3977,7 @@ function PullTab({ event, update, isAdmin }) {
           return (
             <div className="pl-card" key={c.id} style={{ borderColor: cc.ring }}>
               {editOn ? (
-                <div className="pl-headedit" style={{ background: cc.soft }}>
+                <div className="pl-headedit">
                   <span className="pl-bar2" style={{ background: cc.color }} />
                   <span className="pl-hash">#</span>
                   <input className="pl-inp pl-no" value={c.caseNo} onChange={(e) => patchCase(c.id, { caseNo: e.target.value })} />
@@ -4363,98 +4468,113 @@ const CSS = `
 .pl-savetpl { margin-top:8px; width:100%; border:1px dashed #B7CBE6; color:#1d4ed8; background:#F5F9FF; border-radius:8px; padding:8px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
 
 .pl-cases { display:flex; flex-direction:column; gap:10px; }
-.pl-card { border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; background:#fff; }
-.pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; }
-.pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto; gap:8px; align-items:center; padding:9px 12px 9px 0; }
+.pl-card { border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); box-shadow:0 1px 3px rgba(0,0,0,.2); }
+.pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; background:var(--panel); }
+.pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto; gap:8px; align-items:center; padding:8px 12px 8px 0; background:var(--panel2); border-bottom:1px solid var(--line); }
 .pl-bar2 { width:5px; align-self:stretch; flex-shrink:0; min-height:34px; border-radius:0; }
-.pl-hash { color:#64748b; font-size:12px; font-weight:700; }
+.pl-hash { color:var(--faint); font-size:12px; font-weight:700; }
 .pl-caseno { color:#fff; font-size:11.5px; font-weight:700; border-radius:6px; padding:2px 7px; flex-shrink:0; }
-.pl-casename { font-weight:700; font-size:14px; color:#0F1E35; }
+.pl-casename { font-weight:700; font-size:14px; color:var(--ink); }
 .pl-tag { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; border:1px solid; border-radius:999px; padding:1px 8px; }
 .pl-spacer { flex:1; }
-.pl-count { font-size:12px; color:#64748b; font-weight:600; white-space:nowrap; }
+.pl-count { font-size:12px; color:var(--dim); font-weight:600; white-space:nowrap; }
 .pl-count em { font-style:normal; }
-.pl-chev { font-size:20px; color:#94a3b8; margin-right:12px; line-height:1; transition:transform .15s; }
-.pl-del { border:1px solid #F4BFBF; color:#DC2626; background:#fff; border-radius:8px; padding:5px 10px; font-size:11.5px; font-weight:700; cursor:pointer; margin-right:10px; }
+.pl-chev { font-size:20px; color:var(--faint); margin-right:12px; line-height:1; transition:transform .15s; }
+.pl-del { border:1px solid rgba(220,38,38,.4); color:#f87171; background:none; border-radius:8px; padding:5px 10px; font-size:11.5px; font-weight:700; cursor:pointer; margin-right:10px; }
 
-.pl-body { padding:4px 14px 10px; }
-.pl-drawerlbl { font-size:11px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:.6px; margin:10px 0 4px; }
-.pl-row { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:8px; border-bottom:1px solid #f1f5f9; }
-.pl-row.out { background:#FFF9F0; }
+.pl-body { padding:4px 12px 10px; background:var(--panel); }
+.pl-drawerlbl { font-size:10.5px; font-weight:700; color:var(--faint); text-transform:uppercase; letter-spacing:.6px; margin:10px 0 3px; }
+.pl-row { display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:7px; border-bottom:1px solid var(--line); }
+.pl-row:last-child { border-bottom:none; }
+.pl-row.out { background:rgba(255,152,0,.07); }
 .pl-itemcol { min-width:0; flex:1; }
-.pl-itemname { font-size:13.5px; font-weight:600; color:#1e293b; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.pl-itemname { font-size:13.5px; font-weight:600; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .pl-meta { font-size:11.5px; margin-top:3px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
-.pl-badge { font-size:10.5px; font-weight:700; background:#EEF2F7; color:#475569; border-radius:5px; padding:1px 6px; }
-.pl-note { color:#64748b; }
-.pl-qtyv { font-size:13px; font-weight:700; color:#0F1E35; width:42px; text-align:right; flex-shrink:0; }
-.pl-check { border:1.5px solid #D8DEE7; background:#fff; color:#64748b; border-radius:8px; padding:5px 10px; font-size:12px; font-weight:700; width:58px; flex-shrink:0; cursor:pointer; }
+.pl-badge { font-size:10.5px; font-weight:700; background:rgba(255,255,255,.07); color:var(--dim); border-radius:5px; padding:1px 6px; }
+.pl-note { color:var(--dim); }
+.pl-qtyv { font-size:13px; font-weight:700; color:var(--ink); width:42px; text-align:right; flex-shrink:0; }
+.pl-check { border:1.5px solid var(--line); background:none; color:var(--dim); border-radius:8px; padding:5px 10px; font-size:12px; font-weight:700; width:58px; flex-shrink:0; cursor:pointer; }
 .pl-check.green.on { background:#059669; border-color:#059669; color:#fff; }
-.pl-check.dis { opacity:.5; cursor:not-allowed; color:#C3CBD6; }
+.pl-check.dis { opacity:.4; cursor:not-allowed; }
 
-.pl-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:2px; }
-.pl-tbbtn { border:1px dashed #B9C4D2; color:#0F1E35; background:#fff; border-radius:10px; padding:10px 14px; font-size:13px; font-weight:700; cursor:pointer; flex:1; min-width:140px; }
-.pl-tbbtn:hover { background:#F5F8FC; }
+.pl-toolbar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:4px; }
+.pl-tbbtn { border:1px dashed var(--line); color:var(--dim); background:none; border-radius:10px; padding:10px 14px; font-size:13px; font-weight:700; cursor:pointer; flex:1; min-width:140px; }
+.pl-tbbtn:hover { background:var(--panel2); }
 
-.pl-loosecard { border:1px solid #e2e8f0; }
-.pl-loosehead { display:flex; align-items:baseline; gap:8px; padding:10px 14px; background:#F1F4F9; border-bottom:1px solid #e8edf3; }
-.pl-loosetitle { font-weight:700; font-size:14px; color:#0F1E35; }
-.pl-loosesub { font-size:11px; color:#94a3b8; }
+.pl-loosecard { border:1px solid var(--line); }
+.pl-loosehead { display:flex; align-items:baseline; gap:8px; padding:10px 14px; background:var(--panel); border-bottom:1px solid var(--line); }
+.pl-loosetitle { font-weight:700; font-size:14px; color:var(--ink); }
+.pl-loosesub { font-size:11px; color:var(--faint); }
 
-.pl-item-edit { padding:8px; border-radius:8px; border:1px solid #eef2f7; margin-bottom:6px; }
-.pl-ie1 { display:grid; grid-template-columns:minmax(0,1fr) 62px 32px; gap:6px; align-items:center; }
-.pl-ie2 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; margin-top:6px; }
-.pl-inp { border:1px solid #D8DEE7; border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; min-width:0; }
+.pl-item-edit { padding:6px 4px; border-bottom:1px solid var(--line); }
+.pl-item-edit:last-of-type { border-bottom:none; }
+.pl-ie1 { display:grid; grid-template-columns:minmax(0,1fr) 52px 80px 32px; gap:5px; align-items:center; }
+.pl-ie1.with-rent { grid-template-columns:minmax(0,1fr) 52px 80px minmax(80px,.5fr) 32px; }
+.pl-inp { border:1px solid var(--line); border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; min-width:0; background:var(--panel2); color:var(--ink); }
+.pl-inp:focus { border-color:var(--amber); box-shadow:0 0 0 2px rgba(255,176,32,.12); }
+.pl-inp::placeholder { color:var(--faint); }
 .pl-ieqty { text-align:center; }
+.pl-ienotes { width:100%; margin-top:3px; font-size:12px; color:var(--faint); background:transparent; border:none; border-bottom:1px solid transparent; padding:2px 4px; border-radius:0; }
+.pl-ienotes:focus { border-bottom-color:var(--amber); outline:none; color:var(--ink); }
+.pl-ienotes::placeholder { color:var(--faint); opacity:.6; }
 .pl-no { font-weight:700; text-align:center; }
 .pl-name { font-weight:700; }
 .pl-cat { font-weight:700; }
-.pl-x { border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:7px; width:32px; height:32px; font-size:17px; line-height:1; cursor:pointer; flex-shrink:0; padding:0; }
+.pl-x { border:1px solid rgba(220,38,38,.35); color:#f87171; background:none; border-radius:7px; width:32px; height:32px; font-size:17px; line-height:1; cursor:pointer; flex-shrink:0; padding:0; }
 
-.pl-addrow { display:flex; gap:6px; margin-top:2px; }
-.pl-additem { width:100%; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
-.pl-additem.sub { margin-top:4px; background:#fff; }
-.pl-adddrawer { white-space:nowrap; border:1px dashed #C3CDDA; color:#475569; background:#F8FAFC; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
-.pl-invsave { white-space:nowrap; border:1px solid #D8DEE7; color:#334155; background:#fff; border-radius:8px; padding:7px 12px; font-size:12px; font-weight:600; cursor:pointer; }
-.pl-invsave:hover { background:#F1F5F9; }
+.pl-addrow { display:flex; gap:6px; margin-top:6px; padding-top:6px; border-top:1px solid var(--line); }
+.pl-additem { width:100%; border:1px dashed var(--line); color:var(--dim); background:transparent; border-radius:8px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+.pl-additem.sub { margin-top:4px; }
+.pl-adddrawer { white-space:nowrap; border:1px dashed var(--line); color:var(--dim); background:transparent; border-radius:8px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+.pl-invsave { white-space:nowrap; border:1px solid var(--line); color:var(--dim); background:transparent; border-radius:8px; padding:6px 12px; font-size:12px; font-weight:600; cursor:pointer; }
+.pl-invsave:hover { background:var(--panel2); }
 
 /* inventory picker */
 .pl-invcontrols { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
-.pl-invseedbtn { border:1px solid #D8DEE7; background:#fff; color:#64748b; border-radius:7px; padding:4px 10px; font-size:11.5px; font-weight:600; cursor:pointer; }
+.pl-invseedbtn { border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:7px; padding:4px 10px; font-size:11.5px; font-weight:600; cursor:pointer; }
 .pl-invseedbtn:disabled { opacity:.5; cursor:not-allowed; }
 .pl-invcat-grp { margin-bottom:6px; }
 .pl-invcat { display:flex; align-items:center; gap:6px; font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; padding:4px 0 2px; }
-.pl-invrow { display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid #F1F5F9; cursor:pointer; }
+.pl-invrow { display:flex; align-items:center; gap:8px; padding:6px 4px; border-bottom:1px solid var(--line); cursor:pointer; }
 .pl-invrow:last-child { border-bottom:none; }
 .pl-invrow input { width:16px; height:16px; flex-shrink:0; cursor:pointer; }
-.pl-invname { flex:1; font-size:13px; font-weight:600; color:#1e293b; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.pl-invmeta { font-size:11.5px; color:#94a3b8; flex-shrink:0; }
+.pl-invname { flex:1; font-size:13px; font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pl-invmeta { font-size:11.5px; color:var(--faint); flex-shrink:0; }
+.pl-sheetimport { border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:10px; }
+.pl-sheetrow { display:flex; gap:8px; align-items:center; }
+.pl-sheetpreview { margin-top:8px; }
+.pl-sheetstat { font-size:13px; color:var(--ink); margin-bottom:8px; }
+.pl-sheetdim { color:var(--faint); font-size:11.5px; }
+.pl-sheetchips { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:10px; }
+.pl-sheetchip { display:inline-flex; align-items:center; gap:5px; border:1px solid; border-radius:6px; padding:2px 8px; font-size:11.5px; color:var(--ink); }
+.pl-sheetactions { display:flex; gap:8px; align-items:center; }
 
-.pl-drawergrp { margin-top:10px; padding:8px; border:1px solid #eef2f7; border-radius:10px; background:#FAFBFD; }
+.pl-drawergrp { margin-top:8px; padding:6px 8px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
 .pl-drawerhead { display:grid; grid-template-columns:auto minmax(0,1fr) 32px; gap:6px; align-items:center; margin-bottom:6px; }
-.pl-drawerchev { color:#94a3b8; font-size:12px; }
-.pl-drawername { font-weight:700; color:#0F1E35; }
+.pl-drawerchev { color:var(--faint); font-size:12px; }
+.pl-drawername { font-weight:700; color:var(--ink); }
 
-.pl-clear { display:block; margin:6px auto 0; border:1px solid #F0D2D2; color:#DC2626; background:#fff; border-radius:8px; padding:8px 16px; font-size:12.5px; font-weight:700; cursor:pointer; }
-.pl-clear:hover { background:#FEF1F1; }
+.pl-clear { display:block; margin:6px auto 0; border:1px solid rgba(255,107,107,.35); color:var(--danger); background:transparent; border-radius:8px; padding:8px 16px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-clear:hover { background:rgba(255,107,107,.08); }
 
 /* quote PDF import */
 .pl-quotelabel { display:inline-block; cursor:pointer; }
 .pl-quoteerr { margin-top:8px; font-size:12.5px; color:#DC2626; font-weight:600; }
-.pl-quoteloading { display:flex; align-items:center; gap:10px; font-size:13px; color:#475569; padding:8px 0; }
-.pl-quotespinner { display:inline-block; width:16px; height:16px; border:2px solid #D8DEE7; border-top-color:#2563EB; border-radius:50%; animation:pl-spin .7s linear infinite; flex-shrink:0; }
+.pl-quoteloading { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--dim); padding:8px 0; }
+.pl-quotespinner { display:inline-block; width:16px; height:16px; border:2px solid var(--line); border-top-color:var(--amber); border-radius:50%; animation:pl-spin .7s linear infinite; flex-shrink:0; }
 @keyframes pl-spin { to { transform:rotate(360deg); } }
 .pl-quotepreview { display:flex; flex-direction:column; gap:6px; margin-bottom:10px; }
-.pl-quotecase { border:1px solid #E2E8F0; border-radius:8px; overflow:hidden; }
-.pl-quotecasehead { display:flex; align-items:center; gap:8px; padding:7px 10px; background:#F8FAFC; }
+.pl-quotecase { border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.pl-quotecasehead { display:flex; align-items:center; gap:8px; padding:7px 10px; background:var(--panel2); }
 .pl-quotedot { width:9px; height:9px; border-radius:50%; flex-shrink:0; }
-.pl-quotecasename { font-weight:700; font-size:13px; color:#0F1E35; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pl-quotecasename { font-weight:700; font-size:13px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pl-quotecatetag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
 .pl-quotecasecount { font-size:11.5px; color:#94A3B8; font-weight:600; flex-shrink:0; }
 .pl-quoteitems { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px; background:#fff; }
 .pl-quoteitem { font-size:11.5px; color:#475569; background:#F1F5F9; border-radius:5px; padding:2px 7px; }
 .pl-quoteitem.more { color:#94A3B8; }
 .pl-quoteactions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-.pl-quotecancelbtn { border:1px solid #D8DEE7; background:#fff; color:#64748B; border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
+.pl-quotecancelbtn { border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:8px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; }
 
 /* P&L quote import preview */
 .pnl-qpreview { display:flex; flex-direction:column; gap:6px; margin-bottom:4px; border:1px solid #E2E8F0; border-radius:10px; overflow:hidden; }
@@ -4499,7 +4619,12 @@ const CSS = `
 .cb .roster-managepos:hover { background:var(--panel2); }
 .cb .roster-linkbox { display:flex; gap:8px; align-items:center; }
 .cb .roster-linkurl { flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--dim); font-family:monospace; }
-.cb .roster-pos-chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+.cb .roster-pos-tags { display:flex; flex-wrap:wrap; gap:4px; }
+.cb .roster-pos-tag { font-size:11px; background:rgba(255,255,255,.08); border:1px solid var(--line); border-radius:5px; padding:1px 7px; color:var(--dim); }
+.cb .roster-pos-sel { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+.cb .roster-pos-opt { border:1px solid var(--line); background:none; color:var(--dim); border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:600; cursor:pointer; transition:all .12s; }
+.cb .roster-pos-opt.on { background:var(--amber); border-color:var(--amber); color:#0F1E35; }
+.cb .roster-pos-opt:hover:not(.on) { border-color:var(--amber); color:var(--amber); }
 .cb .roster-pos-chip { display:inline-flex; align-items:center; gap:5px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:3px 8px 3px 11px; font-size:12.5px; color:var(--ink); }
 .cb .roster-pos-chip button { background:none; border:none; color:var(--faint); cursor:pointer; font-size:14px; line-height:1; padding:0; }
 .cb .roster-pos-chip button:hover { color:var(--danger); }
