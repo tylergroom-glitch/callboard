@@ -63,6 +63,25 @@ export const listTemplates = () => api("GET", "/api/templates");
 export const createTemplate = (name, data) => api("POST", "/api/templates", { name, data });
 export const deleteTemplate = (id) => api("DELETE", "/api/templates?id=" + encodeURIComponent(id));
 
-// Per-show P&L / costing (admin-only endpoint; never exposed to crew).
+// Global crew roster (admin manages, any signed-in user can read for autocomplete).
+export const listRoster = () => api("GET", "/api/roster");
+export const saveRosterMember = (name, data, id) =>
+  api("POST", "/api/roster", { name, data, ...(id ? { id } : {}) });
+export const deleteRosterMember = (id) =>
+  api("DELETE", "/api/roster?id=" + encodeURIComponent(id));
+export const getPositions = () => api("GET", "/api/roster?positions=1");
+export const savePositions = (positions) =>
+  api("POST", "/api/roster?positions=1", { positions });
+export const generateOnboardLink = () => api("GET", "/api/onboard?generate=1");
+
+// Per-case inventory (global catalog; admin manages, any signed-in user can pick for a show).
+export const listInventory = () => api("GET", "/api/inventory");
+export const saveInventoryCase = (name, category, data, id) =>
+  api("POST", "/api/inventory", { name, category, data, ...(id ? { id } : {}) });
+export const deleteInventoryCase = (id) =>
+  api("DELETE", "/api/inventory?id=" + encodeURIComponent(id));
 export const getCosting = (id) => api("GET", "/api/costing?id=" + encodeURIComponent(id));
 export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + encodeURIComponent(id), { costing });
+
+// Import gear from a quote PDF (passes the PDF to the Claude API for extraction).
+export const importQuote = (pdf) => api("POST", "/api/import-quote", { pdf });
