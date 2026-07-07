@@ -3048,7 +3048,6 @@ function groupPullByDrawer(items) {
 function PullTab({ event, update, isAdmin }) {
   const cases = event.pull.cases;
   const loose = event.pull.loose || [];
-  const loose = event.pull.loose || [];
   const unlocked = !!event.gearEditUnlocked;
   const canEdit = isAdmin || unlocked;
   const [editing, setEditing] = useState(false);
