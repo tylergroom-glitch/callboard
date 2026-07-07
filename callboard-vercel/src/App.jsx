@@ -817,7 +817,6 @@ function Callboard({ auth, onLogout }) {
     event.startDate && event.endDate ? `${prettyDate(event.startDate)} – ${prettyDate(event.endDate)}` : "Dates TBD";
 
   return (
-    <RosterProvider>
     <div className="cb">
       <style>{CSS}</style>
         <div className="brand">
@@ -895,7 +894,6 @@ function Callboard({ auth, onLogout }) {
 
       {toast && <div className="toast">{toast}</div>}
     </div>
-    </RosterProvider>
   );
 }
 
@@ -4572,12 +4570,14 @@ export default function Root() {
   const [auth, setAuth] = useState(() => currentAuth());
   if (!auth) return <Login onDone={(a) => setAuth(a)} />;
   return (
-    <Callboard
-      auth={auth}
-      onLogout={() => {
-        dbLogout();
-        setAuth(null);
-      }}
-    />
+    <RosterProvider>
+      <Callboard
+        auth={auth}
+        onLogout={() => {
+          dbLogout();
+          setAuth(null);
+        }}
+      />
+    </RosterProvider>
   );
 }
