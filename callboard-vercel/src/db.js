@@ -73,6 +73,10 @@ export const getPositions = () => api("GET", "/api/roster?positions=1");
 export const savePositions = (positions) =>
   api("POST", "/api/roster?positions=1", { positions });
 export const generateOnboardLink = () => api("GET", "/api/onboard?generate=1");
+export const previewInventoryImport = (sheetUrl) =>
+  api("POST", "/api/import-inventory", { sheetUrl, preview: true });
+export const confirmInventoryImport = (sheetUrl) =>
+  api("POST", "/api/import-inventory", { sheetUrl, confirm: true });
 
 // Per-case inventory (global catalog; admin manages, any signed-in user can pick for a show).
 export const listInventory = () => api("GET", "/api/inventory");
