@@ -1261,6 +1261,8 @@ function WeatherCard({ city, onCity, startDate, endDate }) {
 const memberPositions = (data) =>
   Array.isArray(data?.positions) ? data.positions :
   (data?.position ? [data.position] : []);
+
+const ROSTER_DEFAULT_POSITIONS = [
   "Show Caller","Production Manager","Stage Manager",
   "Technical Director","Video Director",
   "Audio Engineer (A1)","Monitor Engineer (A2)",
