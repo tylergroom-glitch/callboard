@@ -2406,7 +2406,6 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
           <label className="roster-lbl">Name</label>
           <input className="roster-inp" value={vals.name || ""} placeholder="Full name" onChange={(e) => onChange("name", e.target.value)} />
         </div>
-        <div className="roster-form-col">
         <div className="roster-form-col full">
           <label className="roster-lbl">Positions — tap to select (multiple allowed)</label>
           <div className="roster-pos-sel">
