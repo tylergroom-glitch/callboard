@@ -287,7 +287,7 @@ function normalize(e) {
   e.audio = e.audio || { blocks: [ioBlock("Main")] };
   e.video = e.video || { blocks: [ioBlock("Main")] };
   e.crew = e.crew.map((c) => ({
-    rosterId: null, rateType: "day", rate: "", ...c,
+    rosterId: null, rateType: "day", rate: "", crewNotes: "", ...c,
   }));
   e.records = e.records || [];
   e.diagrams = e.diagrams || [];
@@ -307,6 +307,14 @@ function normalize(e) {
   });
   if (typeof e.gearEditUnlocked !== "boolean") e.gearEditUnlocked = false;
   if (typeof e.scheduleUnlocked !== "boolean") e.scheduleUnlocked = false;
+  if (typeof e.audioUnlocked !== "boolean") e.audioUnlocked = false;
+  if (typeof e.videoUnlocked !== "boolean") e.videoUnlocked = false;
+  if (typeof e.briefUnlocked !== "boolean") e.briefUnlocked = false;
+  if (typeof e.itineraryUnlocked !== "boolean") e.itineraryUnlocked = false;
+  if (typeof e.hoursUnlocked !== "boolean") e.hoursUnlocked = false;
+  if (typeof e.documentsUnlocked !== "boolean") e.documentsUnlocked = false;
+  if (typeof e.diagramsUnlocked !== "boolean") e.diagramsUnlocked = false;
+  if (typeof e.recordsUnlocked !== "boolean") e.recordsUnlocked = false;
   return e;
 }
 
@@ -359,6 +367,14 @@ function blankEvent() {
     pull: { cases: [], loose: [] },
     gearEditUnlocked: false,
     scheduleUnlocked: false,
+    audioUnlocked: false,
+    videoUnlocked: false,
+    briefUnlocked: false,
+    itineraryUnlocked: false,
+    hoursUnlocked: false,
+    documentsUnlocked: false,
+    diagramsUnlocked: false,
+    recordsUnlocked: false,
   };
 }
 
@@ -538,6 +554,14 @@ function seedEvent() {
     pull: { cases: clone(PULL_SEED), loose: [] },
     gearEditUnlocked: false,
     scheduleUnlocked: false,
+    audioUnlocked: false,
+    videoUnlocked: false,
+    briefUnlocked: false,
+    itineraryUnlocked: false,
+    hoursUnlocked: false,
+    documentsUnlocked: false,
+    diagramsUnlocked: false,
+    recordsUnlocked: false,
   };
 }
 
@@ -878,19 +902,22 @@ function Callboard({ auth, onLogout }) {
             </button>
             <div className="pagebar-title">{SECTION_LABEL[tab] || ""}</div>
             <div className="pagebar-evt" title={event.name}>{event.name}</div>
+            <button className="print-btn" onClick={() => window.print()} title="Print or save as PDF">
+              🖨️ Print / PDF
+            </button>
           </div>
-          <main className="content">
-            {tab === "brief" && <BriefTab event={event} update={update} />}
+          <main className="content" data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
+            {tab === "brief" && <LockWrapper canEdit={isAdmin || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isAdmin} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isAdmin} />}
-            {tab === "documents" && <DocumentsTab event={event} update={update} />}
-            {tab === "itinerary" && <ItineraryTab event={event} update={update} />}
+            {tab === "documents" && <LockWrapper canEdit={isAdmin || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
+            {tab === "itinerary" && <LockWrapper canEdit={isAdmin || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
-            {tab === "audio" && <IOTab event={event} update={update} kind="audio" />}
-            {tab === "video" && <IOTab event={event} update={update} kind="video" />}
-            {tab === "diagrams" && <DiagramsTab event={event} update={update} />}
+            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isAdmin} />}
+            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isAdmin} />}
+            {tab === "diagrams" && <LockWrapper canEdit={isAdmin || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isAdmin} />}
-            {tab === "records" && <RecordsTab event={event} update={update} />}
-            {tab === "hours" && <HoursTab event={event} update={update} />}
+            {tab === "records" && <LockWrapper canEdit={isAdmin || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
+            {tab === "hours" && <LockWrapper canEdit={isAdmin || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
             {tab === "costing" && isAdmin && <CostingTab event={event} />}
             {tab === "roster" && isAdmin && <RosterTab />}
           </main>
@@ -988,6 +1015,34 @@ function tileStat(key, event) {
   }
 }
 
+/* ---- tab lock system ---- */
+const TAB_LOCKS = [
+  { label: "Brief",          key: "briefUnlocked" },
+  { label: "Schedule",       key: "scheduleUnlocked" },
+  { label: "Show Documents", key: "documentsUnlocked" },
+  { label: "Audio I/O",      key: "audioUnlocked" },
+  { label: "Video I/O",      key: "videoUnlocked" },
+  { label: "Itinerary",      key: "itineraryUnlocked" },
+  { label: "Hours",          key: "hoursUnlocked" },
+  { label: "Pull List",      key: "gearEditUnlocked" },
+  { label: "Diagrams",       key: "diagramsUnlocked" },
+  { label: "Records",        key: "recordsUnlocked" },
+];
+
+/* LockWrapper — wraps a tab's content with a lock notice + CSS disable when locked */
+function LockWrapper({ canEdit, label, children }) {
+  return (
+    <div>
+      {!canEdit && (
+        <div className="tab-lock-notice">
+          🔒 {label || "This section"} is locked — view only
+        </div>
+      )}
+      <div className={canEdit ? "" : "tab-locked"}>{children}</div>
+    </div>
+  );
+}
+
 function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
   return (
     <div className="home">
@@ -1021,6 +1076,28 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
           </button>
         ))}
       </div>
+
+      {isAdmin && (
+        <div className="tab-access-panel">
+          <div className="tab-access-title">Tab access — crew editing</div>
+          <div className="tab-access-grid">
+            {TAB_LOCKS.map(({ label, key }) => {
+              const unlocked = !!event[key];
+              return (
+                <button
+                  key={key}
+                  className={"tab-access-row " + (unlocked ? "open" : "")}
+                  onClick={() => update((ev) => (ev[key] = !unlocked))}
+                >
+                  <span className="tab-access-label">{label}</span>
+                  <span className="tab-access-badge">{unlocked ? "🔓 Open" : "🔒 Locked"}</span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="tab-access-hint">Locked tabs are view-only for crew. You (admin) can always edit.</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -1250,7 +1327,7 @@ function CrewNameInput({ value, onChange, onSelect }) {
   );
 }
 
-function BriefTab({ event, update }) {
+function BriefTab({ event, update, isAdmin }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
   const copyEmails = () => {
     const emails = event.crew.map((c) => c.email).filter(Boolean).join(", ");
@@ -1398,6 +1475,14 @@ function BriefTab({ event, update }) {
                 </button>
                 <RemoveBtn onClick={() => update((ev) => ev.crew.splice(i, 1))} />
               </div>
+              {isAdmin && (
+                <input
+                  className="crew-admin-notes"
+                  value={c.crewNotes || ""}
+                  placeholder="Admin notes (private — crew can't see this)"
+                  onChange={(e) => update((ev) => (ev.crew[i].crewNotes = e.target.value))}
+                />
+              )}
             </div>
           ))}
           {!event.crew.length && <Empty>No crew yet. Add people here — they’ll show up in Hours automatically.</Empty>}
@@ -1793,8 +1878,7 @@ function NotesTab({ event, update }) {
 /* ============================================================
    AUDIO / VIDEO I/O TAB — patch sheets (one or more devices)
    ============================================================ */
-function IOList({ event, update, kind, block, bi, side }) {
-  // side: "ins" (Source) or "outs" (Destination)
+function IOList({ event, update, kind, block, bi, side, readOnly }) {
   const rows = block[side];
   const label = side === "ins" ? "Source" : "Destination";
   const addRow = () =>
@@ -1804,58 +1888,90 @@ function IOList({ event, update, kind, block, bi, side }) {
       <div className="io-side-h">{side === "ins" ? "Inputs" : "Outputs"}</div>
       <div className="rows scroll-x">
         <div className="rowhead io-grid">
-          <span>#</span><span>{label}</span><span>Patch</span><span>Signal</span><span>Notes</span><span />
+          <span>#</span><span>{label}</span><span>Patch</span><span>Signal</span><span>Notes</span>{!readOnly && <span />}
         </div>
         {rows.map((r, ri) => (
-          <div className="row io-grid" key={r.id}>
-            <input className="io-num" value={r.num} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].num = e.target.value))} />
-            <input value={r.name} placeholder={label} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].name = e.target.value))} />
-            <input value={r.patch} placeholder="Patch" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].patch = e.target.value))} />
-            <input value={r.signal} placeholder="Signal" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].signal = e.target.value))} />
-            <input value={r.notes} placeholder="Notes" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].notes = e.target.value))} />
-            <RemoveBtn onClick={() => update((ev) => ev[kind].blocks[bi][side].splice(ri, 1))} />
-          </div>
+          readOnly ? (
+            <div className="row io-grid io-ro" key={r.id}>
+              <span className="io-ro-cell dim">{r.num}</span>
+              <span className="io-ro-cell">{r.name}</span>
+              <span className="io-ro-cell dim">{r.patch}</span>
+              <span className="io-ro-cell dim">{r.signal}</span>
+              <span className="io-ro-cell dim">{r.notes}</span>
+            </div>
+          ) : (
+            <div className="row io-grid" key={r.id}>
+              <input className="io-num" value={r.num} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].num = e.target.value))} />
+              <input value={r.name} placeholder={label} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].name = e.target.value))} />
+              <input value={r.patch} placeholder="Patch" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].patch = e.target.value))} />
+              <input value={r.signal} placeholder="Signal" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].signal = e.target.value))} />
+              <input value={r.notes} placeholder="Notes" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].notes = e.target.value))} />
+              <RemoveBtn onClick={() => update((ev) => ev[kind].blocks[bi][side].splice(ri, 1))} />
+            </div>
+          )
         ))}
         {!rows.length && <Empty>No {side === "ins" ? "inputs" : "outputs"} yet.</Empty>}
       </div>
-      <AddBtn onClick={addRow}>{side === "ins" ? "Input" : "Output"}</AddBtn>
+      {!readOnly && <AddBtn onClick={addRow}>{side === "ins" ? "Input" : "Output"}</AddBtn>}
     </div>
   );
 }
 
-function IOTab({ event, update, kind }) {
+function IOTab({ event, update, kind, isAdmin }) {
   const data = event[kind];
   const title = kind === "audio" ? "Audio" : "Video";
+  const lockKey = kind === "audio" ? "audioUnlocked" : "videoUnlocked";
+  const unlocked = !!event[lockKey];
+  const canEdit = isAdmin || unlocked;
   const addBlock = () => update((ev) => ev[kind].blocks.push(ioBlock("New device")));
   return (
     <div className="stack">
+      {/* lock bar */}
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev[lockKey] = !unlocked))}>
+              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+            </button>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 {title} I/O locked — view only</span>
+          )}
+          {isAdmin && (
+            <span className="pl-lockhint">
+              {unlocked ? `Any crew on this show can edit the ${title} patch.` : `Only you (admin) can edit the ${title} patch.`}
+            </span>
+          )}
+        </div>
+      </div>
+
       <div className="tab-lead">
         <p>{title} in / out patch. Add a device for each console, switcher, or processor, then list its inputs and outputs.</p>
-        <AddBtn onClick={addBlock}>Device</AddBtn>
+        {canEdit && <AddBtn onClick={addBlock}>Device</AddBtn>}
       </div>
 
       {data.blocks.map((block, bi) => (
         <Panel
           key={block.id}
-          title={
-            <input
-              className="daytitle"
-              value={block.name}
-              placeholder="Device / console"
-              onChange={(e) => update((ev) => (ev[kind].blocks[bi].name = e.target.value))}
-            />
+          title={canEdit
+            ? <input className="daytitle" value={block.name} placeholder="Device / console" onChange={(e) => update((ev) => (ev[kind].blocks[bi].name = e.target.value))} />
+            : <span className="daytitle-ro">{block.name || "Device"}</span>
           }
-          action={<RemoveBtn title="Remove device" onClick={() => update((ev) => ev[kind].blocks.splice(bi, 1))} />}
+          action={canEdit
+            ? <RemoveBtn title="Remove device" onClick={() => update((ev) => ev[kind].blocks.splice(bi, 1))} />
+            : null
+          }
         >
           <div className="io-cols">
-            <IOList event={event} update={update} kind={kind} block={block} bi={bi} side="ins" />
-            <IOList event={event} update={update} kind={kind} block={block} bi={bi} side="outs" />
+            <IOList event={event} update={update} kind={kind} block={block} bi={bi} side="ins" readOnly={!canEdit} />
+            <IOList event={event} update={update} kind={kind} block={block} bi={bi} side="outs" readOnly={!canEdit} />
           </div>
         </Panel>
       ))}
       {!data.blocks.length && (
         <Panel title={title + " I/O"}>
-          <Empty>No devices yet. Add one to start the patch sheet.</Empty>
+          <Empty>{canEdit ? "No devices yet. Add one to start the patch sheet." : "No patch sheet yet."}</Empty>
         </Panel>
       )}
     </div>
@@ -4102,6 +4218,24 @@ const CSS = `
 .cb .hero-main{min-width:0;}
 .cb .board-label{font-family:'Oswald'; font-weight:600; letter-spacing:.14em; text-transform:uppercase; font-size:12px; color:var(--faint); margin:0 2px 12px;}
 .cb .tilegrid{display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:14px;}
+
+/* tab access panel (home screen, admin only) */
+.cb .tab-access-panel { margin-top:22px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; }
+.cb .tab-access-title { font-family:'Oswald'; font-size:12px; font-weight:600; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); margin-bottom:12px; }
+.cb .tab-access-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:6px; }
+.cb .tab-access-row { display:flex; align-items:center; justify-content:space-between; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:8px 12px; cursor:pointer; text-align:left; gap:8px; }
+.cb .tab-access-row.open { border-color:rgba(74,222,128,.3); background:rgba(74,222,128,.05); }
+.cb .tab-access-label { font-size:13px; font-weight:600; color:var(--ink); }
+.cb .tab-access-badge { font-size:12px; color:var(--dim); white-space:nowrap; flex-shrink:0; }
+.cb .tab-access-row.open .tab-access-badge { color:var(--green); }
+.cb .tab-access-hint { font-size:11.5px; color:var(--faint); margin-top:10px; }
+
+/* locked tab — disable all editing controls for crew */
+.cb .tab-lock-notice { background:rgba(255,176,32,.08); border:1px solid rgba(255,176,32,.2); border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600; color:var(--amber); margin-bottom:14px; }
+.cb .tab-locked input, .cb .tab-locked textarea, .cb .tab-locked select { pointer-events:none !important; opacity:0.65; cursor:default; }
+.cb .tab-locked .add-btn, .cb .tab-locked .rem-btn, .cb .tab-locked [class*="AddBtn"], .cb .tab-locked [class*="RemoveBtn"] { display:none !important; }
+.cb .tab-locked .movebtn, .cb .tab-locked .daysort { display:none !important; }
+.cb .tab-locked button:not(.pl-lock) { pointer-events:none; opacity:0.5; }
 .cb .tile{
   position:relative; text-align:left; cursor:pointer; color:#1A130B;
   border:2px solid rgba(0,0,0,.5); border-radius:16px; padding:16px 16px 14px; min-height:150px;
@@ -4135,6 +4269,65 @@ const CSS = `
 .cb .backbtn .chev{font-size:18px; line-height:1; margin-top:-1px;}
 .cb .pagebar-title{font-family:'Oswald'; font-weight:600; letter-spacing:.05em; text-transform:uppercase; font-size:18px; color:var(--amber);}
 .cb .pagebar-evt{margin-left:auto; color:var(--faint); font-size:13px; font-weight:500; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .print-btn{margin-left:12px; border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:8px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; flex-shrink:0;}
+.cb .print-btn:hover{border-color:var(--amber); color:var(--amber);}
+
+@media print {
+  /* hide everything except the content */
+  .cb .topbar, .cb .pagebar, .cb .tab-lock-notice,
+  .cb .pl-bar, .cb .pl-controls, .cb .pl-toolbar, .cb .pl-import,
+  .cb .pl-addcase, .cb .pl-clear, .cb .pl-additem, .cb .pl-adddrawer, .cb .pl-invsave,
+  .cb .add-btn, .cb .rem-btn, .cb .movebtn, .cb .daysort,
+  .cb .copy-emails-btn, .cb .previewbtn, .cb .linkprev-frame, .cb .linkprev-note,
+  .cb .tab-access-panel, .cb .crew-admin-notes,
+  .cb .ot-summary, .cb .headedit, .cb .pl-headedit,
+  button:not(.backbtn) { display: none !important; }
+
+  /* paper setup */
+  body, .cb { background: #fff !important; color: #111 !important; font-size: 11pt; }
+  .cb .content { padding: 0 !important; }
+  .cb .panel { border: 1px solid #ccc !important; background: #fff !important; break-inside: avoid; margin-bottom: 12pt; }
+  .cb .panel-title { color: #111 !important; font-size: 13pt; }
+
+  /* print header — show show name + tab name at top */
+  .cb .content::before {
+    content: attr(data-show) " — " attr(data-tab);
+    display: block;
+    font-weight: 700;
+    font-size: 16pt;
+    margin-bottom: 14pt;
+    padding-bottom: 8pt;
+    border-bottom: 2pt solid #111;
+  }
+
+  /* fix dark-theme text colors for print */
+  .cb .panel, .cb .stack, .cb input, .cb select, .cb textarea,
+  .cb .sched-ro-act, .cb .sched-ro-time,
+  .cb .io-ro-cell, .cb .pl-itemname, .cb .pl-row,
+  .cb .roster-name, .cb .roster-pos, .cb .roster-contact { color: #111 !important; }
+  .cb .sched-ro-time { color: #333 !important; }
+  .cb input, .cb select, .cb textarea { border-color: #ccc !important; background: #fff !important; }
+
+  /* schedule */
+  .cb .sched-ro { break-inside: avoid; }
+
+  /* pull list read-only rows */
+  .cb .pl-card { break-inside: avoid; border: 1px solid #ccc !important; background: #fff !important; }
+  .cb .pl-head { background: #f5f5f5 !important; }
+  .cb .pl-casename, .cb .pl-count { color: #111 !important; }
+
+  /* crew grid */
+  .cb .crew-grid input { border: none !important; padding: 2px 4px !important; }
+  .cb .row-tools { display: none !important; }
+
+  /* IO patch */
+  .cb .io-grid input { border: none !important; font-size: 9pt !important; }
+  .cb .scroll-x { overflow: visible !important; }
+
+  /* ensure full width */
+  .cb .content { max-width: 100% !important; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+}
 
 /* panels */
 .cb .panel{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 16px 18px;}
@@ -4165,6 +4358,9 @@ const CSS = `
 .cb .row{display:grid; gap:8px; align-items:center;}
 .cb .contact-grid{grid-template-columns:1.1fr 1.1fr 1fr 1.4fr 28px;}
 .cb .crew-grid{grid-template-columns:1.05fr 1.05fr 0.95fr 1.3fr 82px;}
+.cb .crew-admin-notes { grid-column:1 / -1; margin-top:3px; background:transparent; border:none; border-bottom:1px dashed rgba(255,176,32,.25); border-radius:0; padding:3px 4px; font-size:11.5px; color:var(--amber); opacity:.8; }
+.cb .crew-admin-notes:focus { outline:none; border-bottom-color:var(--amber); opacity:1; }
+.cb .crew-admin-notes::placeholder { color:var(--amber); opacity:.4; }
 .cb .row-tools{display:flex; align-items:center; gap:2px; justify-content:flex-end;}
 .cb .panel-actions{display:flex; gap:6px; align-items:center;}
 .cb .movebtn{background:transparent; border:1px solid transparent; color:var(--faint); width:24px; height:28px; border-radius:6px; cursor:pointer; font-size:11px; line-height:1;}
@@ -4204,8 +4400,8 @@ const CSS = `
 .cb .sched-ro{display:flex; flex-direction:column;}
 .cb .sched-ro-row{display:flex; gap:12px; padding:7px 2px; border-bottom:1px solid var(--line,#eef2f7);}
 .cb .sched-ro-row:last-child{border-bottom:none;}
-.cb .sched-ro-time{flex:0 0 88px; font-weight:700; color:#0F1E35; font-variant-numeric:tabular-nums;}
-.cb .sched-ro-act{flex:1; color:#1e293b;}
+.cb .sched-ro-time{flex:0 0 88px; font-weight:700; color:var(--amber); font-variant-numeric:tabular-nums;}
+.cb .sched-ro-act{flex:1; color:var(--ink);}
 .cb .time-in-text{font-variant-numeric:tabular-nums;}
 
 /* timesheet */
@@ -4322,6 +4518,9 @@ const CSS = `
 .cb .io-side-h{font-family:'Oswald'; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--amber); margin-bottom:8px; padding-bottom:5px; border-bottom:1px solid var(--line);}
 .cb .io-grid{grid-template-columns:44px 1.2fr .8fr .8fr 1fr 28px; min-width:420px;}
 .cb .io-num{text-align:center; font-variant-numeric:tabular-nums; color:var(--dim);}
+.cb .io-ro { min-width:420px; }
+.cb .io-ro-cell { display:flex; align-items:center; padding:0 4px; font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cb .io-ro-cell.dim { color:var(--dim); }
 
 /* diagrams */
 .cb .dropzone{border:1.5px dashed var(--line); border-radius:12px; background:var(--panel); transition:border-color .15s,background .15s;}
