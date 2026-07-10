@@ -3215,6 +3215,29 @@ function PullTab({ event, update, isAdmin }) {
   const canEdit = isAdmin || unlocked;
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(() => new Set());
+  const prevOpenRef = useRef(null);
+
+  // Expand all cases before printing, restore after
+  useEffect(() => {
+    const beforePrint = () => {
+      setOpen((prev) => {
+        prevOpenRef.current = prev;
+        return new Set(cases.map((c) => c.id).concat(["__loose__"]));
+      });
+    };
+    const afterPrint = () => {
+      if (prevOpenRef.current !== null) {
+        setOpen(prevOpenRef.current);
+        prevOpenRef.current = null;
+      }
+    };
+    window.addEventListener("beforeprint", beforePrint);
+    window.addEventListener("afterprint", afterPrint);
+    return () => {
+      window.removeEventListener("beforeprint", beforePrint);
+      window.removeEventListener("afterprint", afterPrint);
+    };
+  }, [cases]);
   const [activeCat, setActiveCat] = useState("All");
   const [query, setQuery] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -4312,10 +4335,43 @@ const CSS = `
   /* schedule */
   .cb .sched-ro { break-inside: avoid; }
 
-  /* pull list read-only rows */
-  .cb .pl-card { break-inside: avoid; border: 1px solid #ccc !important; background: #fff !important; }
-  .cb .pl-head { background: #f5f5f5 !important; }
-  .cb .pl-casename, .cb .pl-count { color: #111 !important; }
+  /* pull list — comprehensive print styles */
+  .cb .pl-check, .cb .pl-chev, .cb .pl-casecount,
+  .cb .pl-tag, .cb .pl-x, .cb .pl-del,
+  .cb .pl-addrow, .cb .pl-savetpl, .cb .pl-invseedbtn,
+  .cb .pl-invcontrols, .cb .pl-invcat-grp, .cb .pl-sheetimport { display: none !important; }
+
+  /* show all case bodies (JS collapse is irrelevant for print) */
+  .cb .pl-body { display: block !important; }
+
+  /* case cards */
+  .cb .pl-cases { display: flex; flex-direction: column; gap: 10pt; }
+  .cb .pl-card { break-inside: avoid; border: 0.75pt solid #ccc !important; background: #fff !important; border-radius: 0 !important; margin-bottom: 0; }
+  .cb .pl-head { background: #f0f0f0 !important; padding: 6pt 10pt !important; border-bottom: 0.5pt solid #ccc; }
+  .cb .pl-bar2 { width: 6px; flex-shrink: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .pl-caseno { font-size: 9pt !important; padding: 2pt 6pt !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .pl-casename { color: #000 !important; font-size: 12pt !important; font-weight: 700 !important; }
+
+  /* drawer labels */
+  .cb .pl-drawerlbl { color: #555 !important; font-size: 8pt !important; text-transform: uppercase; letter-spacing: .05em; border-bottom: 0.5pt solid #ddd !important; padding-bottom: 2pt; margin: 6pt 0 3pt; }
+
+  /* item rows */
+  .cb .pl-body { padding: 0 10pt 8pt !important; }
+  .cb .pl-row { padding: 5pt 4pt !important; border-bottom: 0.5pt solid #eee !important; background: #fff !important; display: flex; gap: 8pt; align-items: flex-start; }
+  .cb .pl-row.out { background: #fff !important; }
+  .cb .pl-itemname { color: #000 !important; font-size: 10.5pt !important; white-space: normal !important; font-weight: 600; }
+  .cb .pl-qtyv { color: #000 !important; font-weight: 700 !important; font-size: 11pt !important; width: 30pt; text-align: right; }
+  .cb .pl-itemcol { flex: 1; min-width: 0; }
+  .cb .pl-meta { font-size: 8.5pt !important; margin-top: 1pt; }
+  .cb .pl-badge { background: #eee !important; color: #444 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; padding: 1pt 4pt !important; }
+  .cb .pl-note { color: #666 !important; }
+
+  /* print checkbox — gives a paper-based □ for physical pull tracking */
+  .cb .pl-row::after { content: "□"; font-size: 14pt; color: #bbb; margin-left: auto; padding-left: 8pt; flex-shrink: 0; }
+
+  /* loose gear section */
+  .cb .pl-loosecard { break-inside: avoid; border: 0.75pt solid #ccc !important; background: #fff !important; }
+  .cb .pl-loosehead { color: #000 !important; background: #f0f0f0 !important; -webkit-print-color-adjust: exact; }
 
   /* crew grid */
   .cb .crew-grid input { border: none !important; padding: 2px 4px !important; }
@@ -4672,14 +4728,14 @@ const CSS = `
 .pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; background:var(--panel); }
 .pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto; gap:8px; align-items:center; padding:8px 12px 8px 0; background:var(--panel2); border-bottom:1px solid var(--line); }
 .pl-bar2 { width:5px; align-self:stretch; flex-shrink:0; min-height:34px; border-radius:0; }
-.pl-hash { color:var(--faint); font-size:12px; font-weight:700; }
+.pl-hash { color:#475569; font-size:12px; font-weight:700; }
 .pl-caseno { color:#fff; font-size:11.5px; font-weight:700; border-radius:6px; padding:2px 7px; flex-shrink:0; }
-.pl-casename { font-weight:700; font-size:14px; color:var(--ink); }
+.pl-casename { font-weight:700; font-size:14px; color:#0F1E35; }
 .pl-tag { font-size:10.5px; font-weight:700; text-transform:uppercase; letter-spacing:.6px; border:1px solid; border-radius:999px; padding:1px 8px; }
 .pl-spacer { flex:1; }
-.pl-count { font-size:12px; color:var(--dim); font-weight:600; white-space:nowrap; }
+.pl-count { font-size:12px; color:#334155; font-weight:600; white-space:nowrap; }
 .pl-count em { font-style:normal; }
-.pl-chev { font-size:20px; color:var(--faint); margin-right:12px; line-height:1; transition:transform .15s; }
+.pl-chev { font-size:20px; color:#64748B; margin-right:12px; line-height:1; transition:transform .15s; }
 .pl-del { border:1px solid rgba(220,38,38,.4); color:#f87171; background:none; border-radius:8px; padding:5px 10px; font-size:11.5px; font-weight:700; cursor:pointer; margin-right:10px; }
 
 .pl-body { padding:4px 12px 10px; background:var(--panel); }
