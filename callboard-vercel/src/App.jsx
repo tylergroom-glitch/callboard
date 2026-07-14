@@ -1112,6 +1112,82 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
 }
 
 /* ============================================================
+   ROSTER CONTEXT — loads the global crew roster once per session,
+   shared by the autocomplete in BriefTab and the RosterTab manager.
+   ============================================================ */
+/* Normalize roster member positions: handles both old string field and new array field */
+const memberPositions = (data) =>
+  Array.isArray(data?.positions) ? data.positions :
+  (data?.position ? [data.position] : []);
+
+const ROSTER_DEFAULT_POSITIONS = [
+  "Show Caller","Production Manager","Stage Manager",
+  "Technical Director","Video Director",
+  "Audio Engineer (A1)","Monitor Engineer (A2)",
+  "Camera Operator","Camera TD","Graphics Operator",
+  "Lighting Designer","Lighting Tech","LED Tech",
+  "Record Op","Playback Operator",
+  "Rigging Supervisor","Rigger",
+];
+
+const RosterCtx = React.createContext({ roster: [], positions: ROSTER_DEFAULT_POSITIONS, reload: () => {}, reloadPositions: () => {}, loading: false });
+
+function RosterProvider({ children }) {
+  const [roster, setRoster] = useState([]);
+  const [positions, setPositions] = useState(ROSTER_DEFAULT_POSITIONS);
+  const [loading, setLoading] = useState(false);
+  const loaded = useRef(false);
+  const reload = async () => {
+    setLoading(true);
+    try {
+      const [list, posData] = await Promise.all([listRoster(), getPositions()]);
+      setRoster(list);
+      if (posData.positions?.length) setPositions(posData.positions);
+      loaded.current = true;
+    } catch { /* silently — roster is non-critical */ }
+    finally { setLoading(false); }
+  };
+  const reloadPositions = async () => {
+    try { const d = await getPositions(); if (d.positions?.length) setPositions(d.positions); } catch {}
+  };
+  useEffect(() => { if (!loaded.current) reload(); }, []);
+  return <RosterCtx.Provider value={{ roster, positions, reload, reloadPositions, loading }}>{children}</RosterCtx.Provider>;
+}
+
+/* Autocomplete input for crew name field in BriefTab */
+function CrewNameInput({ value, onChange, onSelect }) {
+  const { roster } = React.useContext(RosterCtx);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const q = value.trim().toLowerCase();
+  const matches = q.length > 0
+    ? roster.filter((r) => r.name.toLowerCase().includes(q) && r.name.toLowerCase() !== q).slice(0, 7)
+    : [];
+  return (
+    <div className="crew-ac-wrap" ref={ref}>
+      <input
+        value={value}
+        placeholder="Name"
+        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 160)}
+        autoComplete="off"
+      />
+      {open && matches.length > 0 && (
+        <div className="crew-ac-drop">
+          {matches.map((m) => (
+            <button key={m.id} className="crew-ac-row" onMouseDown={() => { onSelect(m); setOpen(false); }}>
+              <span className="crew-ac-name">{m.name}</span>
+              <span className="crew-ac-pos">{memberPositions(m.data).join(", ") || ""}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
    BRIEF TAB — event details, venue, contacts, crew, links
    ============================================================ */
 
