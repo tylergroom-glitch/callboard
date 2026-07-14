@@ -1208,6 +1208,7 @@ function BriefTab({ event, update, isAdmin }) {
     const schedule = event.schedule || [];
 
     // Map crew member name → hotel confirmation number + dates
+    const fmt = (d) => { if (!d) return ""; try { return new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return d; } };
     const confMap = {};
     stays.forEach((s) => {
       if (s.crewName) {
@@ -1219,7 +1220,6 @@ function BriefTab({ event, update, isAdmin }) {
       }
     });
 
-    const fmt = (d) => { if (!d) return ""; try { return new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return d; } };
     const dateRange = event.startDate && event.endDate && event.startDate !== event.endDate
       ? `${fmt(event.startDate)} – ${fmt(event.endDate)}`
       : fmt(event.startDate) || "";
