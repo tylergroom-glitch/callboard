@@ -1448,26 +1448,20 @@ function BriefTab({ event, update, isAdmin }) {
 <div class="info-grid">
   <div class="info-block">
     <div class="info-label">Venue</div>
-    ${event.venue?.name ? \`<div class="info-name">${event.venue.name}</div>\` : '<div style="color:#999">No venue set</div>'}
-    ${event.venue?.address ? \`<div class="info-detail">${event.venue.address}</div>\` : ""}
+    ${event.venue?.name ? '<div class="info-name">' + event.venue.name + '</div>' : '<div style="color:#999">No venue set</div>'}
+    ${event.venue?.address ? '<div class="info-detail">' + event.venue.address + '</div>' : ""}
   </div>
   <div class="info-block">
     <div class="info-label">Hotel</div>
-    ${it.hotelName ? \`<div class="info-name">${it.hotelName}</div>\` : '<div style="color:#999">No hotel set</div>'}
-    ${it.hotelAddress ? \`<div class="info-detail">${it.hotelAddress}</div>\` : ""}
-    ${stays.length && (it.checkIn || stays[0]?.checkIn) ? \`<div class="info-detail" style="margin-top:4pt">Check-in ${fmt(it.checkIn || stays[0]?.checkIn)} &nbsp;·&nbsp; Check-out ${fmt(it.checkOut || stays[stays.length-1]?.checkOut)}</div>\` : ""}
+    ${it.hotelName ? '<div class="info-name">' + it.hotelName + '</div>' : '<div style="color:#999">No hotel set</div>'}
+    ${it.hotelAddress ? '<div class="info-detail">' + it.hotelAddress + '</div>' : ""}
+    ${stays.length && (it.checkIn || stays[0]?.checkIn) ? '<div class="info-detail" style="margin-top:4pt">Check-in ' + fmt(it.checkIn || stays[0]?.checkIn) + ' &nbsp;·&nbsp; Check-out ' + fmt(it.checkOut || (stays[stays.length-1]?.checkOut)) + '</div>' : ""}
   </div>
 </div>
 
 <div class="sect">
   <div class="sect-title">Crew</div>
-  ${crew.length ? \`
-  <table>
-    <thead><tr>
-      <th>Name</th><th>Role</th><th>Confirmation #</th><th>Check-in</th><th>Check-out</th>
-    </tr></thead>
-    <tbody>${crewRows}</tbody>
-  </table>\` : '<div style="color:#999">No crew listed</div>'}
+  ${crew.length ? '<table><thead><tr><th>Name</th><th>Role</th><th>Confirmation #</th><th>Check-in</th><th>Check-out</th></tr></thead><tbody>' + crewRows + '</tbody></table>' : '<div style="color:#999">No crew listed</div>'}
 </div>
 
 <div class="sect">
