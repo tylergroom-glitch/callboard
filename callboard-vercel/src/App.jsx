@@ -328,6 +328,15 @@ function hoursBetween(inStr, outStr) {
   return Math.round((mins / 60) * 100) / 100;
 }
 const fmtHrs = (h) => (h === 0 ? "–" : String(+h.toFixed(2)));
+
+/* Format a phone string to xxx-xxx-xxxx */
+function fmtPhone(raw) {
+  if (!raw) return raw;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `${digits.slice(0,3)}-${digits.slice(3,6)}-${digits.slice(6)}`;
+  if (digits.length === 11 && digits[0] === "1") return `${digits.slice(1,4)}-${digits.slice(4,7)}-${digits.slice(7)}`;
+  return raw; // leave unrecognised formats alone
+}
 /* split a day's hours into pay tiers: reg ≤10, OT (×1.5) 10–12, DT (×2) 12+ */
 function otBreakdown(h) {
   const reg = Math.min(h, 10);
@@ -1105,229 +1114,6 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
 /* ============================================================
    BRIEF TAB — event details, venue, contacts, crew, links
    ============================================================ */
-/* ---------- weather (Open-Meteo — free, no API key, browser-side) ---------- */
-function wmo(code) {
-  const m = {
-    0: ["☀️", "Clear"], 1: ["🌤️", "Mostly clear"], 2: ["⛅", "Partly cloudy"], 3: ["☁️", "Overcast"],
-    45: ["🌫️", "Fog"], 48: ["🌫️", "Rime fog"],
-    51: ["🌦️", "Light drizzle"], 53: ["🌦️", "Drizzle"], 55: ["🌧️", "Heavy drizzle"],
-    56: ["🌧️", "Freezing drizzle"], 57: ["🌧️", "Freezing drizzle"],
-    61: ["🌧️", "Light rain"], 63: ["🌧️", "Rain"], 65: ["🌧️", "Heavy rain"],
-    66: ["🌧️", "Freezing rain"], 67: ["🌧️", "Freezing rain"],
-    71: ["🌨️", "Light snow"], 73: ["🌨️", "Snow"], 75: ["❄️", "Heavy snow"], 77: ["🌨️", "Snow grains"],
-    80: ["🌦️", "Rain showers"], 81: ["🌧️", "Rain showers"], 82: ["⛈️", "Violent showers"],
-    85: ["🌨️", "Snow showers"], 86: ["❄️", "Snow showers"],
-    95: ["⛈️", "Thunderstorm"], 96: ["⛈️", "Thunderstorm, hail"], 99: ["⛈️", "Severe thunderstorm"],
-  };
-  return m[code] || ["🌡️", "—"];
-}
-
-function WeatherCard({ city, onCity, startDate, endDate }) {
-  const [status, setStatus] = useState("loading"); // loading | ok | nogeo | error
-  const [geoName, setGeoName] = useState("");
-  const [data, setData] = useState(null);
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-
-  useEffect(() => {
-    const q = (city || "").trim();
-    if (!q) {
-      setStatus("nogeo");
-      setData(null);
-      return;
-    }
-    let alive = true;
-    setStatus("loading");
-    (async () => {
-      try {
-        const gj = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en&format=json`
-        ).then((r) => r.json());
-        const loc = gj.results && gj.results[0];
-        if (!loc) {
-          if (alive) {
-            setStatus("nogeo");
-            setData(null);
-          }
-          return;
-        }
-        if (!alive) return;
-        setGeoName([loc.name, loc.admin1, loc.country_code].filter(Boolean).join(", "));
-        const url =
-          `https://api.open-meteo.com/v1/forecast?latitude=${loc.latitude}&longitude=${loc.longitude}` +
-          `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
-          `&current=temperature_2m,weather_code&temperature_unit=fahrenheit&timezone=auto&forecast_days=16`;
-        const wj = await fetch(url).then((r) => r.json());
-        if (alive) {
-          setData(wj);
-          setStatus("ok");
-        }
-      } catch {
-        if (alive) setStatus("error");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [city]);
-
-  const rows = [];
-  if (data && data.daily && Array.isArray(data.daily.time)) {
-    const t = data.daily.time;
-    for (let i = 0; i < t.length; i++) {
-      if ((!startDate || t[i] >= startDate) && (!endDate || t[i] <= endDate)) {
-        rows.push({
-          date: t[i],
-          code: data.daily.weather_code[i],
-          hi: data.daily.temperature_2m_max[i],
-          lo: data.daily.temperature_2m_min[i],
-          pop: data.daily.precipitation_probability_max ? data.daily.precipitation_probability_max[i] : null,
-        });
-      }
-    }
-  }
-
-  return (
-    <Panel
-      title="Weather"
-      sub={geoName ? "Forecast · " + geoName : "Venue forecast"}
-      action={
-        <button
-          className="add"
-          onClick={() => {
-            setDraft(city || "");
-            setEditing((e) => !e);
-          }}
-        >
-          Change
-        </button>
-      }
-    >
-      {editing && (
-        <div className="wx-loc">
-          <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="City for weather (e.g. San Francisco, CA)" />
-          <button
-            className="add"
-            onClick={() => {
-              onCity(draft.trim());
-              setEditing(false);
-            }}
-          >
-            Set
-          </button>
-        </div>
-      )}
-      {status === "loading" && <Empty>Loading forecast…</Empty>}
-      {status === "nogeo" && (
-        <Empty>{city ? `Couldn't find “${city}”. Tap Change to set the venue city.` : "Add the venue city (tap Change) to see the forecast."}</Empty>
-      )}
-      {status === "error" && <Empty>Couldn’t load weather right now.</Empty>}
-      {status === "ok" && (
-        <>
-          {data.current && (
-            <div className="wx-now">
-              <span className="wx-emoji">{wmo(data.current.weather_code)[0]}</span>
-              <span className="wx-nowtemp">{Math.round(data.current.temperature_2m)}°</span>
-              <span className="wx-nowlbl">now · {wmo(data.current.weather_code)[1]}</span>
-            </div>
-          )}
-          {rows.length ? (
-            <div className="wx-days">
-              {rows.map((r) => (
-                <div className="wx-day" key={r.date}>
-                  <span className="wx-emoji">{wmo(r.code)[0]}</span>
-                  <span className="wx-date">{prettyDate(r.date)}</span>
-                  <span className="wx-cond">{wmo(r.code)[1]}</span>
-                  <span className="wx-temp">{Math.round(r.hi)}° / {Math.round(r.lo)}°</span>
-                  <span className="wx-pop">{r.pop != null ? "💧 " + r.pop + "%" : ""}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <Empty>No forecast for the show dates yet — it appears within about 16 days of the event.</Empty>
-          )}
-          <div className="wx-src">Source: Open-Meteo</div>
-        </>
-      )}
-    </Panel>
-  );
-}
-
-/* ============================================================
-   ROSTER CONTEXT — loads the global crew roster once per session,
-   shared by the autocomplete in BriefTab and the RosterTab manager.
-   ============================================================ */
-/* Normalize roster member positions: handles both old string field and new array field */
-const memberPositions = (data) =>
-  Array.isArray(data?.positions) ? data.positions :
-  (data?.position ? [data.position] : []);
-
-const ROSTER_DEFAULT_POSITIONS = [
-  "Show Caller","Production Manager","Stage Manager",
-  "Technical Director","Video Director",
-  "Audio Engineer (A1)","Monitor Engineer (A2)",
-  "Camera Operator","Camera TD","Graphics Operator",
-  "Lighting Designer","Lighting Tech","LED Tech",
-  "Record Op","Playback Operator",
-  "Rigging Supervisor","Rigger",
-];
-
-const RosterCtx = React.createContext({ roster: [], positions: ROSTER_DEFAULT_POSITIONS, reload: () => {}, reloadPositions: () => {}, loading: false });
-
-function RosterProvider({ children }) {
-  const [roster, setRoster] = useState([]);
-  const [positions, setPositions] = useState(ROSTER_DEFAULT_POSITIONS);
-  const [loading, setLoading] = useState(false);
-  const loaded = useRef(false);
-  const reload = async () => {
-    setLoading(true);
-    try {
-      const [list, posData] = await Promise.all([listRoster(), getPositions()]);
-      setRoster(list);
-      if (posData.positions?.length) setPositions(posData.positions);
-      loaded.current = true;
-    } catch { /* silently — roster is non-critical */ }
-    finally { setLoading(false); }
-  };
-  const reloadPositions = async () => {
-    try { const d = await getPositions(); if (d.positions?.length) setPositions(d.positions); } catch {}
-  };
-  useEffect(() => { if (!loaded.current) reload(); }, []);
-  return <RosterCtx.Provider value={{ roster, positions, reload, reloadPositions, loading }}>{children}</RosterCtx.Provider>;
-}
-
-/* Autocomplete input for crew name field */
-function CrewNameInput({ value, onChange, onSelect }) {
-  const { roster } = React.useContext(RosterCtx);
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  const q = value.trim().toLowerCase();
-  const matches = q.length > 0
-    ? roster.filter((r) => r.name.toLowerCase().includes(q) && r.name.toLowerCase() !== q).slice(0, 7)
-    : [];
-  return (
-    <div className="crew-ac-wrap" ref={ref}>
-      <input
-        value={value}
-        placeholder="Name"
-        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 160)}
-        autoComplete="off"
-      />
-      {open && matches.length > 0 && (
-        <div className="crew-ac-drop">
-          {matches.map((m) => (
-            <button key={m.id} className="crew-ac-row" onMouseDown={() => { onSelect(m); setOpen(false); }}>
-              <span className="crew-ac-name">{m.name}</span>
-              <span className="crew-ac-pos">{memberPositions(m.data).join(", ") || ""}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function BriefTab({ event, update, isAdmin }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
@@ -1476,18 +1262,33 @@ function BriefTab({ event, update, isAdmin }) {
 
 </div></body></html>`;
 
-    const win = window.open("", "_blank");
+    // Use Blob URL — far more reliable than writing to a blank window (avoids popup blockers)
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, "_blank");
     if (win) {
-      win.document.write(html);
-      win.document.close();
-      setTimeout(() => { win.focus(); win.print(); }, 400);
+      // Clean up blob URL after the tab loads
+      win.addEventListener("load", () => URL.revokeObjectURL(url), { once: true });
+    } else {
+      // Popup blocked — fall back to direct download so the file is never lost
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (event.name || "Production-Brief").replace(/[^a-zA-Z0-9 _-]/g, "") + " — Brief.html";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
+  };
+
   };
 
   return (
     <div className="stack">
       <div className="brief-export-bar">
-        <button className="brief-export-btn" onClick={exportBriefPDF}>
+        <button className="brief-export-btn" onClick={() => {
+          try { exportBriefPDF(); } catch(e) { window.alert("Brief export error: " + e.message); }
+        }}>
           📄 Export Production Brief PDF
         </button>
         <span className="brief-export-hint">Includes venue, hotel, crew, and schedule overview</span>
@@ -1516,12 +1317,7 @@ function BriefTab({ event, update, isAdmin }) {
         </div>
       </Panel>
 
-      <WeatherCard
-        city={event.venue.weatherCity || event.venue.address || event.venue.name || ""}
-        onCity={(v) => update((ev) => (ev.venue.weatherCity = v))}
-        startDate={event.startDate}
-        endDate={event.endDate}
-      />
+
 
       <Panel
         title="Key contacts"
@@ -1544,7 +1340,7 @@ function BriefTab({ event, update, isAdmin }) {
             <div className="row contact-grid" key={c.id}>
               <input value={c.role} placeholder="Role" onChange={(e) => update((ev) => (ev.contacts[i].role = e.target.value))} />
               <input value={c.name} placeholder="Name" onChange={(e) => update((ev) => (ev.contacts[i].name = e.target.value))} />
-              <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.contacts[i].phone = e.target.value))} />
+              <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.contacts[i].phone = e.target.value))} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) update((ev) => (ev.contacts[i].phone = f)); }} />
               <input value={c.email} placeholder="Email" onChange={(e) => update((ev) => (ev.contacts[i].email = e.target.value))} />
               <RemoveBtn onClick={() => update((ev) => ev.contacts.splice(i, 1))} />
             </div>
@@ -1595,7 +1391,7 @@ function BriefTab({ event, update, isAdmin }) {
                 })}
               />
               <input value={c.position} placeholder="Position" onChange={(e) => update((ev) => (ev.crew[i].position = e.target.value))} />
-              <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.crew[i].phone = e.target.value))} />
+              <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.crew[i].phone = e.target.value))} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) update((ev) => (ev.crew[i].phone = f)); }} />
               <input value={c.email} placeholder="Email" onChange={(e) => update((ev) => (ev.crew[i].email = e.target.value))} />
               <div className="row-tools">
                 <button
@@ -2579,7 +2375,7 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
         </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Phone</label>
-          <input className="roster-inp" value={vals.phone || ""} placeholder="(555) 000-0000" onChange={(e) => onChange("phone", e.target.value)} />
+          <input className="roster-inp" value={vals.phone || ""} placeholder="555-000-0000" onChange={(e) => onChange("phone", e.target.value)} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) onChange("phone", f); }} />
         </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Email</label>
@@ -2637,7 +2433,7 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
         </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Emergency phone</label>
-          <input className="roster-inp" value={vals.emergencyPhone || ""} placeholder="(555) 000-0000" onChange={(e) => onChange("emergencyPhone", e.target.value)} />
+          <input className="roster-inp" value={vals.emergencyPhone || ""} placeholder="555-000-0000" onChange={(e) => onChange("emergencyPhone", e.target.value)} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) onChange("emergencyPhone", f); }} />
         </div>
         <div className="roster-form-col">
           <label className="roster-lbl">W9 on file</label>
@@ -4507,7 +4303,7 @@ const CSS = `
 .cb .tab-locked input, .cb .tab-locked textarea, .cb .tab-locked select { pointer-events:none !important; opacity:0.65; cursor:default; }
 .cb .tab-locked .add-btn, .cb .tab-locked .rem-btn, .cb .tab-locked [class*="AddBtn"], .cb .tab-locked [class*="RemoveBtn"] { display:none !important; }
 .cb .tab-locked .movebtn, .cb .tab-locked .daysort { display:none !important; }
-.cb .tab-locked button:not(.pl-lock) { pointer-events:none; opacity:0.5; }
+.cb .tab-locked button:not(.pl-lock):not(.brief-export-btn) { pointer-events:none; opacity:0.5; }
 .cb .tile{
   position:relative; text-align:left; cursor:pointer; color:#1A130B;
   border:2px solid rgba(0,0,0,.5); border-radius:16px; padding:16px 16px 14px; min-height:150px;
@@ -4734,22 +4530,7 @@ const CSS = `
 .cb .ot-note{font-size:11.5px; color:var(--faint); margin-top:8px;}
 
 /* weather */
-.cb .wx-loc{display:flex; gap:8px; margin-bottom:10px;}
-.cb .wx-now{display:flex; align-items:center; gap:10px; padding:2px 2px 12px; border-bottom:1px solid var(--line); margin-bottom:8px;}
-.cb .wx-emoji{font-size:20px; line-height:1;}
-.cb .wx-nowtemp{font-family:'Oswald'; font-size:22px; font-weight:600; color:var(--ink);}
-.cb .wx-nowlbl{color:var(--dim); font-size:12.5px;}
-.cb .wx-days{display:flex; flex-direction:column;}
-.cb .wx-day{display:grid; grid-template-columns:24px minmax(84px,auto) 1fr auto 56px; gap:10px; align-items:center; padding:7px 2px; border-bottom:1px solid var(--line);}
-.cb .wx-day:last-child{border-bottom:none;}
-.cb .wx-date{font-weight:600; color:var(--ink); font-size:13px; white-space:nowrap;}
-.cb .wx-cond{color:var(--dim); font-size:12.5px;}
-.cb .wx-temp{font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap;}
-.cb .wx-pop{color:#5AA9E6; font-size:11.5px; white-space:nowrap; text-align:right;}
-.cb .wx-src{margin-top:8px; font-size:10.5px; color:var(--faint);}
 @media (max-width:560px){
-  .cb .wx-day{grid-template-columns:22px 1fr auto;}
-  .cb .wx-cond, .cb .wx-pop{display:none;}
 }
 
 /* P&L / costing (admin only) */
