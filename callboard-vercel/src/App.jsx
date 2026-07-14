@@ -1194,7 +1194,10 @@ function CrewNameInput({ value, onChange, onSelect }) {
 function BriefTab({ event, update, isAdmin }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
   const copyEmails = () => {
-    const emails = event.crew.map((c) => c.email).filter(Boolean).join(", ");
+    const emails = event.crew
+      .filter((c) => c.email)
+      .map((c) => c.name ? `${c.name} <${c.email}>` : c.email)
+      .join("; ");
     if (!emails) return;
     navigator.clipboard?.writeText(emails).catch(() => {});
     setEmailsCopied(true);
