@@ -1338,8 +1338,120 @@ function BriefTab({ event, update, isAdmin }) {
     setEmailsCopied(true);
     setTimeout(() => setEmailsCopied(false), 2000);
   };
+
+  const exportBriefPDF = () => {
+    const it = event.itinerary || {};
+    const stays = it.stays || [];
+    const crew = event.crew.filter((c) => c.name);
+    const schedule = event.schedule || [];
+
+    // Map crew member name → hotel confirmation number
+    const confMap = {};
+    stays.forEach((s) => { if (s.crewName && s.confirmation) confMap[s.crewName] = s.confirmation; });
+
+    const fmt = (d) => { if (!d) return ""; try { return new Date(d + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return d; } };
+    const dateRange = event.startDate && event.endDate && event.startDate !== event.endDate
+      ? `${fmt(event.startDate)} – ${fmt(event.endDate)}`
+      : fmt(event.startDate) || "";
+
+    const crewRows = crew.map((c) => `
+      <tr>
+        <td style="font-weight:600">${c.name}</td>
+        <td>${c.position || "—"}</td>
+        <td>${confMap[c.name] || "—"}</td>
+        <td style="color:#555">${c.phone || ""}</td>
+      </tr>`).join("");
+
+    const schedRows = schedule.map((day) => `
+      <div style="margin-bottom:14pt;break-inside:avoid">
+        <div style="font-size:10.5pt;font-weight:700;margin-bottom:4pt;padding-bottom:3pt;border-bottom:0.5pt solid #ddd">
+          ${day.label || "Day"}${day.date ? " &nbsp;·&nbsp; " + fmt(day.date) : ""}
+        </div>
+        ${(day.items || []).filter((it) => it.time || it.activity).map((it) => `
+          <div style="display:flex;gap:14pt;padding:2.5pt 0;border-bottom:0.25pt solid #f5f5f5;font-size:10pt">
+            <span style="flex:0 0 80pt;color:#444;font-variant-numeric:tabular-nums">${it.time || ""}</span>
+            <span style="flex:1">${it.activity || ""}</span>
+          </div>`).join("")}
+      </div>`).join("");
+
+    const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
+<title>Production Brief — ${event.name}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,'Helvetica Neue',Arial,sans-serif;color:#000;padding:36pt;font-size:11pt;line-height:1.5}
+  @page{margin:0.75in}
+  @media print{body{padding:0}}
+</style>
+</head><body>
+
+<div style="display:flex;justify-content:space-between;align-items:flex-start;padding-bottom:14pt;border-bottom:2pt solid #000;margin-bottom:22pt">
+  <div>
+    <div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.15em;color:#2563EB;margin-bottom:5pt">Touchstone Creative Group</div>
+    <div style="font-size:22pt;font-weight:700;line-height:1.1">${event.name}</div>
+    <div style="font-size:9.5pt;color:#555;margin-top:5pt">${[event.client, dateRange].filter(Boolean).join("&nbsp; · &nbsp;")}</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:16pt;font-weight:700;letter-spacing:.06em;text-transform:uppercase">Production Brief</div>
+    <div style="font-size:8.5pt;color:#888;margin-top:3pt">Confidential &nbsp;·&nbsp; ${new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}</div>
+  </div>
+</div>
+
+<table style="width:100%;border-collapse:collapse;margin-bottom:22pt">
+  <tr>
+    <td style="vertical-align:top;padding-right:24pt;width:50%">
+      <div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#888;border-bottom:0.75pt solid #ccc;padding-bottom:4pt;margin-bottom:10pt">Venue</div>
+      ${event.venue?.name ? `<div style="font-size:12pt;font-weight:700">${event.venue.name}</div>` : '<div style="color:#999">No venue set</div>'}
+      ${event.venue?.address ? `<div style="font-size:10pt;color:#444;margin-top:3pt">${event.venue.address}</div>` : ""}
+    </td>
+    <td style="vertical-align:top;padding-left:24pt;border-left:0.75pt solid #eee">
+      <div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#888;border-bottom:0.75pt solid #ccc;padding-bottom:4pt;margin-bottom:10pt">Hotel</div>
+      ${it.hotelName ? `<div style="font-size:12pt;font-weight:700">${it.hotelName}</div>` : '<div style="color:#999">No hotel set</div>'}
+      ${it.hotelAddress ? `<div style="font-size:10pt;color:#444;margin-top:3pt">${it.hotelAddress}</div>` : ""}
+      ${stays.length && (it.checkIn || stays[0]?.checkIn) ? `<div style="font-size:9.5pt;color:#666;margin-top:4pt">Check-in ${fmt(it.checkIn || stays[0]?.checkIn)} · Check-out ${fmt(it.checkOut || stays[stays.length-1]?.checkOut)}</div>` : ""}
+    </td>
+  </tr>
+</table>
+
+<div style="margin-bottom:22pt">
+  <div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#888;border-bottom:0.75pt solid #ccc;padding-bottom:4pt;margin-bottom:10pt">Crew</div>
+  ${crew.length ? `
+  <table style="width:100%;border-collapse:collapse">
+    <thead>
+      <tr style="border-bottom:0.75pt solid #ccc">
+        <th style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;padding:4pt 8pt;text-align:left">Name</th>
+        <th style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;padding:4pt 8pt;text-align:left">Role</th>
+        <th style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;padding:4pt 8pt;text-align:left">Confirmation #</th>
+        <th style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#888;padding:4pt 8pt;text-align:left">Phone</th>
+      </tr>
+    </thead>
+    <tbody>${crewRows}</tbody>
+  </table>` : '<div style="color:#999">No crew listed</div>'}
+</div>
+
+<div>
+  <div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#888;border-bottom:0.75pt solid #ccc;padding-bottom:4pt;margin-bottom:12pt">Schedule Overview</div>
+  ${schedule.length ? schedRows : '<div style="color:#999">No schedule posted</div>'}
+</div>
+
+</body></html>`;
+
+    const win = window.open("", "_blank");
+    if (win) {
+      win.document.write(html);
+      win.document.close();
+      setTimeout(() => { win.focus(); win.print(); }, 400);
+    }
+  };
+
   return (
     <div className="stack">
+      <div className="brief-export-bar">
+        <button className="brief-export-btn" onClick={exportBriefPDF}>
+          📄 Export Production Brief PDF
+        </button>
+        <span className="brief-export-hint">Includes venue, hotel, crew, and schedule overview</span>
+      </div>
+
       <Panel title="Event details">
         <div className="grid2">
           <Field label="Client">
@@ -4149,6 +4261,70 @@ function PullTab({ event, update, isAdmin }) {
         {editOn && cases.length > 0 && <button className="pl-clear" onClick={clearAll}>Clear all gear</button>}
         {!editOn && visible.length === 0 && !showLoose && <div className="pl-empty">No gear matches that filter.</div>}
       </div>
+
+      {/* ---- dedicated print-only view ---- */}
+      <div className="pl-print">
+        <div className="pl-print-hdr">
+          <div>
+            <div className="pl-print-co">Touchstone Creative Group</div>
+            <div className="pl-print-show">{event.name}</div>
+            <div className="pl-print-meta">
+              {event.client && <span>{event.client} &nbsp;·&nbsp; </span>}
+              {event.startDate && <span>{prettyDate(event.startDate)}{event.endDate && event.endDate !== event.startDate ? ` – ${prettyDate(event.endDate)}` : ""}</span>}
+              {event.venue?.name && <span> &nbsp;·&nbsp; {event.venue.name}</span>}
+            </div>
+          </div>
+          <div className="pl-print-title">PULL LIST</div>
+        </div>
+        <div className="pl-print-stats">
+          {cases.reduce((n, c) => n + c.items.length, 0) + loose.length} items
+          &nbsp;·&nbsp; {cases.length} cases
+          {loose.length > 0 && ` · ${loose.length} loose`}
+        </div>
+
+        {PULL_CAT_ORDER.filter(k => cases.some(c => c.category === k)).map(k => (
+          <div key={k} className="pl-print-cat">
+            <div className="pl-print-cathdr">{k}</div>
+            {cases.filter(c => c.category === k).map(c => (
+              <div key={c.id} className="pl-print-case">
+                <div className="pl-print-casehdr">
+                  <span className="pl-print-casenum">#{c.caseNo}</span>
+                  <span className="pl-print-casename">{c.case}</span>
+                </div>
+                {groupPullByDrawer(c.items).map((g, gi) => (
+                  <div key={gi}>
+                    {g.drawer && <div className="pl-print-drawer">{g.drawer}</div>}
+                    {g.items.map(it => (
+                      <div key={it.id} className="pl-print-item">
+                        <span className="pl-print-cb">□</span>
+                        <span className="pl-print-iname">{it.item}</span>
+                        {it.qty !== "" && <span className="pl-print-qty">×{it.qty}</span>}
+                        {it.source && it.source !== "TCG" && <span className="pl-print-src">{it.source}{it.rentedFrom ? ` / ${it.rentedFrom}` : ""}</span>}
+                        {it.notes && <span className="pl-print-note">{it.notes}</span>}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        ))}
+
+        {loose.length > 0 && (
+          <div className="pl-print-cat">
+            <div className="pl-print-cathdr">Loose / Unassigned</div>
+            {loose.map(it => (
+              <div key={it.id} className="pl-print-item">
+                <span className="pl-print-cb">□</span>
+                <span className="pl-print-iname">{it.item}</span>
+                {it.qty !== "" && <span className="pl-print-qty">×{it.qty}</span>}
+                {it.source && it.source !== "TCG" && <span className="pl-print-src">{it.source}</span>}
+                {it.notes && <span className="pl-print-note">{it.notes}</span>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4335,43 +4511,35 @@ const CSS = `
   /* schedule */
   .cb .sched-ro { break-inside: avoid; }
 
-  /* pull list — comprehensive print styles */
-  .cb .pl-check, .cb .pl-chev, .cb .pl-casecount,
-  .cb .pl-tag, .cb .pl-x, .cb .pl-del,
-  .cb .pl-addrow, .cb .pl-savetpl, .cb .pl-invseedbtn,
-  .cb .pl-invcontrols, .cb .pl-invcat-grp, .cb .pl-sheetimport { display: none !important; }
+  /* pull list — hide screen version, show dedicated print layout */
+  .cb .pull > *:not(.pl-print) { display: none !important; }
+  .cb .pl-print { display: block !important; }
 
-  /* show all case bodies (JS collapse is irrelevant for print) */
-  .cb .pl-body { display: block !important; }
+  /* print layout */
+  .cb .pl-print { color: #000; font-family: -apple-system, 'Helvetica Neue', Arial, sans-serif; }
+  .cb .pl-print-hdr { display: flex; justify-content: space-between; align-items: flex-start; padding-bottom: 10pt; margin-bottom: 12pt; border-bottom: 2pt solid #000; }
+  .cb .pl-print-co { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; color: #666; margin-bottom: 3pt; }
+  .cb .pl-print-show { font-size: 18pt; font-weight: 700; color: #000; line-height: 1.1; }
+  .cb .pl-print-meta { font-size: 9pt; color: #555; margin-top: 3pt; }
+  .cb .pl-print-title { font-size: 24pt; font-weight: 700; letter-spacing: .05em; color: #000; align-self: center; }
+  .cb .pl-print-stats { font-size: 9pt; color: #777; margin-bottom: 14pt; }
 
-  /* case cards */
-  .cb .pl-cases { display: flex; flex-direction: column; gap: 10pt; }
-  .cb .pl-card { break-inside: avoid; border: 0.75pt solid #ccc !important; background: #fff !important; border-radius: 0 !important; margin-bottom: 0; }
-  .cb .pl-head { background: #f0f0f0 !important; padding: 6pt 10pt !important; border-bottom: 0.5pt solid #ccc; }
-  .cb .pl-bar2 { width: 6px; flex-shrink: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .cb .pl-caseno { font-size: 9pt !important; padding: 2pt 6pt !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .cb .pl-casename { color: #000 !important; font-size: 12pt !important; font-weight: 700 !important; }
+  .cb .pl-print-cat { margin-bottom: 18pt; }
+  .cb .pl-print-cathdr { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: .18em; color: #888; border-bottom: 0.75pt solid #999; padding-bottom: 3pt; margin-bottom: 8pt; }
 
-  /* drawer labels */
-  .cb .pl-drawerlbl { color: #555 !important; font-size: 8pt !important; text-transform: uppercase; letter-spacing: .05em; border-bottom: 0.5pt solid #ddd !important; padding-bottom: 2pt; margin: 6pt 0 3pt; }
+  .cb .pl-print-case { break-inside: avoid; margin-bottom: 12pt; }
+  .cb .pl-print-casehdr { display: flex; align-items: center; gap: 7pt; margin-bottom: 4pt; padding-bottom: 3pt; border-bottom: 0.5pt solid #ddd; }
+  .cb .pl-print-casenum { font-size: 8pt; font-weight: 700; color: #fff; background: #333; border-radius: 3pt; padding: 1.5pt 6pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .pl-print-casename { font-size: 11pt; font-weight: 700; color: #000; }
 
-  /* item rows */
-  .cb .pl-body { padding: 0 10pt 8pt !important; }
-  .cb .pl-row { padding: 5pt 4pt !important; border-bottom: 0.5pt solid #eee !important; background: #fff !important; display: flex; gap: 8pt; align-items: flex-start; }
-  .cb .pl-row.out { background: #fff !important; }
-  .cb .pl-itemname { color: #000 !important; font-size: 10.5pt !important; white-space: normal !important; font-weight: 600; }
-  .cb .pl-qtyv { color: #000 !important; font-weight: 700 !important; font-size: 11pt !important; width: 30pt; text-align: right; }
-  .cb .pl-itemcol { flex: 1; min-width: 0; }
-  .cb .pl-meta { font-size: 8.5pt !important; margin-top: 1pt; }
-  .cb .pl-badge { background: #eee !important; color: #444 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; padding: 1pt 4pt !important; }
-  .cb .pl-note { color: #666 !important; }
+  .cb .pl-print-drawer { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #999; margin: 5pt 0 2pt 10pt; }
 
-  /* print checkbox — gives a paper-based □ for physical pull tracking */
-  .cb .pl-row::after { content: "□"; font-size: 14pt; color: #bbb; margin-left: auto; padding-left: 8pt; flex-shrink: 0; }
-
-  /* loose gear section */
-  .cb .pl-loosecard { break-inside: avoid; border: 0.75pt solid #ccc !important; background: #fff !important; }
-  .cb .pl-loosehead { color: #000 !important; background: #f0f0f0 !important; -webkit-print-color-adjust: exact; }
+  .cb .pl-print-item { display: flex; align-items: baseline; gap: 5pt; padding: 3pt 0 3pt 10pt; border-bottom: 0.25pt solid #f0f0f0; }
+  .cb .pl-print-cb { font-size: 11pt; color: #bbb; flex-shrink: 0; width: 12pt; }
+  .cb .pl-print-iname { flex: 1; font-size: 10pt; color: #000; min-width: 0; }
+  .cb .pl-print-qty { font-size: 10pt; font-weight: 700; color: #000; flex-shrink: 0; min-width: 22pt; text-align: right; }
+  .cb .pl-print-src { font-size: 8pt; color: #555; background: #f0f0f0; padding: 0 5pt; border-radius: 2pt; flex-shrink: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .pl-print-note { font-size: 8pt; color: #888; font-style: italic; flex-shrink: 0; }
 
   /* crew grid */
   .cb .crew-grid input { border: none !important; padding: 2px 4px !important; }
@@ -4847,6 +5015,10 @@ const CSS = `
 .cb .crew-ac-drop { position:absolute; top:calc(100% + 4px); left:0; right:0; background:var(--panel); border:1px solid var(--amber); border-radius:9px; box-shadow:0 6px 20px rgba(0,0,0,.35); z-index:200; overflow:hidden; }
 .cb .copy-emails-btn { border:1px solid var(--line); background:none; color:var(--dim); border-radius:8px; padding:5px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; transition:color .15s,border-color .15s; }
 .cb .copy-emails-btn:hover { color:var(--amber); border-color:var(--amber); }
+.cb .brief-export-bar { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+.cb .brief-export-btn { border:none; background:var(--amber); color:#000; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }
+.cb .brief-export-btn:hover { background:var(--amber-deep); }
+.cb .brief-export-hint { font-size:12px; color:var(--faint); }
 .cb .crew-ac-row { display:flex; align-items:center; justify-content:space-between; width:100%; border:none; background:none; padding:9px 12px; cursor:pointer; text-align:left; gap:10px; }
 .cb .crew-ac-row:hover { background:var(--panel2); }
 .cb .crew-ac-name { font-weight:600; color:var(--ink); font-size:13px; }
@@ -4896,6 +5068,7 @@ const CSS = `
 .cb .roster-form-actions { display:flex; gap:8px; align-items:center; }
 @media (max-width:700px){ .cb .roster-row{ grid-template-columns:1fr auto; grid-auto-flow:row; } .cb .roster-form-grid{ grid-template-columns:1fr 1fr; } }
 .pl-empty, .pl-emptycase { text-align:center; color:#94a3b8; padding:14px; font-size:13px; }
+.pl-print { display:none; } /* shown only in @media print */
 .pl-empty { padding:34px; }
 @media (max-width:560px){ .pl-headedit{ grid-template-columns:5px auto 44px 1fr 92px auto; } }
 
