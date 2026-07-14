@@ -1215,7 +1215,7 @@ function BriefTab({ event, update, isAdmin }) {
   /* footer */
   .footer{margin-top:24pt;padding-top:8pt;border-top:0.5pt solid #c8ddf0;display:flex;justify-content:space-between;font-size:8pt;color:#aaa}
 </style>
-</head><body><div class="page">
+</head><body><div class="page" id="brief-content">
 
 <div class="hdr-bar"></div>
 
@@ -1260,17 +1260,35 @@ function BriefTab({ event, update, isAdmin }) {
   <span>${event.name} &nbsp;·&nbsp; ${dateRange}</span>
 </div>
 
-</div></body></html>`;
+</div>
+<script>
+(function() {
+  var s = document.createElement('script');
+  s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+  s.onload = function() {
+    window.html2pdf().set({
+      margin: [0.45, 0.5],
+      filename: '${(event.name || "Production-Brief").replace(/[^a-zA-Z0-9 _-]/g, "")} — Brief.pdf',
+      image: { type: 'jpeg', quality: 0.97 },
+      html2canvas: { scale: 2, useCORS: true, logging: false, allowTaint: true },
+      jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+    }).from(document.getElementById('brief-content')).save().then(function() {
+      window.close();
+    });
+  };
+  document.head.appendChild(s);
+})();
+</script>
+</body></html>`;
 
-    // Use Blob URL — far more reliable than writing to a blank window (avoids popup blockers)
+    // Use Blob URL — opens tab briefly, auto-downloads PDF, then closes
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const win = window.open(url, "_blank");
     if (win) {
-      // Clean up blob URL after the tab loads
       win.addEventListener("load", () => URL.revokeObjectURL(url), { once: true });
     } else {
-      // Popup blocked — fall back to direct download so the file is never lost
+      // Popup blocked — fall back to downloading the HTML file
       const a = document.createElement("a");
       a.href = url;
       a.download = (event.name || "Production-Brief").replace(/[^a-zA-Z0-9 _-]/g, "") + " — Brief.html";
@@ -1279,8 +1297,6 @@ function BriefTab({ event, update, isAdmin }) {
       document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     }
-  };
-
   };
 
   return (
