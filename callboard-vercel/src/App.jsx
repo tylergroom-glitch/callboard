@@ -2916,6 +2916,15 @@ function CostingTab({ event }) {
   const timer = useRef(null);
   const [pnlImp, setPnlImp] = useState({ open: false, phase: "idle", preview: null, error: "" });
   const pnlInputRef = useRef(null);
+  // Local draft prevents focus loss on every keystroke
+  const [draft, setDraft] = useState({});
+  const draftVal = (key, fallback) => key in draft ? draft[key] : (fallback ?? "");
+  const draftChange = (key) => (e) => setDraft(d => ({ ...d, [key]: e.target.value }));
+  const draftBlur = (key, mutateFn) => () => {
+    if (!(key in draft)) return;
+    mutateFn(draft[key]);
+    setDraft(d => { const n = { ...d }; delete n[key]; return n; });
+  };
 
   useEffect(() => {
     let alive = true;
@@ -3157,10 +3166,14 @@ function CostingTab({ event }) {
       <Panel title="Revenue" sub="What you're billing the client">
         <div className="pnl-billable">
           <Field label="Total billable — estimated">
-            <input value={c.billableEst} placeholder="$" onChange={(e) => mutate((n) => (n.billableEst = e.target.value))} />
+            <input value={draftVal("billableEst", c.billableEst)} placeholder="$"
+              onChange={draftChange("billableEst")}
+              onBlur={draftBlur("billableEst", (v) => mutate((n) => (n.billableEst = v)))} />
           </Field>
           <Field label="Total billable — actual">
-            <input value={c.billableAct} placeholder="$" onChange={(e) => mutate((n) => (n.billableAct = e.target.value))} />
+            <input value={draftVal("billableAct", c.billableAct)} placeholder="$"
+              onChange={draftChange("billableAct")}
+              onBlur={draftBlur("billableAct", (v) => mutate((n) => (n.billableAct = v)))} />
           </Field>
         </div>
       </Panel>
@@ -3168,7 +3181,9 @@ function CostingTab({ event }) {
       <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "" }))}>Non-roster line</AddBtn>}>
         <div className="pnl-pdbar">
           <span className="pnl-pdlabel">Per diem rate</span>
-          <input className="pnl-money" value={c.perDiemRate || ""} placeholder="$/day" onChange={(e) => mutate((n) => (n.perDiemRate = e.target.value))} />
+          <input className="pnl-money" value={draftVal("perDiemRate", c.perDiemRate)} placeholder="$/day"
+            onChange={draftChange("perDiemRate")}
+            onBlur={draftBlur("perDiemRate", (v) => mutate((n) => (n.perDiemRate = v)))} />
           <span className="pnl-pdhint">per day worked</span>
           <a className="pnl-gsalink" href={gsaUrl} target="_blank" rel="noreferrer">
             Look up GSA rate{gsaLoc ? " for " + gsaLoc : ""} (FY{gsaYear}) ↗
@@ -3454,6 +3469,15 @@ function PullTab({ event, update, isAdmin }) {
     update((ev) => {
       const a = listIn(ev, cid);
       if (a) a.push({ ...pullItem(), drawer });
+    });
+  const moveItem = (cid, itemId, dir) =>
+    update((ev) => {
+      const a = listIn(ev, cid);
+      if (!a) return;
+      const idx = a.findIndex((x) => x.id === itemId);
+      const to = idx + dir;
+      if (to < 0 || to >= a.length) return;
+      [a[idx], a[to]] = [a[to], a[idx]];
     });
   const addLoose = () =>
     update((ev) => {
@@ -3826,9 +3850,13 @@ function PullTab({ event, update, isAdmin }) {
   /* ---- render helpers ---- */
   const SOURCE_OPTS = ["TCG", "Sub-Rental", "Venue", "Other"];
   const needsRentedFrom = (src) => src && src !== "TCG";
-  const itemEdit = (cid, it) => (
+  const itemEdit = (cid, it, idx, total) => (
     <div className="pl-item-edit" key={it.id}>
       <div className={"pl-ie1" + (needsRentedFrom(it.source) ? " with-rent" : "")}>
+        <div className="pl-item-arrows">
+          <button className="pl-itarrow" disabled={idx === 0} onClick={() => moveItem(cid, it.id, -1)} title="Move up">▲</button>
+          <button className="pl-itarrow" disabled={idx === total - 1} onClick={() => moveItem(cid, it.id, 1)} title="Move down">▼</button>
+        </div>
         <input className="pl-inp pl-iename" value={it.item} placeholder="Item name" onChange={(e) => patchItem(cid, it.id, { item: e.target.value })} />
         <input className="pl-inp pl-ieqty" value={it.qty} placeholder="Qty" onChange={(e) => patchItem(cid, it.id, { qty: e.target.value })} />
         <select className="pl-inp pl-iesrc" value={SOURCE_OPTS.includes(it.source) ? it.source : (it.source ? "Other" : "TCG")} onChange={(e) => patchItem(cid, it.id, { source: e.target.value, rentedFrom: e.target.value === "TCG" ? "" : it.rentedFrom })}>
@@ -3867,7 +3895,7 @@ function PullTab({ event, update, isAdmin }) {
     const noDrawer = c.items.filter((it) => !(it.drawer || "").trim());
     return (
       <div className="pl-body">
-        {noDrawer.map((it) => itemEdit(c.id, it))}
+        {noDrawer.map((it, idx) => itemEdit(c.id, it, idx, noDrawer.length))}
         <div className="pl-addrow">
           <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>
           <button className="pl-adddrawer" onClick={() => addDrawer(c.id)}>+ Add drawer</button>
@@ -3877,17 +3905,20 @@ function PullTab({ event, update, isAdmin }) {
             </button>
           )}
         </div>
-        {drawers.map((dn) => (
-          <div className="pl-drawergrp" key={dn}>
-            <div className="pl-drawerhead">
-              <span className="pl-drawerchev">▾</span>
-              <input className="pl-inp pl-drawername" value={dn} onChange={(e) => renameDrawer(c.id, dn, e.target.value)} />
-              <button className="pl-x" onClick={() => deleteDrawer(c.id, dn)} title="Delete drawer (moves its items out)">×</button>
+        {drawers.map((dn) => {
+          const drawerItems = c.items.filter((it) => (it.drawer || "").trim() === dn);
+          return (
+            <div className="pl-drawergrp" key={dn}>
+              <div className="pl-drawerhead">
+                <span className="pl-drawerchev">▾</span>
+                <input className="pl-inp pl-drawername" value={dn} onChange={(e) => renameDrawer(c.id, dn, e.target.value)} />
+                <button className="pl-x" onClick={() => deleteDrawer(c.id, dn)} title="Delete drawer (moves its items out)">×</button>
+              </div>
+              {drawerItems.map((it, idx) => itemEdit(c.id, it, idx, drawerItems.length))}
+              <button className="pl-additem sub" onClick={() => addItem(c.id, dn)}>+ Add item to {dn}</button>
             </div>
-            {c.items.filter((it) => (it.drawer || "").trim() === dn).map((it) => itemEdit(c.id, it))}
-            <button className="pl-additem sub" onClick={() => addItem(c.id, dn)}>+ Add item to {dn}</button>
-          </div>
-        ))}
+          );
+        })}
       </div>
     );
   };
@@ -4658,13 +4689,13 @@ const CSS = `
 .cb .daytitle{font-family:'Oswald'; font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:15px; background:transparent; border:none; padding:0; border-bottom:1px solid transparent; max-width:340px;}
 .cb .daytitle:focus{border-bottom-color:var(--amber); box-shadow:none;}
 .cb .day-tools{display:flex; gap:8px; align-items:center;}
-.cb .daysort{border:1px solid var(--line,#e2e8f0); background:#fff; color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;}
+.cb .daysort{border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap;}
 .cb .daysort:hover{background:#f1f5f9;}
 .cb .daydate{width:130px;}
 .cb .daytitle-ro{font-family:'Oswald'; font-weight:600; letter-spacing:.04em; text-transform:uppercase; font-size:15px;}
 .cb .daydate-ro{font-size:12.5px; color:var(--muted,#64748b); font-weight:600;}
 .cb .sched-ro{display:flex; flex-direction:column;}
-.cb .sched-ro-row{display:flex; gap:12px; padding:7px 2px; border-bottom:1px solid var(--line,#eef2f7);}
+.cb .sched-ro-row{display:flex; gap:12px; padding:7px 2px; border-bottom:1px solid var(--line);}
 .cb .sched-ro-row:last-child{border-bottom:none;}
 .cb .sched-ro-time{flex:0 0 88px; font-weight:700; color:var(--amber); font-variant-numeric:tabular-nums;}
 .cb .sched-ro-act{flex:1; color:var(--ink);}
@@ -4880,24 +4911,24 @@ const CSS = `
 
 /* inline link previews (cloud build) */
 .cb .linkrow{display:flex; flex-direction:column; gap:4px;}
-.cb .previewbtn{align-self:flex-start; border:1px solid var(--line); background:#fff; color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer;}
+.cb .previewbtn{align-self:flex-start; border:1px solid var(--line); background:var(--panel2); color:#475569; border-radius:8px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer;}
 .cb .previewbtn:hover{background:#f1f5f9;}
-.cb .linkprev-frame{margin:2px 0 4px; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff;}
+.cb .linkprev-frame{margin:2px 0 4px; border:1px solid var(--line); border-radius:10px; overflow:hidden; background:var(--panel);}
 .cb .linkprev-frame iframe{width:100%; height:min(70vh,560px); border:none; display:block;}
-.cb .linkprev-frame img{width:100%; height:auto; display:block; background:#f8fafc;}
-.cb .linkprev-note{font-size:11px; color:var(--faint); padding:6px 10px; background:#f8fafc; border-top:1px solid var(--line);}
+.cb .linkprev-frame img{width:100%; height:auto; display:block; background:var(--panel2);}
+.cb .linkprev-note{font-size:11px; color:var(--faint); padding:6px 10px; background:var(--panel2)c; border-top:1px solid var(--line);}
 
 /* ---------- Pull List tab ---------- */
 .pull { gap: 12px; }
 .pl-bar { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
 .pl-lockwrap { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; }
-.pl-lock { border:1px solid #d8dee7; background:#fff; border-radius:999px; padding:7px 14px; font-size:13px; font-weight:700; cursor:pointer; color:#334155; }
+.pl-lock { border:1px solid var(--line); background:var(--panel2); border-radius:999px; padding:7px 14px; font-size:13px; font-weight:700; cursor:pointer; color:#334155; }
 .pl-lock.open { background:#ECFDF5; border-color:#A7E3C8; color:#047857; }
 .pl-locknote { font-size:12.5px; font-weight:700; color:#64748b; }
 .pl-locknote.open { color:#047857; }
 .pl-lockhint { font-size:12px; color:#94a3b8; }
 .pl-editbtn { border:none; border-radius:999px; padding:7px 16px; font-size:13px; font-weight:700; cursor:pointer; background:#e6edf6; color:#334155; }
-.pl-editbtn.on { background:#38BDF8; color:#0F1E35; }
+.pl-editbtn.on { background:var(--amber); color:#000; }
 
 .pl-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
 .pl-tile { background:#0F1E35; border-radius:12px; padding:10px; text-align:center; }
@@ -4906,16 +4937,16 @@ const CSS = `
 
 .pl-controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; }
 .pl-chips { display:flex; flex-wrap:wrap; gap:6px; }
-.pl-chip { border:1px solid #E2E8F0; background:#fff; border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:600; color:#334155; cursor:pointer; display:inline-flex; align-items:center; }
-.pl-chip.on { background:#0F1E35; color:#fff; border-color:#0F1E35; }
+.pl-chip { border:1px solid var(--line); background:var(--panel2); border-radius:999px; padding:5px 12px; font-size:12.5px; font-weight:600; color:#334155; cursor:pointer; display:inline-flex; align-items:center; }
+.pl-chip.on { background:var(--amber); color:#000; border-color:var(--amber); }
 .pl-dot { width:8px; height:8px; border-radius:999px; display:inline-block; margin-right:6px; }
 .pl-chipn { opacity:.55; margin-left:6px; }
-.pl-search { flex:1 1 200px; min-width:180px; border:1px solid #E2E8F0; border-radius:10px; padding:8px 12px; font-size:13px; outline:none; background:#fff; }
+.pl-search { flex:1 1 200px; min-width:180px; border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; outline:none; background:var(--panel2); }
 
-.pl-import { border:1px dashed #C3CDDA; border-radius:12px; background:#F8FAFC; padding:8px 12px; }
+.pl-import { border:1px dashed var(--line); border-radius:12px; background:var(--panel2); padding:8px 12px; }
 .pl-importtoggle { border:none; background:none; font-size:13px; font-weight:700; color:#334155; cursor:pointer; padding:2px 0; }
 .pl-importbody { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
-.pl-improw { display:flex; align-items:center; gap:8px; font-size:13px; color:#1e293b; padding:4px 0; cursor:pointer; }
+.pl-improw { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); padding:4px 0; cursor:pointer; }
 .pl-improw input { width:16px; height:16px; }
 .pl-impname { font-weight:600; }
 .pl-impmeta { color:#94a3b8; font-size:12px; margin-left:auto; }
@@ -4924,7 +4955,7 @@ const CSS = `
 .pl-tpl { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid #edf1f6; }
 .pl-tpl:last-of-type { border-bottom:none; }
 .pl-tplinfo { display:flex; flex-direction:column; min-width:0; flex:1; }
-.pl-tplname { font-size:13px; font-weight:700; color:#1e293b; }
+.pl-tplname { font-size:13px; font-weight:700; color:var(--ink); }
 .pl-tpldesc { font-size:11.5px; color:#94a3b8; }
 .pl-tpl .pl-btn { margin-top:0; }
 .pl-tplnote { font-size:11.5px; color:#94a3b8; margin-top:6px; }
@@ -4973,8 +5004,12 @@ const CSS = `
 
 .pl-item-edit { padding:6px 4px; border-bottom:1px solid var(--line); }
 .pl-item-edit:last-of-type { border-bottom:none; }
-.pl-ie1 { display:grid; grid-template-columns:minmax(0,1fr) 52px 80px 32px; gap:5px; align-items:center; }
-.pl-ie1.with-rent { grid-template-columns:minmax(0,1fr) 52px 80px minmax(80px,.5fr) 32px; }
+.pl-ie1 { display:grid; grid-template-columns:28px minmax(0,1fr) 52px 80px 32px; gap:5px; align-items:center; }
+.pl-ie1.with-rent { grid-template-columns:28px minmax(0,1fr) 52px 80px minmax(80px,.5fr) 32px; }
+.pl-item-arrows { display:flex; flex-direction:column; gap:1px; }
+.pl-itarrow { border:none; background:none; color:var(--dim); font-size:9px; line-height:1; cursor:pointer; padding:1px 2px; border-radius:3px; }
+.pl-itarrow:hover:not(:disabled) { color:var(--amber); background:var(--panel2); }
+.pl-itarrow:disabled { opacity:.2; cursor:default; }
 .pl-inp { border:1px solid var(--line); border-radius:7px; padding:6px 8px; font-size:12.5px; outline:none; min-width:0; background:var(--panel2); color:var(--ink); }
 .pl-inp:focus { border-color:var(--amber); box-shadow:0 0 0 2px rgba(255,176,32,.12); }
 .pl-inp::placeholder { color:var(--faint); }
@@ -5035,7 +5070,7 @@ const CSS = `
 .pl-quotecasename { font-weight:700; font-size:13px; color:var(--ink); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pl-quotecatetag { font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
 .pl-quotecasecount { font-size:11.5px; color:#94A3B8; font-weight:600; flex-shrink:0; }
-.pl-quoteitems { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px; background:#fff; }
+.pl-quoteitems { display:flex; flex-wrap:wrap; gap:4px; padding:6px 10px; background:var(--panel); }
 .pl-quoteitem { font-size:11.5px; color:#475569; background:#F1F5F9; border-radius:5px; padding:2px 7px; }
 .pl-quoteitem.more { color:#94A3B8; }
 .pl-quoteactions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
@@ -5045,10 +5080,10 @@ const CSS = `
 .pnl-qpreview { display:flex; flex-direction:column; gap:6px; margin-bottom:4px; border:1px solid #E2E8F0; border-radius:10px; overflow:hidden; }
 .pnl-qrow { display:flex; justify-content:space-between; align-items:center; padding:8px 12px; font-size:13px; }
 .pnl-qrow.grand { background:#F0F9F4; font-weight:700; color:#047857; font-size:14px; }
-.pnl-qsect { border-top:1px solid #E2E8F0; }
+.pnl-qsect { border-top:1px solid var(--line); }
 .pnl-qsecthead { display:flex; justify-content:space-between; align-items:center; padding:7px 12px; background:#F8FAFC; font-size:12.5px; font-weight:700; color:#334155; }
 .pnl-qitem { display:flex; justify-content:space-between; align-items:baseline; padding:5px 12px 5px 20px; font-size:12px; color:#475569; border-top:1px solid #F1F5F9; }
-.pnl-qitem span:last-child { font-weight:600; color:#334155; flex-shrink:0; margin-left:8px; }
+.pnl-qitem span:last-child { font-weight:600; color:var(--ink); flex-shrink:0; margin-left:8px; }
 .pnl-qnotes { font-weight:400; color:#94A3B8; }
 
 /* crew autocomplete */
