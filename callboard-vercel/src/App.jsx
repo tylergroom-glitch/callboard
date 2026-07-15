@@ -2102,6 +2102,36 @@ function WiringDiagram({ event, update, kind, canEdit }) {
   const deleteConn = (id) => { setW((w) => { w.connections = w.connections.filter((c) => c.id !== id); }); setSelected(null); };
   const setDevicePos = (id, x, y) => setW((w) => { const d = w.devices.find((z) => z.id === id); if (d) { d.x = x; d.y = y; } });
 
+  /* turn labeled ports into wired source / destination devices (dedupes by name) */
+  const autoWireFromLabels = () => setW((w) => {
+    const norm = (v) => (v || "").trim().toLowerCase();
+    const find = (name) => w.devices.find((d) => norm(d.name) === norm(name));
+    const isWired = (deviceId, side, portId) =>
+      w.connections.some((c) =>
+        side === "inputs"
+          ? c.toDeviceId === deviceId && c.toPortId === portId
+          : c.fromDeviceId === deviceId && c.fromPortId === portId);
+    const base = w.devices.slice();
+    base.forEach((dev) => {
+      dev.inputs.forEach((port) => {
+        if (!port.label.trim() || isWired(dev.id, "inputs", port.id)) return;
+        let src = find(port.label);
+        if (src && src.id === dev.id) return;
+        if (!src) { src = { id: uid(), name: port.label.trim(), inputs: [], outputs: [{ id: uid(), label: "" }], x: null, y: null }; w.devices.push(src); }
+        else if (!src.outputs.length) src.outputs.push({ id: uid(), label: "" });
+        w.connections.push({ id: uid(), fromDeviceId: src.id, fromPortId: src.outputs[0].id, toDeviceId: dev.id, toPortId: port.id, type: WD_DEFAULT_TYPE, length: WD_DEFAULT_LEN });
+      });
+      dev.outputs.forEach((port) => {
+        if (!port.label.trim() || isWired(dev.id, "outputs", port.id)) return;
+        let dst = find(port.label);
+        if (dst && dst.id === dev.id) return;
+        if (!dst) { dst = { id: uid(), name: port.label.trim(), inputs: [{ id: uid(), label: "" }], outputs: [], x: null, y: null }; w.devices.push(dst); }
+        else if (!dst.inputs.length) dst.inputs.push({ id: uid(), label: "" });
+        w.connections.push({ id: uid(), fromDeviceId: dev.id, fromPortId: port.id, toDeviceId: dst.id, toPortId: dst.inputs[0].id, type: WD_DEFAULT_TYPE, length: WD_DEFAULT_LEN });
+      });
+    });
+  });
+
   /* auto-place any device without a position, left→right by signal role */
   const goToCanvas = () => {
     setW((w) => {
@@ -2174,10 +2204,19 @@ function WiringDiagram({ event, update, kind, canEdit }) {
       <div className="wd-wrap">
         <div className="wd-bar wd-noprint">
           <span className="wd-brand">◧ Signal flow — build your equipment list</span>
-          {canEdit && (
-            <button className="wd-btn amber" onClick={goToCanvas} disabled={!devices.length}>
+          {canEdit && devices.length > 0 && (
+            <button className="wd-btn" style={{ marginLeft: "auto" }} onClick={autoWireFromLabels}
+              title="Create source / destination devices from your port labels and wire them up">
+              Auto-wire from labels
+            </button>
+          )}
+          {canEdit && devices.length > 0 && (
+            <button className="wd-btn amber" onClick={goToCanvas}>
               Create diagram <WdIcon name="arrow" size={15} />
             </button>
+          )}
+          {canEdit && devices.length === 0 && (
+            <span className="wd-barhint">Add a device below to start</span>
           )}
           {!canEdit && devices.length > 0 && (
             <button className="wd-btn" onClick={() => setScreen("canvas")}>View diagram <WdIcon name="arrow" size={15} /></button>
@@ -2185,7 +2224,16 @@ function WiringDiagram({ event, update, kind, canEdit }) {
         </div>
 
         <div className="wd-setup">
-          {!devices.length && <div className="wd-setup-empty">{canEdit ? "No equipment yet. Add your first device below." : "No wiring diagram for this patch yet."}</div>}
+          {!devices.length && (
+            <div className="wd-setup-empty">
+              <div>{canEdit ? "No equipment yet — add your first device to build the diagram." : "No wiring diagram for this patch yet."}</div>
+              {canEdit && (
+                <button className="wd-adddevice" style={{ marginTop: 14 }} onClick={addDevice}>
+                  <WdIcon name="plus" size={15} /> Add device
+                </button>
+              )}
+            </div>
+          )}
           {devices.map((d) => (
             <div className="wd-setup-card" key={d.id}>
               <div className="wd-setup-head">
@@ -2211,7 +2259,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
               </div>
             </div>
           ))}
-          {canEdit && <button className="wd-adddevice" onClick={addDevice}><WdIcon name="plus" size={15} /> Add device</button>}
+          {canEdit && devices.length > 0 && <button className="wd-adddevice" onClick={addDevice}><WdIcon name="plus" size={15} /> Add device</button>}
         </div>
       </div>
     );
@@ -5188,6 +5236,7 @@ const CSS = `
 .cb .wd-bar{display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; background:#101218; border:1px solid var(--line); border-radius:10px;}
 .cb .wd-brand{font-family:'Oswald'; letter-spacing:.08em; font-size:12.5px; color:var(--dim); text-transform:uppercase;}
 .cb .wd-brand::first-letter{color:var(--amber);}
+.cb .wd-barhint{margin-left:auto; font-family:'Inter'; font-size:12px; color:var(--faint); font-style:italic;}
 .cb .wd-btn{display:inline-flex; align-items:center; gap:6px; background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:7px 11px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
 .cb .wd-btn:hover{border-color:#3b4353;}
 .cb .wd-btn:disabled{opacity:.4; cursor:not-allowed;}
