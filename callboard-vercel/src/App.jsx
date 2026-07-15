@@ -48,6 +48,7 @@ const ioRow = (num, name = "", patch = "", signal = "", notes = "") => ({
   id: uid(), num: String(num), name, patch, signal, notes,
 });
 const ioBlock = (name, ins = [], outs = []) => ({ id: uid(), name, ins, outs });
+const IO_SIGNAL_TYPES = ["SDI", "HDMI", "Fiber", "Ethernet", "XLR", "Power"];
 
 /* ---------- pull list: categories + seed gear ---------- */
 const PULL_CATS = {
@@ -1990,7 +1991,11 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
               <input className="io-num" value={r.num} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].num = e.target.value))} />
               <input value={r.name} placeholder={label} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].name = e.target.value))} />
               <input value={r.patch} placeholder="Patch" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].patch = e.target.value))} />
-              <input value={r.signal} placeholder="Signal" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].signal = e.target.value))} />
+              <select className="io-signal" value={r.signal || ""} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].signal = e.target.value))}>
+                <option value="">Signal…</option>
+                {IO_SIGNAL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                {r.signal && !IO_SIGNAL_TYPES.includes(r.signal) && <option value={r.signal}>{r.signal}</option>}
+              </select>
               <input value={r.notes} placeholder="Notes" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].notes = e.target.value))} />
               <RemoveBtn onClick={() => update((ev) => ev[kind].blocks[bi][side].splice(ri, 1))} />
             </div>
@@ -2086,6 +2091,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
   const wiring = event[kind].wiring || { devices: [], connections: [] };
   const devices = wiring.devices;
   const connections = wiring.connections;
+  const patchDeviceCount = (event[kind].blocks || []).filter((b) => (b.name || "").trim()).length;
 
   const [screen, setScreen] = useState(devices.length ? "canvas" : "setup"); // "setup" | "canvas"
   const [mode, setMode] = useState("select");   // "select" | "connect"
@@ -2153,6 +2159,66 @@ function WiringDiagram({ event, update, kind, canEdit }) {
       });
     });
   });
+
+  /* build the whole diagram from the patch sheet above (device = box, source/destination = port,
+     signal = cable type); preserves layout + cable lengths where device names still match */
+  const buildFromPatch = () => {
+    const blocks = event[kind].blocks || [];
+    const norm = (v) => (v || "").trim().toLowerCase();
+    const dflt = kind === "audio" ? "XLR" : "SDI";
+    const typeOf = (sig) => { const t = (sig || "").toLowerCase(); return Object.keys(WD_CABLES).find((k) => t.includes(k.toLowerCase())) || dflt; };
+    setW((w) => {
+      const posByName = {};
+      w.devices.forEach((d) => { if (d.x != null && d.y != null) posByName[norm(d.name)] = { x: d.x, y: d.y }; });
+      const lenByPair = {};
+      w.connections.forEach((c) => {
+        const a = w.devices.find((d) => d.id === c.fromDeviceId), b = w.devices.find((d) => d.id === c.toDeviceId);
+        if (!a || !b) return;
+        const k = norm(a.name) + "|" + norm(b.name);
+        (lenByPair[k] || (lenByPair[k] = [])).push(c.length);
+      });
+      const takeLen = (fn, tn) => { const arr = lenByPair[norm(fn) + "|" + norm(tn)]; return arr && arr.length ? arr.shift() : WD_DEFAULT_LEN; };
+      const nd = [], nc = [];
+      const find = (name) => nd.find((d) => norm(d.name) === norm(name));
+      blocks.forEach((block) => {
+        const midName = (block.name || "").trim();
+        if (!midName) return;
+        let mid = find(midName);
+        if (!mid) { mid = { id: uid(), name: midName, inputs: [], outputs: [], x: null, y: null }; nd.push(mid); }
+        (block.ins || []).forEach((r) => {
+          const nm = (r.name || "").trim();
+          const port = { id: uid(), label: nm };
+          mid.inputs.push(port);
+          if (!nm) return;
+          let sd = find(nm);
+          if (sd && sd.id === mid.id) return;
+          if (!sd) { sd = { id: uid(), name: nm, inputs: [], outputs: [{ id: uid(), label: "" }], x: null, y: null }; nd.push(sd); }
+          else if (!sd.outputs.length) sd.outputs.push({ id: uid(), label: "" });
+          nc.push({ id: uid(), fromDeviceId: sd.id, fromPortId: sd.outputs[0].id, toDeviceId: mid.id, toPortId: port.id, type: typeOf(r.signal), length: takeLen(nm, midName) });
+        });
+        (block.outs || []).forEach((r) => {
+          const nm = (r.name || "").trim();
+          const port = { id: uid(), label: nm };
+          mid.outputs.push(port);
+          if (!nm) return;
+          let dd = find(nm);
+          if (dd && dd.id === mid.id) return;
+          if (!dd) { dd = { id: uid(), name: nm, inputs: [{ id: uid(), label: "" }], outputs: [], x: null, y: null }; nd.push(dd); }
+          else if (!dd.inputs.length) dd.inputs.push({ id: uid(), label: "" });
+          nc.push({ id: uid(), fromDeviceId: mid.id, fromPortId: port.id, toDeviceId: dd.id, toPortId: dd.inputs[0].id, type: typeOf(r.signal), length: takeLen(midName, nm) });
+        });
+      });
+      nd.forEach((d) => { const p = posByName[norm(d.name)]; if (p) { d.x = p.x; d.y = p.y; } });
+      const colOf = (d) => (d.inputs.length === 0 ? 0 : d.outputs.length === 0 ? 2 : 1);
+      const colX = [40, 330, 650];
+      const counts = [0, 0, 0];
+      nd.forEach((d) => { if (d.x != null) counts[colOf(d)] += 1; });
+      nd.forEach((d) => { if (d.x == null || d.y == null) { const c = colOf(d); d.x = colX[c]; d.y = 50 + counts[c] * 180; counts[c] += 1; } });
+      w.devices = nd;
+      w.connections = nc;
+    });
+    setScreen("canvas");
+  };
 
   /* auto-place any device without a position, left→right by signal role */
   const goToCanvas = () => {
@@ -2232,8 +2298,14 @@ function WiringDiagram({ event, update, kind, canEdit }) {
       <div className="wd-wrap">
         <div className="wd-bar wd-noprint">
           <span className="wd-brand">◧ Signal flow — build your equipment list</span>
+          {canEdit && devices.length > 0 && patchDeviceCount > 0 && (
+            <button className="wd-btn" style={{ marginLeft: "auto" }} onClick={buildFromPatch}
+              title="Replace the diagram with the current patch sheet (keeps your layout & cable lengths where names match)">
+              ↻ Rebuild from patch sheet
+            </button>
+          )}
           {canEdit && devices.length > 0 && (
-            <button className="wd-btn" style={{ marginLeft: "auto" }} onClick={autoWireFromLabels}
+            <button className="wd-btn" style={patchDeviceCount > 0 ? undefined : { marginLeft: "auto" }} onClick={autoWireFromLabels}
               title="Create source / destination devices from your port labels and wire them up">
               Auto-wire from labels
             </button>
@@ -2254,11 +2326,24 @@ function WiringDiagram({ event, update, kind, canEdit }) {
         <div className="wd-setup">
           {!devices.length && (
             <div className="wd-setup-empty">
-              <div>{canEdit ? "No equipment yet — add your first device to build the diagram." : "No wiring diagram for this patch yet."}</div>
-              {canEdit && (
-                <button className="wd-adddevice" style={{ marginTop: 14 }} onClick={addDevice}>
-                  <WdIcon name="plus" size={15} /> Add device
-                </button>
+              {canEdit && patchDeviceCount > 0 ? (
+                <>
+                  <div>Build the diagram straight from the patch sheet above — {patchDeviceCount} device{patchDeviceCount === 1 ? "" : "s"}, with their sources, destinations and signal types.</div>
+                  <button className="wd-btn amber" style={{ marginTop: 14 }} onClick={buildFromPatch}>
+                    <WdIcon name="cable" size={15} /> Build from patch sheet
+                  </button>
+                  <div className="wd-orline">or</div>
+                  <button className="wd-adddevice" onClick={addDevice}><WdIcon name="plus" size={15} /> Add a device manually</button>
+                </>
+              ) : (
+                <>
+                  <div>{canEdit ? "No equipment yet — add devices to the patch sheet above, then build from it, or add one here." : "No wiring diagram for this patch yet."}</div>
+                  {canEdit && (
+                    <button className="wd-adddevice" style={{ marginTop: 14 }} onClick={addDevice}>
+                      <WdIcon name="plus" size={15} /> Add device
+                    </button>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -4998,7 +5083,7 @@ const CSS = `
   .cb .row-tools { display: none !important; }
 
   /* IO patch */
-  .cb .io-grid input { border: none !important; font-size: 9pt !important; }
+  .cb .io-grid input, .cb .io-grid select { border: none !important; font-size: 9pt !important; }
   .cb .scroll-x { overflow: visible !important; }
 
   /* ensure full width */
@@ -5331,6 +5416,7 @@ const CSS = `
 
 .cb .wd-setup{display:flex; flex-direction:column; gap:12px;}
 .cb .wd-setup-empty{text-align:center; color:var(--faint); padding:36px 0; font-size:13px;}
+.cb .wd-orline{margin:12px 0; font-size:11px; color:var(--faint); text-transform:uppercase; letter-spacing:.1em;}
 .cb .wd-setup-card{border:1px solid var(--line); background:var(--panel); border-radius:10px; padding:14px; max-width:720px;}
 .cb .wd-setup-head{display:flex; align-items:center; gap:8px; margin-bottom:12px;}
 .cb .wd-setup-name{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:8px 10px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink); outline:none;}
