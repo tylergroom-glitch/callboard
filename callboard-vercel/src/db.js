@@ -47,7 +47,7 @@ export async function loginAdmin(password) {
 }
 export async function loginShow(password) {
   const r = await api("POST", "/api/auth", { mode: "show", password });
-  setAuth({ scope: r.scope, token: r.token, showId: r.show.id, showName: r.show.name });
+  setAuth({ scope: r.scope, token: r.token, showId: r.show.id, showName: r.show.name, level: r.level || "crew" });
   return r;
 }
 
@@ -57,6 +57,10 @@ export const createEvent = (payload) => api("POST", "/api/events", payload);
 export const updateEvent = (id, payload) => api("PATCH", "/api/events?id=" + encodeURIComponent(id), payload);
 export const deleteEvent = (id) => api("DELETE", "/api/events?id=" + encodeURIComponent(id));
 export const setPassword = (id, password) => api("POST", "/api/password", { id, password });
+// Set any of the three per-show access passwords. Only the keys you include are
+// changed: omit a key to leave it as-is, or pass "" to remove that level.
+// passwords = { crewPassword?, editorPassword?, adminPassword? }
+export const setShowPasswords = (id, passwords) => api("POST", "/api/password", { id, ...passwords });
 
 // Shared pull-list templates (global library; saving/deleting is admin-only).
 export const listTemplates = () => api("GET", "/api/templates");
