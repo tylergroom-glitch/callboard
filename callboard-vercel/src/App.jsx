@@ -628,6 +628,7 @@ function Callboard({ auth, onLogout }) {
   const canEditTabs = isShowAdmin || isEditor;                 // may edit tab content
   const levelLabel = isSuperAdmin ? "Admin \u00b7 all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
   const [showAccessOpen, setShowAccessOpen] = useState(false);
+  const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
@@ -705,6 +706,8 @@ function Callboard({ auth, onLogout }) {
     }, 900);
     return () => clearTimeout(saveTimer.current);
   }, [event]);
+
+  useEffect(() => { setNavOpen(false); }, [tab]);
 
   function summary(e) {
     return { id: e.id, name: e.name, client: e.client, startDate: e.startDate, endDate: e.endDate };
@@ -913,11 +916,27 @@ function Callboard({ auth, onLogout }) {
       ) : (
         <>
           <div className="pagebar">
-            <button className="backbtn" onClick={() => setTab("home")}>
-              <span className="chev">‹</span> All sections
+            <button className="backbtn" onClick={() => setTab("home")} title="Back to all sections">
+              <span className="chev">‹</span> Home
             </button>
-            <div className="pagebar-title">{SECTION_LABEL[tab] || ""}</div>
-            <div className="pagebar-evt" title={event.name}>{event.name}</div>
+            <div className="pagebar-nav">
+              <button className="pagebar-switch" onClick={() => setNavOpen((o) => !o)} aria-expanded={navOpen} title="Jump to another section">
+                {SECTION_LABEL[tab] || "Section"} <span className="pagebar-caret">▾</span>
+              </button>
+              {navOpen && (
+                <>
+                  <div className="pagebar-backdrop" onClick={() => setNavOpen(false)} />
+                  <div className="pagebar-menu">
+                    <button className="pagebar-menu-item home" onClick={() => setTab("home")}>⌂ All sections</button>
+                    {SECTIONS.filter((sec) => (!sec.adminOnly || isShowAdmin) && (!sec.superOnly || isSuperAdmin)).map((sec) => (
+                      <button key={sec.key} className={"pagebar-menu-item" + (sec.key === tab ? " on" : "")} onClick={() => setTab(sec.key)}>
+                        <span className="pagebar-menu-dot" style={{ background: sec.color }} />{sec.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button className="print-btn" onClick={() => window.print()} title="Print or save as PDF">
               🖨️ Print / PDF
             </button>
@@ -2016,6 +2035,8 @@ function WdIcon({ name, size = 15 }) {
     case "move": return (<svg {...p}><path d="M4 4l6 16 2-6 6-2z" /></svg>);
     case "gear": return (<svg {...p}><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l1.5 1.5M16.5 16.5L18 18M18 6l-1.5 1.5M7.5 16.5L6 18" /></svg>);
     case "arrow": return (<svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></svg>);
+    case "expand": return (<svg {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>);
+    case "shrink": return (<svg {...p}><path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" /></svg>);
     default: return null;
   }
 }
@@ -2071,6 +2092,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
   const [pending, setPending] = useState(null);  // { deviceId, portId } waiting for a destination
   const [selected, setSelected] = useState(null); // { kind:"device"|"conn", id }
   const [dragPos, setDragPos] = useState(null);   // live position while dragging { id, x, y }
+  const [expanded, setExpanded] = useState(false); // full-screen (in-page) canvas
   const canvasRef = useRef(null);
   const drag = useRef(null);
 
@@ -2172,6 +2194,12 @@ function WiringDiagram({ event, update, kind, canEdit }) {
     window.addEventListener("pointerup", onUp);
     return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
   }, [onMove, onUp]);
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e) => { if (e.key === "Escape") setExpanded(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
 
   const clickPort = (device, port, side) => {
     if (!canEdit || mode !== "connect") return;
@@ -2267,9 +2295,12 @@ function WiringDiagram({ event, update, kind, canEdit }) {
 
   /* ---- CANVAS SCREEN ---- */
   return (
-    <div className="wd-wrap">
+    <div className={"wd-wrap" + (expanded ? " wd-full" : "")}>
       <div className="wd-bar wd-noprint">
         <button className="wd-btn" onClick={() => setScreen("setup")}><WdIcon name="gear" size={15} /> {canEdit ? "Edit setup" : "Setup"}</button>
+        <button className="wd-btn" onClick={() => setExpanded((v) => !v)} title={expanded ? "Exit full screen (Esc)" : "Full screen"}>
+          <WdIcon name={expanded ? "shrink" : "expand"} size={15} /> {expanded ? "Exit" : "Full screen"}
+        </button>
         {canEdit && (
           <div className="wd-modes">
             <button className={"wd-btn " + (mode === "select" ? "on" : "")} onClick={() => { setMode("select"); setPending(null); }}><WdIcon name="move" size={15} /> Move</button>
@@ -4879,8 +4910,19 @@ const CSS = `
 .cb .backbtn .chev{font-size:18px; line-height:1; margin-top:-1px;}
 .cb .pagebar-title{font-family:'Oswald'; font-weight:600; letter-spacing:.05em; text-transform:uppercase; font-size:18px; color:var(--amber);}
 .cb .pagebar-evt{margin-left:auto; color:var(--faint); font-size:13px; font-weight:500; max-width:40%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
-.cb .print-btn{margin-left:12px; border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:8px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; flex-shrink:0;}
+.cb .print-btn{margin-left:auto; border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:8px; padding:6px 12px; font-size:12.5px; font-weight:600; cursor:pointer; white-space:nowrap; flex-shrink:0;}
 .cb .print-btn:hover{border-color:var(--amber); color:var(--amber);}
+.cb .pagebar-nav{position:relative; display:flex; align-items:center;}
+.cb .pagebar-switch{display:inline-flex; align-items:center; gap:8px; background:var(--panel2); border:1px solid var(--line); color:var(--amber); border-radius:8px; padding:8px 14px; font-family:'Oswald'; font-weight:600; letter-spacing:.05em; text-transform:uppercase; font-size:15px; cursor:pointer;}
+.cb .pagebar-switch:hover{border-color:var(--amber);}
+.cb .pagebar-caret{font-size:12px; color:var(--dim);}
+.cb .pagebar-backdrop{position:fixed; inset:0; z-index:30;}
+.cb .pagebar-menu{position:absolute; top:calc(100% + 6px); left:0; z-index:31; min-width:250px; max-height:70vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 18px 50px rgba(0,0,0,.5); padding:6px;}
+.cb .pagebar-menu-item{display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:transparent; border:0; color:var(--ink); padding:10px 11px; border-radius:8px; font-family:'Inter'; font-size:14px; font-weight:500; cursor:pointer;}
+.cb .pagebar-menu-item:hover{background:var(--panel2);}
+.cb .pagebar-menu-item.on{background:var(--panel2); color:var(--amber); font-weight:700;}
+.cb .pagebar-menu-item.home{color:var(--dim); border-bottom:1px solid var(--line); border-radius:8px 8px 0 0; margin-bottom:4px; padding-bottom:12px;}
+.cb .pagebar-menu-dot{width:11px; height:11px; border-radius:3px; flex:0 0 auto;}
 
 @media print {
   /* hide everything except the content */
@@ -5186,6 +5228,11 @@ const CSS = `
   .cb .tile-desc{font-size:11.5px;}
   .cb .hero{align-items:stretch;}
   .cb .pagebar-evt{display:none;}
+  .cb .pagebar{position:sticky; top:0; z-index:25; background:var(--bg); padding:10px 16px; border-bottom:1px solid var(--line); margin-bottom:6px; gap:10px;}
+  .cb .backbtn{padding:10px 14px 10px 11px; font-size:14px;}
+  .cb .pagebar-switch{font-size:15px; padding:10px 14px;}
+  .cb .pagebar-menu{min-width:min(80vw,300px);}
+  .cb .pagebar-menu-item{padding:12px 12px;}
   .cb .io-cols{grid-template-columns:1fr;}
   .cb .record-grid{grid-template-columns:1fr 1fr;}
   .cb .rowhead.record-grid{display:none;}
@@ -5311,6 +5358,12 @@ const CSS = `
   .cb .wd-body{flex-direction:column;}
   .cb .wd-aside{width:100% !important; max-height:none !important;}
 }
+.cb .wd-full{position:fixed; inset:0; z-index:200; margin:0; padding:14px; background:var(--bg); overflow:auto;}
+.cb .wd-full .wd-body{flex:1; min-height:0;}
+.cb .wd-full .wd-canvas{height:100%;}
+.cb .wd-full .wd-aside{height:100%; max-height:none;}
+@media (max-width:860px){ .cb .wd-full .wd-canvas{height:70vh;} .cb .wd-full .wd-aside{height:auto;} }
+@media print{ .cb .wd-full{position:static !important; height:auto !important; padding:0 !important; overflow:visible !important;} }
 
 /* top-right + locked picker (cloud build) */
 .cb .top-right{display:flex; align-items:center; gap:10px; margin-left:auto;}
