@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   currentAuth,
   logout as dbLogout,
@@ -287,6 +287,8 @@ function normalize(e) {
   }
   e.audio = e.audio || { blocks: [ioBlock("Main")] };
   e.video = e.video || { blocks: [ioBlock("Main")] };
+  e.audio.wiring = e.audio.wiring || { devices: [], connections: [] };
+  e.video.wiring = e.video.wiring || { devices: [], connections: [] };
   e.crew = e.crew.map((c) => ({
     rosterId: null, rateType: "day", rate: "", crewNotes: "", ...c,
   }));
@@ -1982,6 +1984,375 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
   );
 }
 
+/* ============================================================
+   WIRING DIAGRAM — per-tab signal-flow editor (audio / video)
+   Ported from the standalone tool: re-skinned to Callboard's CSS
+   (no Tailwind, no lucide-react) and rewired so all state lives in
+   event[kind].wiring = { devices, connections } and autosaves.
+   ============================================================ */
+const WD_CABLES = {
+  SDI: "#3b82f6",
+  HDMI: "#a855f7",
+  Ethernet: "#22c55e",
+  Fiber: "#f59e0b",
+  XLR: "#ef4444",
+  Power: "#94a3b8",
+};
+const WD_DEFAULT_TYPE = "SDI";
+const WD_DEFAULT_LEN = 25;
+const WD_BOX_W = 200, WD_HEAD_H = 32, WD_ROW_H = 26, WD_PAD_B = 10;
+const wdBoxH = (d) => WD_HEAD_H + Math.max(d.inputs.length, d.outputs.length, 1) * WD_ROW_H + WD_PAD_B;
+const wdInPos = (d, i) => ({ x: d.x, y: d.y + WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2 });
+const wdOutPos = (d, i) => ({ x: d.x + WD_BOX_W, y: d.y + WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2 });
+
+/* inline icons (Callboard doesn't bundle lucide-react) */
+function WdIcon({ name, size = 15 }) {
+  const p = { width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 2, strokeLinecap: "round", strokeLinejoin: "round" };
+  switch (name) {
+    case "plus": return (<svg {...p}><path d="M12 5v14M5 12h14" /></svg>);
+    case "x": return (<svg {...p}><path d="M18 6L6 18M6 6l12 12" /></svg>);
+    case "trash": return (<svg {...p}><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" /></svg>);
+    case "cable": return (<svg {...p}><path d="M4 9V5a2 2 0 0 1 2-2M20 15v4a2 2 0 0 1-2 2M4 9h4M16 15h4M8 5v4M16 15v4" /></svg>);
+    case "move": return (<svg {...p}><path d="M4 4l6 16 2-6 6-2z" /></svg>);
+    case "gear": return (<svg {...p}><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M6 6l1.5 1.5M16.5 16.5L18 18M18 6l-1.5 1.5M7.5 16.5L6 18" /></svg>);
+    case "arrow": return (<svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></svg>);
+    default: return null;
+  }
+}
+function WdSwatch({ type }) {
+  return <span className="wd-swatch" style={{ backgroundColor: WD_CABLES[type] || "#fff" }} />;
+}
+function WdSection({ title, count, children }) {
+  return (
+    <div className="wd-section">
+      <div className="wd-sectionhead">
+        <span>{title}</span>
+        {count != null && <span className="wd-count">{count}</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+/* a single input/output port on a device box */
+function WdPort({ side, top, label, connectable, active, readOnly, onLabel, onPick }) {
+  const isIn = side === "in";
+  const col = active ? "#FFB020" : "#64748b";
+  return (
+    <div className="wd-port" style={{ top, height: WD_ROW_H, [isIn ? "left" : "right"]: 0, flexDirection: isIn ? "row" : "row-reverse" }}>
+      <button
+        data-stop
+        className="wd-portdot"
+        onPointerDown={(e) => { e.stopPropagation(); if (connectable) onPick(); }}
+        title={connectable ? (isIn ? "Destination input" : "Source output") : undefined}
+        style={{ [isIn ? "marginLeft" : "marginRight"]: -6, borderColor: col, backgroundColor: active ? "#FFB020" : "#0f172a", cursor: connectable ? "pointer" : "default" }}
+      />
+      <input
+        data-stop
+        className="wd-portlabel"
+        style={{ textAlign: isIn ? "left" : "right" }}
+        value={label}
+        placeholder="port"
+        spellCheck={false}
+        readOnly={readOnly}
+        onPointerDown={(e) => e.stopPropagation()}
+        onChange={(e) => onLabel(e.target.value)}
+      />
+    </div>
+  );
+}
+
+function WiringDiagram({ event, update, kind, canEdit }) {
+  const wiring = event[kind].wiring || { devices: [], connections: [] };
+  const devices = wiring.devices;
+  const connections = wiring.connections;
+
+  const [screen, setScreen] = useState(devices.length ? "canvas" : "setup"); // "setup" | "canvas"
+  const [mode, setMode] = useState("select");   // "select" | "connect"
+  const [pending, setPending] = useState(null);  // { deviceId, portId } waiting for a destination
+  const [selected, setSelected] = useState(null); // { kind:"device"|"conn", id }
+  const [dragPos, setDragPos] = useState(null);   // live position while dragging { id, x, y }
+  const canvasRef = useRef(null);
+  const drag = useRef(null);
+
+  /* all writes go through the event so they autosave to Airtable */
+  const setW = (fn) => update((ev) => {
+    if (!ev[kind].wiring) ev[kind].wiring = { devices: [], connections: [] };
+    fn(ev[kind].wiring);
+  });
+
+  const addDevice = () => setW((w) => w.devices.push({ id: uid(), name: "New Device", inputs: [], outputs: [], x: null, y: null }));
+  const deleteDevice = (id) => setW((w) => {
+    w.devices = w.devices.filter((d) => d.id !== id);
+    w.connections = w.connections.filter((c) => c.fromDeviceId !== id && c.toDeviceId !== id);
+  });
+  const setDeviceName = (id, name) => setW((w) => { const d = w.devices.find((x) => x.id === id); if (d) d.name = name; });
+  const addPort = (id, side) => setW((w) => { const d = w.devices.find((x) => x.id === id); if (d) d[side].push({ id: uid(), label: "" }); });
+  const removePort = (id, side, pid) => setW((w) => {
+    const d = w.devices.find((x) => x.id === id);
+    if (d) d[side] = d[side].filter((p) => p.id !== pid);
+    w.connections = w.connections.filter((c) =>
+      !(side === "inputs" && c.toDeviceId === id && c.toPortId === pid) &&
+      !(side === "outputs" && c.fromDeviceId === id && c.fromPortId === pid));
+  });
+  const setPortLabel = (id, side, pid, label) => setW((w) => {
+    const d = w.devices.find((x) => x.id === id);
+    if (d) { const p = d[side].find((pp) => pp.id === pid); if (p) p.label = label; }
+  });
+  const updateConn = (id, patch) => setW((w) => { const c = w.connections.find((x) => x.id === id); if (c) Object.assign(c, patch); });
+  const deleteConn = (id) => { setW((w) => { w.connections = w.connections.filter((c) => c.id !== id); }); setSelected(null); };
+  const setDevicePos = (id, x, y) => setW((w) => { const d = w.devices.find((z) => z.id === id); if (d) { d.x = x; d.y = y; } });
+
+  /* auto-place any device without a position, left→right by signal role */
+  const goToCanvas = () => {
+    setW((w) => {
+      const colOf = (d) => (d.inputs.length === 0 ? 0 : d.outputs.length === 0 ? 2 : 1);
+      const colX = [40, 330, 650];
+      const counts = [0, 0, 0];
+      w.devices.forEach((d) => { if (d.x != null) counts[colOf(d)] += 1; });
+      w.devices.forEach((d) => {
+        if (d.x != null && d.y != null) return;
+        const c = colOf(d);
+        d.x = colX[c]; d.y = 50 + counts[c] * 180; counts[c] += 1;
+      });
+    });
+    setScreen("canvas");
+  };
+
+  /* dragging (local live position, commit once on release) */
+  const onBoxDown = (e, d) => {
+    if (!canEdit || mode === "connect" || e.target.dataset.stop) return;
+    setSelected({ kind: "device", id: d.id });
+    const r = canvasRef.current.getBoundingClientRect();
+    drag.current = { id: d.id, dx: e.clientX - r.left + canvasRef.current.scrollLeft - d.x, dy: e.clientY - r.top + canvasRef.current.scrollTop - d.y };
+  };
+  const onMove = useCallback((e) => {
+    if (!drag.current || !canvasRef.current) return;
+    const r = canvasRef.current.getBoundingClientRect();
+    const nx = Math.max(0, e.clientX - r.left + canvasRef.current.scrollLeft - drag.current.dx);
+    const ny = Math.max(0, e.clientY - r.top + canvasRef.current.scrollTop - drag.current.dy);
+    setDragPos({ id: drag.current.id, x: nx, y: ny });
+  }, []);
+  const onUp = useCallback(() => {
+    if (drag.current && dragPos && dragPos.id === drag.current.id) setDevicePos(dragPos.id, dragPos.x, dragPos.y);
+    drag.current = null;
+    setDragPos(null);
+  }, [dragPos]); // eslint-disable-line
+  useEffect(() => {
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => { window.removeEventListener("pointermove", onMove); window.removeEventListener("pointerup", onUp); };
+  }, [onMove, onUp]);
+
+  const clickPort = (device, port, side) => {
+    if (!canEdit || mode !== "connect") return;
+    if (side === "out") { setPending({ deviceId: device.id, portId: port.id }); return; }
+    if (!pending) return;
+    setW((w) => w.connections.push({ id: uid(), fromDeviceId: pending.deviceId, fromPortId: pending.portId, toDeviceId: device.id, toPortId: port.id, type: WD_DEFAULT_TYPE, length: WD_DEFAULT_LEN }));
+    setPending(null);
+  };
+
+  /* derived lists */
+  const devById = (id) => devices.find((d) => d.id === id);
+  const portIndex = (d, side, pid) => d[side].findIndex((p) => p.id === pid);
+  const cableGroups = Object.values(connections.reduce((a, c) => {
+    const k = c.type + "|" + c.length;
+    (a[k] || (a[k] = { type: c.type, length: c.length, count: 0 })).count++;
+    return a;
+  }, {})).sort((a, b) => a.type.localeCompare(b.type) || a.length - b.length);
+  const cableTotals = Object.values(connections.reduce((a, c) => {
+    (a[c.type] || (a[c.type] = { type: c.type, count: 0, feet: 0 }));
+    a[c.type].count++; a[c.type].feet += Number(c.length) || 0;
+    return a;
+  }, {})).sort((a, b) => a.type.localeCompare(b.type));
+
+  /* live device list with the in-progress drag position applied */
+  const dl = dragPos ? devices.map((d) => (d.id === dragPos.id ? { ...d, x: dragPos.x, y: dragPos.y } : d)) : devices;
+
+  /* ---- SETUP SCREEN ---- */
+  if (screen === "setup") {
+    return (
+      <div className="wd-wrap">
+        <div className="wd-bar wd-noprint">
+          <span className="wd-brand">◧ Signal flow — build your equipment list</span>
+          {canEdit && (
+            <button className="wd-btn amber" onClick={goToCanvas} disabled={!devices.length}>
+              Create diagram <WdIcon name="arrow" size={15} />
+            </button>
+          )}
+          {!canEdit && devices.length > 0 && (
+            <button className="wd-btn" onClick={() => setScreen("canvas")}>View diagram <WdIcon name="arrow" size={15} /></button>
+          )}
+        </div>
+
+        <div className="wd-setup">
+          {!devices.length && <div className="wd-setup-empty">{canEdit ? "No equipment yet. Add your first device below." : "No wiring diagram for this patch yet."}</div>}
+          {devices.map((d) => (
+            <div className="wd-setup-card" key={d.id}>
+              <div className="wd-setup-head">
+                <input className="wd-setup-name" value={d.name} placeholder="Equipment name" readOnly={!canEdit}
+                  onChange={(e) => setDeviceName(d.id, e.target.value)} />
+                {canEdit && <button className="wd-iconbtn danger" title="Remove device" onClick={() => deleteDevice(d.id)}><WdIcon name="trash" size={15} /></button>}
+              </div>
+              <div className="wd-setup-cols">
+                {["inputs", "outputs"].map((side) => (
+                  <div key={side}>
+                    <div className={"wd-porthdr " + (side === "inputs" ? "in" : "out")}>{side === "inputs" ? "Inputs" : "Outputs"}</div>
+                    {d[side].map((p, i) => (
+                      <div className="wd-setup-port" key={p.id}>
+                        <span className="wd-portnum">{i + 1}</span>
+                        <input className="wd-setup-portinput" value={p.label} placeholder="Port label" readOnly={!canEdit}
+                          onChange={(e) => setPortLabel(d.id, side, p.id, e.target.value)} />
+                        {canEdit && <button className="wd-iconbtn" onClick={() => removePort(d.id, side, p.id)}><WdIcon name="x" size={13} /></button>}
+                      </div>
+                    ))}
+                    {canEdit && <button className="wd-addport" onClick={() => addPort(d.id, side)}><WdIcon name="plus" size={12} /> Add {side === "inputs" ? "input" : "output"}</button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+          {canEdit && <button className="wd-adddevice" onClick={addDevice}><WdIcon name="plus" size={15} /> Add device</button>}
+        </div>
+      </div>
+    );
+  }
+
+  /* ---- CANVAS SCREEN ---- */
+  return (
+    <div className="wd-wrap">
+      <div className="wd-bar wd-noprint">
+        <button className="wd-btn" onClick={() => setScreen("setup")}><WdIcon name="gear" size={15} /> {canEdit ? "Edit setup" : "Setup"}</button>
+        {canEdit && (
+          <div className="wd-modes">
+            <button className={"wd-btn " + (mode === "select" ? "on" : "")} onClick={() => { setMode("select"); setPending(null); }}><WdIcon name="move" size={15} /> Move</button>
+            <button className={"wd-btn " + (mode === "connect" ? "on" : "")} onClick={() => { setMode("connect"); setPending(null); }}><WdIcon name="cable" size={15} /> Wire</button>
+          </div>
+        )}
+        <div className="wd-legend">
+          {Object.keys(WD_CABLES).map((t) => (
+            <span key={t} className="wd-legenditem"><span className="wd-legendline" style={{ backgroundColor: WD_CABLES[t] }} />{t}</span>
+          ))}
+        </div>
+      </div>
+
+      {canEdit && mode === "connect" && (
+        <div className="wd-connhint wd-noprint">{pending ? "Now tap a destination input (left side of a device)" : "Tap an output port (right side of a device) to start a cable run"}</div>
+      )}
+
+      <div className="wd-body">
+        <div
+          ref={canvasRef}
+          className="wd-canvas"
+          onPointerDown={(e) => { if (e.target === e.currentTarget) { setSelected(null); setPending(null); } }}
+        >
+          <svg className="wd-cables" style={{ minWidth: 1000, minHeight: 700 }}>
+            {connections.map((c) => {
+              const a = dl.find((d) => d.id === c.fromDeviceId), b = dl.find((d) => d.id === c.toDeviceId);
+              if (!a || !b) return null;
+              const p1 = wdOutPos(a, portIndex(a, "outputs", c.fromPortId));
+              const p2 = wdInPos(b, portIndex(b, "inputs", c.toPortId));
+              const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+              const col = WD_CABLES[c.type] || "#fff";
+              const isSel = selected && selected.kind === "conn" && selected.id === c.id;
+              const dpath = "M " + p1.x + " " + p1.y + " C " + (p1.x + 60) + " " + p1.y + ", " + (p2.x - 60) + " " + p2.y + ", " + p2.x + " " + p2.y;
+              return (
+                <g key={c.id} style={{ pointerEvents: "auto", cursor: "pointer" }}
+                  onPointerDown={(e) => { e.stopPropagation(); setSelected({ kind: "conn", id: c.id }); }}>
+                  <path d={dpath} stroke="transparent" strokeWidth={22} fill="none" />
+                  <path d={dpath} stroke={col} strokeWidth={isSel ? 4 : 2.5} fill="none" strokeDasharray={c.type === "Power" ? "6 4" : "none"} />
+                  <g transform={"translate(" + mx + "," + my + ")"}>
+                    <rect x={-42} y={-11} width={84} height={22} rx={4} fill="#0f172a" stroke={col} strokeWidth={isSel ? 1.5 : 1} />
+                    <text textAnchor="middle" dy={4} fontSize={11} fontFamily="monospace" fill={col}>{c.type} · {c.length}ft</text>
+                  </g>
+                </g>
+              );
+            })}
+          </svg>
+
+          {dl.map((d) => {
+            const isSel = selected && selected.kind === "device" && selected.id === d.id;
+            return (
+              <div key={d.id} onPointerDown={(e) => onBoxDown(e, d)}
+                className="wd-dev"
+                style={{ left: d.x, top: d.y, width: WD_BOX_W, height: wdBoxH(d), borderColor: isSel ? "#38bdf8" : "#475569", cursor: !canEdit || mode === "connect" ? "default" : "grab" }}>
+                <div className="wd-devhead">
+                  <input data-stop className="wd-devname" value={d.name} spellCheck={false} readOnly={!canEdit}
+                    onPointerDown={(e) => e.stopPropagation()} onChange={(e) => setDeviceName(d.id, e.target.value)} />
+                  {isSel && canEdit && mode === "select" && (
+                    <button data-stop className="wd-devdel wd-noprint" onPointerDown={(e) => { e.stopPropagation(); deleteDevice(d.id); setSelected(null); }}>
+                      <WdIcon name="x" size={13} />
+                    </button>
+                  )}
+                </div>
+                {d.inputs.map((p, i) => (
+                  <WdPort key={p.id} side="in" top={WD_HEAD_H + i * WD_ROW_H} label={p.label} readOnly={!canEdit}
+                    connectable={canEdit && mode === "connect"} onLabel={(v) => setPortLabel(d.id, "inputs", p.id, v)} onPick={() => clickPort(d, p, "in")} />
+                ))}
+                {d.outputs.map((p, i) => (
+                  <WdPort key={p.id} side="out" top={WD_HEAD_H + i * WD_ROW_H} label={p.label} readOnly={!canEdit}
+                    connectable={canEdit && mode === "connect"} active={pending && pending.deviceId === d.id && pending.portId === p.id}
+                    onLabel={(v) => setPortLabel(d.id, "outputs", p.id, v)} onPick={() => clickPort(d, p, "out")} />
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        <aside className="wd-aside">
+          <WdSection title="Equipment" count={devices.length}>
+            {devices.map((d) => (
+              <div className="wd-listrow" key={d.id}>
+                <span className="wd-listname">{d.name}</span>
+                <span className="wd-listmeta"><span style={{ color: "#38bdf8" }}>{d.inputs.length} in</span> / <span style={{ color: "#34d399" }}>{d.outputs.length} out</span></span>
+              </div>
+            ))}
+          </WdSection>
+
+          <WdSection title="Cable list" count={connections.length}>
+            {!cableGroups.length && <div className="wd-listempty">No cable runs yet.</div>}
+            {cableGroups.map((g) => (
+              <div className="wd-listrow" key={g.type + "-" + g.length}>
+                <WdSwatch type={g.type} /><span className="wd-listname">{g.type}</span>
+                <span className="wd-listdim">{g.length}ft</span>
+                <span className="wd-listcount">×{g.count}</span>
+              </div>
+            ))}
+          </WdSection>
+
+          <WdSection title="Totals by type">
+            {!cableTotals.length && <div className="wd-listempty">—</div>}
+            {cableTotals.map((t) => (
+              <div className="wd-listrow" key={t.type}>
+                <WdSwatch type={t.type} /><span className="wd-listname">{t.type}</span>
+                <span className="wd-listtot">{t.count} cables · {t.feet}ft</span>
+              </div>
+            ))}
+          </WdSection>
+
+          {canEdit && selected && selected.kind === "conn" && (() => {
+            const c = connections.find((x) => x.id === selected.id);
+            if (!c) return null;
+            return (
+              <div className="wd-connedit wd-noprint">
+                <div className="wd-connedit-head">
+                  <span>Edit cable run</span>
+                  <button className="wd-iconbtn danger" onClick={() => deleteConn(c.id)}><WdIcon name="trash" size={14} /></button>
+                </div>
+                <label className="wd-connedit-lbl">Cable type</label>
+                <select className="wd-connedit-input" value={c.type} onChange={(e) => updateConn(c.id, { type: e.target.value })}>
+                  {Object.keys(WD_CABLES).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+                <label className="wd-connedit-lbl">Length (ft)</label>
+                <input className="wd-connedit-input" type="number" min={0} value={c.length} onChange={(e) => updateConn(c.id, { length: Number(e.target.value) })} />
+              </div>
+            );
+          })()}
+        </aside>
+      </div>
+    </div>
+  );
+}
+
 function IOTab({ event, update, kind, isAdmin, editor }) {
   const data = event[kind];
   const title = kind === "audio" ? "Audio" : "Video";
@@ -2041,6 +2412,11 @@ function IOTab({ event, update, kind, isAdmin, editor }) {
           <Empty>{canEdit ? "No devices yet. Add one to start the patch sheet." : "No patch sheet yet."}</Empty>
         </Panel>
       )}
+
+      <div className="tab-lead" style={{ marginTop: 18 }}>
+        <p><b>{title} wiring diagram</b> — drag devices, wire ports, and auto-build the cable list. Prints with this tab.</p>
+      </div>
+      <WiringDiagram event={event} update={update} kind={kind} canEdit={canEdit} />
     </div>
   );
 }
@@ -4807,6 +5183,85 @@ const CSS = `
 .cb .sa-clear{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); margin-top:6px; cursor:pointer;}
 .cb .sa-err{color:var(--danger); font-size:12.5px; margin:4px 0 12px;}
 .cb .sa-actions{display:flex; gap:8px; justify-content:flex-end; margin-top:8px;}
+/* wiring diagram */
+.cb .wd-wrap{display:flex; flex-direction:column; gap:10px; margin-top:8px;}
+.cb .wd-bar{display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; background:#101218; border:1px solid var(--line); border-radius:10px;}
+.cb .wd-brand{font-family:'Oswald'; letter-spacing:.08em; font-size:12.5px; color:var(--dim); text-transform:uppercase;}
+.cb .wd-brand::first-letter{color:var(--amber);}
+.cb .wd-btn{display:inline-flex; align-items:center; gap:6px; background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:7px 11px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .wd-btn:hover{border-color:#3b4353;}
+.cb .wd-btn:disabled{opacity:.4; cursor:not-allowed;}
+.cb .wd-btn.amber{background:var(--amber); color:#101218; border-color:var(--amber);}
+.cb .wd-btn.on{background:#38bdf8; color:#06121c; border-color:#38bdf8;}
+.cb .wd-modes{display:flex; gap:6px;}
+.cb .wd-legend{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-left:auto; font-family:'Inter'; font-size:11px; color:var(--faint);}
+.cb .wd-legenditem{display:inline-flex; align-items:center; gap:5px;}
+.cb .wd-legendline{width:14px; height:3px; border-radius:2px; display:inline-block;}
+.cb .wd-connhint{padding:6px 12px; background:rgba(255,176,32,.1); border:1px solid rgba(255,176,32,.3); border-radius:8px; color:#f4c76b; font-family:'Inter'; font-size:12px;}
+
+.cb .wd-body{display:flex; gap:10px; align-items:stretch;}
+.cb .wd-canvas{position:relative; flex:1; min-width:0; height:540px; overflow:auto; border:1px solid var(--line); border-radius:10px; background-color:#0f172a; background-image:radial-gradient(circle, #1e293b 1px, transparent 1px); background-size:24px 24px; touch-action:none;}
+.cb .wd-cables{position:absolute; inset:0; width:100%; height:100%; pointer-events:none;}
+.cb .wd-dev{position:absolute; border:2px solid #475569; border-radius:7px; background:#1e293b; box-shadow:0 6px 18px rgba(0,0,0,.35);}
+.cb .wd-devhead{display:flex; align-items:center; height:32px; padding:0 4px; border-bottom:1px solid #3a4658; background:#243044; border-radius:5px 5px 0 0;}
+.cb .wd-devname{width:100%; background:transparent; border:0; text-align:center; font-family:'JetBrains Mono','Menlo',monospace; font-size:12px; font-weight:600; color:#e9edf4; outline:none;}
+.cb .wd-devdel{position:absolute; top:-11px; right:-11px; display:flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; border:0; border-radius:50%; background:var(--danger); color:#fff; cursor:pointer; box-shadow:0 3px 10px rgba(0,0,0,.4);}
+.cb .wd-port{position:absolute; display:flex; align-items:center; width:50%;}
+.cb .wd-portdot{flex:0 0 auto; width:12px; height:12px; border:2px solid #64748b; border-radius:50%; background:#0f172a; padding:0; transition:transform .12s;}
+.cb .wd-portdot:hover{transform:scale(1.25);}
+.cb .wd-portlabel{width:100%; background:transparent; border:0; font-family:'JetBrains Mono','Menlo',monospace; font-size:11px; color:#cbd5e1; outline:none; padding:0 4px;}
+
+.cb .wd-aside{width:300px; flex:0 0 auto; background:#101218; border:1px solid var(--line); border-radius:10px; overflow:hidden; align-self:flex-start; max-height:540px; overflow-y:auto;}
+.cb .wd-section + .wd-section{border-top:1px solid var(--line);}
+.cb .wd-sectionhead{display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); position:sticky; top:0;}
+.cb .wd-count{color:var(--faint); font-weight:600;}
+.cb .wd-listrow{display:flex; align-items:center; gap:8px; padding:7px 12px; border-bottom:1px solid #20242e; font-family:'JetBrains Mono','Menlo',monospace; font-size:12.5px; color:#cbd5e1;}
+.cb .wd-listname{color:#e2e8f0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .wd-listmeta{margin-left:auto; font-size:11.5px; white-space:nowrap;}
+.cb .wd-listdim{color:var(--faint);}
+.cb .wd-listcount{margin-left:auto; color:#cbd5e1;}
+.cb .wd-listtot{margin-left:auto; color:var(--faint); font-size:11.5px;}
+.cb .wd-listempty{padding:12px; font-size:12px; color:var(--faint); font-style:italic;}
+.cb .wd-swatch{width:12px; height:12px; border-radius:3px; flex:0 0 auto; display:inline-block;}
+
+.cb .wd-connedit{margin:10px; padding:10px; background:var(--panel2); border:1px solid var(--line); border-radius:8px;}
+.cb .wd-connedit-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
+.cb .wd-connedit-lbl{display:block; font-family:'Inter'; font-size:11px; color:var(--faint); margin:6px 0 3px;}
+.cb .wd-connedit-input{width:100%; background:#0f172a; border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink);}
+
+.cb .wd-iconbtn{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; background:transparent; border:0; border-radius:6px; color:var(--faint); cursor:pointer;}
+.cb .wd-iconbtn:hover{background:var(--panel2); color:var(--ink);}
+.cb .wd-iconbtn.danger:hover{background:rgba(255,107,107,.15); color:var(--danger);}
+
+.cb .wd-setup{display:flex; flex-direction:column; gap:12px;}
+.cb .wd-setup-empty{text-align:center; color:var(--faint); padding:36px 0; font-size:13px;}
+.cb .wd-setup-card{border:1px solid var(--line); background:var(--panel); border-radius:10px; padding:14px; max-width:720px;}
+.cb .wd-setup-head{display:flex; align-items:center; gap:8px; margin-bottom:12px;}
+.cb .wd-setup-name{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:8px 10px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink); outline:none;}
+.cb .wd-setup-cols{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
+.cb .wd-porthdr{font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px;}
+.cb .wd-porthdr.in{color:#38bdf8;}
+.cb .wd-porthdr.out{color:#34d399;}
+.cb .wd-setup-port{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
+.cb .wd-portnum{width:16px; text-align:right; font-family:'JetBrains Mono','Menlo',monospace; font-size:10px; color:var(--faint);}
+.cb .wd-setup-portinput{flex:1; background:#0f172a; border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink); outline:none;}
+.cb .wd-addport{display:inline-flex; align-items:center; gap:5px; margin-left:22px; margin-top:2px; background:transparent; border:0; color:var(--dim); font-family:'Inter'; font-size:12px; cursor:pointer;}
+.cb .wd-addport:hover{color:var(--ink);}
+.cb .wd-adddevice{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; max-width:720px; padding:12px; border:1px dashed var(--line); border-radius:10px; background:transparent; color:var(--dim); font-family:'Inter'; font-size:13px; cursor:pointer;}
+.cb .wd-adddevice:hover{border-color:#3b4353; color:var(--ink);}
+
+@media (max-width:860px){
+  .cb .wd-body{flex-direction:column;}
+  .cb .wd-aside{width:100%; max-height:none;}
+  .cb .wd-canvas{height:60vh;}
+  .cb .wd-setup-cols{grid-template-columns:1fr;}
+}
+@media print{
+  .cb .wd-noprint{display:none !important;}
+  .cb .wd-canvas{height:auto !important; overflow:visible !important;}
+  .cb .wd-body{flex-direction:column;}
+  .cb .wd-aside{width:100% !important; max-height:none !important;}
+}
 
 /* top-right + locked picker (cloud build) */
 .cb .top-right{display:flex; align-items:center; gap:10px; margin-left:auto;}
