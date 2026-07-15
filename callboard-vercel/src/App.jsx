@@ -45,7 +45,7 @@ const clone = (o) =>
 
 /* ---------- structure helpers ---------- */
 const ioRow = (num, name = "", patch = "", signal = "", notes = "") => ({
-  id: uid(), num: String(num), name, patch, signal, notes,
+  id: uid(), num: String(num), name, patch, signal, length: "", notes,
 });
 const ioBlock = (name, ins = [], outs = []) => ({ id: uid(), name, ins, outs });
 const IO_SIGNAL_TYPES = ["SDI", "HDMI", "Fiber", "Ethernet", "XLR", "Power"];
@@ -1975,7 +1975,7 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
       <div className="io-side-h">{side === "ins" ? "Inputs" : "Outputs"}</div>
       <div className="rows scroll-x">
         <div className="rowhead io-grid">
-          <span>#</span><span>{label}</span><span>Patch</span><span>Signal</span><span>Notes</span>{!readOnly && <span />}
+          <span>#</span><span>{label}</span><span>Patch</span><span>Signal</span><span>Length</span><span>Notes</span>{!readOnly && <span />}
         </div>
         {rows.map((r, ri) => (
           readOnly ? (
@@ -1984,6 +1984,7 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
               <span className="io-ro-cell">{r.name}</span>
               <span className="io-ro-cell dim">{r.patch}</span>
               <span className="io-ro-cell dim">{r.signal}</span>
+              <span className="io-ro-cell dim">{r.length ? r.length + " ft" : ""}</span>
               <span className="io-ro-cell dim">{r.notes}</span>
             </div>
           ) : (
@@ -1995,6 +1996,11 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
                 <option value="">Signal…</option>
                 {IO_SIGNAL_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                 {r.signal && !IO_SIGNAL_TYPES.includes(r.signal) && <option value={r.signal}>{r.signal}</option>}
+              </select>
+              <select className="io-len" value={r.length || ""} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].length = e.target.value))}>
+                <option value="">Length…</option>
+                {WD_LENGTHS.map((n) => <option key={n} value={n}>{n} ft</option>)}
+                {r.length && !WD_LENGTHS.includes(Number(r.length)) && <option value={r.length}>{r.length} ft</option>}
               </select>
               <input value={r.notes} placeholder="Notes" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].notes = e.target.value))} />
               <RemoveBtn onClick={() => update((ev) => ev[kind].blocks[bi][side].splice(ri, 1))} />
@@ -2210,7 +2216,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
           if (sd && sd.id === mid.id) return;
           if (!sd) { sd = { id: uid(), name: nm, inputs: [], outputs: [{ id: uid(), label: "" }], x: null, y: null }; nd.push(sd); }
           else if (!sd.outputs.length) sd.outputs.push({ id: uid(), label: "" });
-          nc.push({ id: uid(), fromDeviceId: sd.id, fromPortId: sd.outputs[0].id, toDeviceId: mid.id, toPortId: port.id, type: typeOf(r.signal), length: takeLen(nm, midName) });
+          nc.push({ id: uid(), fromDeviceId: sd.id, fromPortId: sd.outputs[0].id, toDeviceId: mid.id, toPortId: port.id, type: typeOf(r.signal), length: (Number(r.length) > 0 ? Number(r.length) : takeLen(nm, midName)) });
         });
         (block.outs || []).forEach((r) => {
           const nm = (r.name || "").trim();
@@ -2221,7 +2227,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
           if (dd && dd.id === mid.id) return;
           if (!dd) { dd = { id: uid(), name: nm, inputs: [{ id: uid(), label: "" }], outputs: [], x: null, y: null }; nd.push(dd); }
           else if (!dd.inputs.length) dd.inputs.push({ id: uid(), label: "" });
-          nc.push({ id: uid(), fromDeviceId: mid.id, fromPortId: port.id, toDeviceId: dd.id, toPortId: dd.inputs[0].id, type: typeOf(r.signal), length: takeLen(midName, nm) });
+          nc.push({ id: uid(), fromDeviceId: mid.id, fromPortId: port.id, toDeviceId: dd.id, toPortId: dd.inputs[0].id, type: typeOf(r.signal), length: (Number(r.length) > 0 ? Number(r.length) : takeLen(midName, nm)) });
         });
       });
       nd.forEach((d) => { const p = posByName[norm(d.name)]; if (p) { d.x = p.x; d.y = p.y; } });
@@ -5362,7 +5368,7 @@ const CSS = `
 .cb .io-cols{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
 .cb .io-side{display:flex; flex-direction:column;}
 .cb .io-side-h{font-family:'Oswald'; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--amber); margin-bottom:8px; padding-bottom:5px; border-bottom:1px solid var(--line);}
-.cb .io-grid{grid-template-columns:44px 1.2fr .8fr .8fr 1fr 28px; min-width:420px;}
+.cb .io-grid{grid-template-columns:44px 1.2fr .7fr .8fr .7fr .9fr 28px; min-width:500px;}
 .cb .io-num{text-align:center; font-variant-numeric:tabular-nums; color:var(--dim);}
 .cb .io-ro { min-width:420px; }
 .cb .io-ro-cell { display:flex; align-items:center; padding:0 4px; font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
