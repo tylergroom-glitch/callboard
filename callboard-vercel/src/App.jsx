@@ -2042,6 +2042,7 @@ function WdIcon({ name, size = 15 }) {
     case "arrow": return (<svg {...p}><path d="M5 12h14M13 6l6 6-6 6" /></svg>);
     case "expand": return (<svg {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M8 21H5a2 2 0 0 1-2-2v-3M16 21h3a2 2 0 0 0 2-2v-3" /></svg>);
     case "shrink": return (<svg {...p}><path d="M8 3v3a2 2 0 0 1-2 2H3M16 3v3a2 2 0 0 0 2 2h3M8 21v-3a2 2 0 0 0-2-2H3M16 21v-3a2 2 0 0 1 2-2h3" /></svg>);
+    case "print": return (<svg {...p}><path d="M6 9V3h12v6M6 18H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2M7 14h10v7H7z" /></svg>);
     default: return null;
   }
 }
@@ -2266,6 +2267,20 @@ function WiringDiagram({ event, update, kind, canEdit }) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const before = () => {
+      const w = devices.reduce((m, d) => Math.max(m, (d.x || 0) + WD_BOX_W), 320) + 40;
+      const h = devices.reduce((m, d) => Math.max(m, (d.y || 0) + wdBoxH(d)), 220) + 40;
+      el.style.setProperty("height", h + "px", "important");
+      el.style.setProperty("width", w + "px", "important");
+    };
+    const after = () => { el.style.removeProperty("height"); el.style.removeProperty("width"); };
+    window.addEventListener("beforeprint", before);
+    window.addEventListener("afterprint", after);
+    return () => { window.removeEventListener("beforeprint", before); window.removeEventListener("afterprint", after); };
+  }, [devices]);
 
   const clickPort = (device, port, side) => {
     if (!canEdit || mode !== "connect") return;
@@ -2385,6 +2400,9 @@ function WiringDiagram({ event, update, kind, canEdit }) {
         <button className="wd-btn" onClick={() => setScreen("setup")}><WdIcon name="gear" size={15} /> {canEdit ? "Edit setup" : "Setup"}</button>
         <button className="wd-btn" onClick={() => setExpanded((v) => !v)} title={expanded ? "Exit full screen (Esc)" : "Full screen"}>
           <WdIcon name={expanded ? "shrink" : "expand"} size={15} /> {expanded ? "Exit" : "Full screen"}
+        </button>
+        <button className="wd-btn" onClick={() => window.print()} title="Print the diagram and cable list (or save as PDF)">
+          <WdIcon name="print" size={15} /> Print
         </button>
         {canEdit && (
           <div className="wd-modes">
@@ -5440,9 +5458,17 @@ const CSS = `
 }
 @media print{
   .cb .wd-noprint{display:none !important;}
-  .cb .wd-canvas{height:auto !important; overflow:visible !important;}
+  .cb .wd-canvas{overflow:visible !important; background:#fff !important; background-image:none !important;}
   .cb .wd-body{flex-direction:column;}
-  .cb .wd-aside{width:100% !important; max-height:none !important;}
+  .cb .wd-aside{width:100% !important; max-height:none !important; background:#fff !important; border-color:#bbb !important;}
+  .cb .wd-dev{background:#fff !important; border-color:#333 !important; box-shadow:none !important;}
+  .cb .wd-devhead{background:#eee !important; border-color:#333 !important;}
+  .cb .wd-devname, .cb .wd-portlabel{color:#111 !important;}
+  .cb .wd-portdot{border-color:#555 !important; background:#fff !important;}
+  .cb .wd-sectionhead{background:#eee !important; color:#111 !important; border-color:#bbb !important;}
+  .cb .wd-listrow{color:#111 !important; border-color:#ddd !important;}
+  .cb .wd-listname, .cb .wd-count, .cb .wd-listdim, .cb .wd-listcount, .cb .wd-listtot{color:#111 !important;}
+  .cb .wd-legend, .cb .wd-brand{color:#111 !important;}
 }
 .cb .wd-full{position:fixed; inset:0; z-index:200; margin:0; padding:14px; background:var(--bg); overflow:auto;}
 .cb .wd-full .wd-body{flex:1; min-height:0;}
