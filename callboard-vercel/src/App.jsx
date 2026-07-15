@@ -2024,6 +2024,7 @@ const WD_CABLES = {
 };
 const WD_DEFAULT_TYPE = "SDI";
 const WD_DEFAULT_LEN = 25;
+const WD_LENGTHS = [1, 5, 10, 25, 50, 100, 150, 250, 500];
 const WD_BOX_W = 200, WD_HEAD_H = 32, WD_ROW_H = 26, WD_PAD_B = 10;
 const wdBoxH = (d) => WD_HEAD_H + Math.max(d.inputs.length, d.outputs.length, 1) * WD_ROW_H + WD_PAD_B;
 const wdInPos = (d, i) => ({ x: d.x, y: d.y + WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2 });
@@ -2602,7 +2603,10 @@ function WiringDiagram({ event, update, kind, canEdit }) {
                   {Object.keys(WD_CABLES).map((t) => <option key={t} value={t}>{t}</option>)}
                 </select>
                 <label className="wd-connedit-lbl">Length (ft)</label>
-                <input className="wd-connedit-input" type="number" min={0} value={c.length} onChange={(e) => updateConn(c.id, { length: Number(e.target.value) })} />
+                <select className="wd-connedit-input" value={c.length} onChange={(e) => updateConn(c.id, { length: Number(e.target.value) })}>
+                  {WD_LENGTHS.map((n) => <option key={n} value={n}>{n} ft</option>)}
+                  {!WD_LENGTHS.includes(c.length) && <option value={c.length}>{c.length} ft</option>}
+                </select>
               </div>
             );
           })()}
