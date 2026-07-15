@@ -10,6 +10,7 @@ import {
   updateEvent,
   deleteEvent as deleteEvent_api,
   setPassword as dbSetPassword,
+  setShowPasswords,
   listTemplates,
   createTemplate,
   deleteTemplate,
@@ -618,7 +619,13 @@ function RemoveBtn({ onClick, title = "Remove" }) {
    App
    ============================================================ */
 function Callboard({ auth, onLogout }) {
-  const isAdmin = auth.scope === "admin";
+  const isSuperAdmin = auth.scope === "admin";                 // the account admin (manages every show)
+  const level = isSuperAdmin ? "admin" : (auth.level || "crew");
+  const isShowAdmin = level === "admin";                       // sees P&L + Roster, edits everything on this show
+  const isEditor = level === "editor";                         // edits production tabs, no P&L / Roster
+  const canEditTabs = isShowAdmin || isEditor;                 // may edit tab content
+  const levelLabel = isSuperAdmin ? "Admin \u00b7 all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
+  const [showAccessOpen, setShowAccessOpen] = useState(false);
   const [ready, setReady] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
@@ -635,7 +642,7 @@ function Callboard({ auth, onLogout }) {
   useEffect(() => {
     (async () => {
       try {
-        if (isAdmin) {
+        if (isSuperAdmin) {
           let list = await listEvents();
           if (!list.length) {
             const seed = seedEvent();
@@ -861,7 +868,7 @@ function Callboard({ auth, onLogout }) {
           <span className="brand-tab">CALL</span>
           <span className="brand-rest">BOARD</span>
         </div>
-        {isAdmin ? (
+        {isSuperAdmin ? (
           <>
             <div className="evt-picker">
               <select value={currentId || ""} onChange={(e) => switchEvent(e.target.value)}>
@@ -875,7 +882,7 @@ function Callboard({ auth, onLogout }) {
             <div className="top-actions">
               <button className="btn" onClick={newEvent}>+ New</button>
               <button className="btn ghost" onClick={duplicateEvent}>Duplicate</button>
-              <button className="btn ghost" onClick={changeShowPassword}>Show access</button>
+              <button className="btn ghost" onClick={() => setShowAccessOpen(true)}>Show access</button>
               <button className="btn danger ghost" onClick={deleteEvent}>Delete</button>
             </div>
           </>
@@ -892,9 +899,7 @@ function Callboard({ auth, onLogout }) {
               ? "Saved ✓"
               : status === "error"
               ? "Save failed"
-              : isAdmin
-              ? "Admin"
-              : "Crew"}
+              : levelLabel}
           </div>
           <button className="btn ghost signout" onClick={onLogout} title="Sign out">Sign out</button>
         </div>
@@ -902,7 +907,7 @@ function Callboard({ auth, onLogout }) {
 
       {/* body: the home board, or a single section page */}
       {tab === "home" ? (
-        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isAdmin} />
+        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isShowAdmin} isSuperAdmin={isSuperAdmin} />
       ) : (
         <>
           <div className="pagebar">
@@ -916,21 +921,33 @@ function Callboard({ auth, onLogout }) {
             </button>
           </div>
           <main className="content" data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
-            {tab === "brief" && <LockWrapper canEdit={isAdmin || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isAdmin} /></LockWrapper>}
-            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isAdmin} />}
-            {tab === "documents" && <LockWrapper canEdit={isAdmin || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
-            {tab === "itinerary" && <LockWrapper canEdit={isAdmin || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
+            {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
+            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
+            {tab === "itinerary" && <LockWrapper canEdit={canEditTabs || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
-            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isAdmin} />}
-            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isAdmin} />}
-            {tab === "diagrams" && <LockWrapper canEdit={isAdmin || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
-            {tab === "pull" && <PullTab event={event} update={update} isAdmin={isAdmin} />}
-            {tab === "records" && <LockWrapper canEdit={isAdmin || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
-            {tab === "hours" && <LockWrapper canEdit={isAdmin || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
-            {tab === "costing" && isAdmin && <CostingTab event={event} />}
-            {tab === "roster" && isAdmin && <RosterTab />}
+            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "diagrams" && <LockWrapper canEdit={canEditTabs || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
+            {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "records" && <LockWrapper canEdit={canEditTabs || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
+            {tab === "hours" && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
+            {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
+            {tab === "roster" && isSuperAdmin && <RosterTab />}
           </main>
         </>
+      )}
+
+      {showAccessOpen && (
+        <ShowAccessModal
+          show={events.find((e) => e.id === currentId) || { name: event.name }}
+          currentId={currentId}
+          onClose={() => setShowAccessOpen(false)}
+          onSaved={(flags) => {
+            setEvents((prev) => prev.map((e) => (e.id === currentId ? { ...e, ...flags } : e)));
+            flash("Show access updated");
+          }}
+        />
       )}
 
       {toast && <div className="toast">{toast}</div>}
@@ -954,7 +971,7 @@ const SECTIONS = [
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
-  { key: "roster", label: "Labor Roster", desc: "Crew directory — admin only", color: "#7B5EA7", adminOnly: true },
+  { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true },
 ];
 const SECTION_LABEL = SECTIONS.reduce((m, s) => ((m[s.key] = s.label), m), {});
 
@@ -1052,7 +1069,7 @@ function LockWrapper({ canEdit, label, children }) {
   );
 }
 
-function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
+function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin }) {
   return (
     <div className="home">
       <header className="hero">
@@ -1076,7 +1093,7 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin }) {
 
       <div className="board-label">Sections</div>
       <div className="tilegrid">
-        {SECTIONS.filter((s) => !s.adminOnly || isAdmin).map((s) => (
+        {SECTIONS.filter((s) => (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin)).map((s) => (
           <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
             <span className="tile-ico"><TileIcon name={s.key} /></span>
             <span className="tile-label">{s.label}</span>
@@ -1634,9 +1651,9 @@ function tidySchedDay(items) {
   return sortSchedItems(items.map((it) => ({ ...it, time: fmtSchedTime(it.time) })));
 }
 
-function ScheduleTab({ event, update, isAdmin }) {
+function ScheduleTab({ event, update, isAdmin, editor }) {
   const unlocked = !!event.scheduleUnlocked;
-  const canEdit = isAdmin || unlocked;
+  const canEdit = isAdmin || editor || unlocked;
   const addDay = () =>
     update((ev) =>
       ev.schedule.push({ id: uid(), label: "New day", date: ev.startDate, items: [{ id: uid(), time: "", activity: "" }] })
@@ -1650,6 +1667,8 @@ function ScheduleTab({ event, update, isAdmin }) {
             <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.scheduleUnlocked = !unlocked))}>
               {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
             </button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
           ) : unlocked ? (
             <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
           ) : (
@@ -1963,12 +1982,12 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
   );
 }
 
-function IOTab({ event, update, kind, isAdmin }) {
+function IOTab({ event, update, kind, isAdmin, editor }) {
   const data = event[kind];
   const title = kind === "audio" ? "Audio" : "Video";
   const lockKey = kind === "audio" ? "audioUnlocked" : "videoUnlocked";
   const unlocked = !!event[lockKey];
-  const canEdit = isAdmin || unlocked;
+  const canEdit = isAdmin || editor || unlocked;
   const addBlock = () => update((ev) => ev[kind].blocks.push(ioBlock("New device")));
   return (
     <div className="stack">
@@ -1979,6 +1998,8 @@ function IOTab({ event, update, kind, isAdmin }) {
             <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev[lockKey] = !unlocked))}>
               {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
             </button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
           ) : unlocked ? (
             <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
           ) : (
@@ -3267,11 +3288,11 @@ function groupPullByDrawer(items) {
   return out;
 }
 
-function PullTab({ event, update, isAdmin }) {
+function PullTab({ event, update, isAdmin, editor }) {
   const cases = event.pull.cases;
   const loose = event.pull.loose || [];
   const unlocked = !!event.gearEditUnlocked;
-  const canEdit = isAdmin || unlocked;
+  const canEdit = isAdmin || editor || unlocked;
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(() => new Set());
   const prevOpenRef = useRef(null);
@@ -3834,6 +3855,8 @@ function PullTab({ event, update, isAdmin }) {
             <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => setLock(!unlocked)}>
               {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
             </button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
           ) : unlocked ? (
             <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
           ) : (
@@ -4770,6 +4793,20 @@ const CSS = `
 .cb .login-err{color:var(--danger); font-size:12.5px; margin-bottom:12px;}
 .cb .login-go{width:100%; justify-content:center; text-align:center;}
 .cb .login-foot{color:var(--faint); font-size:11px; letter-spacing:.1em; text-transform:uppercase;}
+.cb .sa-overlay{position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:60; padding:20px;}
+.cb .sa-modal{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:22px; width:100%; max-width:420px; box-shadow:0 18px 50px rgba(0,0,0,.5);}
+.cb .sa-title{font-weight:700; font-size:17px; margin-bottom:4px;}
+.cb .sa-hint{color:var(--faint); font-size:12.5px; margin:0 0 16px; line-height:1.4;}
+.cb .sa-row{margin-bottom:14px;}
+.cb .sa-rowhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:5px;}
+.cb .sa-label{font-weight:600; font-size:13.5px;}
+.cb .sa-state{font-size:11px; color:var(--faint); text-transform:uppercase; letter-spacing:.08em;}
+.cb .sa-state.on{color:var(--green);}
+.cb .sa-input{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 10px; font-family:'Inter'; font-size:13.5px;}
+.cb .sa-input:disabled{opacity:.45;}
+.cb .sa-clear{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); margin-top:6px; cursor:pointer;}
+.cb .sa-err{color:var(--danger); font-size:12.5px; margin:4px 0 12px;}
+.cb .sa-actions{display:flex; gap:8px; justify-content:flex-end; margin-top:8px;}
 
 /* top-right + locked picker (cloud build) */
 .cb .top-right{display:flex; align-items:center; gap:10px; margin-left:auto;}
@@ -5029,6 +5066,86 @@ const CSS = `
 /* ============================================================
    LOGIN + ROOT — the password gate in front of the app
    ============================================================ */
+/* ShowAccessModal — set the three per-show passwords (crew / editor / admin).
+   Only the account admin opens this. Blank box = leave unchanged; tick Remove to clear. */
+function ShowAccessModal({ show, currentId, onClose, onSaved }) {
+  const [crew, setCrew] = useState("");
+  const [editor, setEditor] = useState("");
+  const [admin, setAdmin] = useState("");
+  const [clearCrew, setClearCrew] = useState(false);
+  const [clearEditor, setClearEditor] = useState(false);
+  const [clearAdmin, setClearAdmin] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const rows = [
+    { key: "crew",   label: "Crew — view only",              has: !!show.hasPassword, val: crew,   set: setCrew,   clear: clearCrew,   setClear: setClearCrew },
+    { key: "editor", label: "Editor — edit tabs",            has: !!show.hasEditor,   val: editor, set: setEditor, clear: clearEditor, setClear: setClearEditor },
+    { key: "admin",  label: "Admin — edit + P&L",   has: !!show.hasAdmin,    val: admin,  set: setAdmin,  clear: clearAdmin,  setClear: setClearAdmin },
+  ];
+
+  async function save() {
+    const payload = {};
+    if (clearCrew) payload.crewPassword = "";     else if (crew.trim())   payload.crewPassword = crew.trim();
+    if (clearEditor) payload.editorPassword = ""; else if (editor.trim()) payload.editorPassword = editor.trim();
+    if (clearAdmin) payload.adminPassword = "";   else if (admin.trim())  payload.adminPassword = admin.trim();
+    if (!Object.keys(payload).length) {
+      setErr("Type a new password, or tick Remove, for at least one level.");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    try {
+      await setShowPasswords(currentId, payload);
+      const flags = {};
+      if (payload.crewPassword !== undefined) flags.hasPassword = !!payload.crewPassword;
+      if (payload.editorPassword !== undefined) flags.hasEditor = !!payload.editorPassword;
+      if (payload.adminPassword !== undefined) flags.hasAdmin = !!payload.adminPassword;
+      onSaved(flags);
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Couldn't update access");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="sa-overlay" onClick={onClose}>
+      <div className="sa-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sa-title">Show access — {show.name || "this show"}</div>
+        <p className="sa-hint">Three passwords, three levels. Share each with the right people. Leave a box blank to keep it unchanged.</p>
+        {rows.map((r) => (
+          <div className="sa-row" key={r.key}>
+            <div className="sa-rowhead">
+              <span className="sa-label">{r.label}</span>
+              <span className={"sa-state " + (r.has ? "on" : "")}>{r.has ? "Set" : "Not set"}</span>
+            </div>
+            <input
+              className="sa-input"
+              type="text"
+              value={r.val}
+              disabled={r.clear}
+              placeholder={r.has ? "Type to change\u2026" : "Set a password\u2026"}
+              onChange={(e) => r.set(e.target.value)}
+            />
+            {r.has && (
+              <label className="sa-clear">
+                <input type="checkbox" checked={r.clear} onChange={(e) => r.setClear(e.target.checked)} />
+                Remove this password
+              </label>
+            )}
+          </div>
+        ))}
+        {err && <div className="sa-err">{err}</div>}
+        <div className="sa-actions">
+          <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn amber" onClick={save} disabled={busy}>{busy ? "Saving\u2026" : "Save access"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function Login({ onDone }) {
   const [mode, setMode] = useState("show"); // "show" | "admin"
   const [password, setPassword] = useState("");
@@ -5045,7 +5162,7 @@ function Login({ onDone }) {
         onDone({ scope: "admin" });
       } else {
         const r = await loginShow(password);
-        onDone({ scope: "show", showId: r.show.id, showName: r.show.name });
+        onDone({ scope: "show", showId: r.show.id, showName: r.show.name, level: r.level || "crew" });
       }
     } catch (e) {
       setErr(e.message || "Sign in failed");
