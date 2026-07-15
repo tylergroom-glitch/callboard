@@ -71,6 +71,14 @@ export function isAdmin(p) {
 export function canAccessShow(p, id) {
   return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id));
 }
+// Show "manager" = the account admin, OR a show token whose password was that
+// show's ADMIN password. Managers may open the P&L and Roster tabs.
+export function isShowManager(p) {
+  return !!p && (p.scope === "admin" || (p.scope === "show" && p.level === "admin"));
+}
+export function canManageShow(p, id) {
+  return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id && p.level === "admin"));
+}
 
 const AT_BASE = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
 export async function airtableTable(table, method, path = "", body) {
@@ -105,5 +113,7 @@ export function summary(rec) {
     startDate: f.StartDate || "",
     endDate: f.EndDate || "",
     hasPassword: !!f.PassHash,
+    hasEditor: !!f.EditorHash,
+    hasAdmin: !!f.AdminHash,
   };
 }
