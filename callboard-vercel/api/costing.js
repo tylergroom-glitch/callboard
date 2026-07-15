@@ -6,14 +6,14 @@
 //
 // SETUP: add a long-text field named "Costing" to your Events table in Airtable.
 // No new env vars are required.
-import { json, readBody, auth, isAdmin, airtable } from "./_lib.js";
+import { json, readBody, auth, canManageShow, airtable } from "./_lib.js";
 
 export default async function handler(req, res) {
   const p = auth(req);
   if (!p) return json(res, 401, { error: "Not signed in" });
-  if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
   const id = req.query && req.query.id;
   if (!id) return json(res, 400, { error: "id required" });
+  if (!canManageShow(p, id)) return json(res, 403, { error: "Admin only" });
 
   try {
     if (req.method === "GET") {

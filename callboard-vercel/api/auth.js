@@ -25,14 +25,21 @@ export default async function handler(req, res) {
 
     if (mode === "show") {
       const hash = hashPassword(password);
-      const formula = `{PassHash}='${hash}'`;
+      // A show can have up to three passwords: crew (PassHash), editor (EditorHash),
+      // and show-admin (AdminHash). Match any of them, then decide the access level.
+      const formula = `OR({PassHash}='${hash}',{EditorHash}='${hash}',{AdminHash}='${hash}')`;
       const data = await airtable("GET", `?filterByFormula=${encodeURIComponent(formula)}&maxRecords=1`);
       const rec = data.records && data.records[0];
       if (!rec) return json(res, 401, { error: "No show matches that password" });
+      const f = rec.fields || {};
+      let level = "crew";
+      if (f.AdminHash && f.AdminHash === hash) level = "admin";
+      else if (f.EditorHash && f.EditorHash === hash) level = "editor";
       return json(res, 200, {
         scope: "show",
+        level,
         show: summary(rec),
-        token: signToken({ scope: "show", id: rec.id, exp: Date.now() + TOKEN_TTL }),
+        token: signToken({ scope: "show", id: rec.id, level, exp: Date.now() + TOKEN_TTL }),
       });
     }
 
