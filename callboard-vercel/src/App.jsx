@@ -2028,6 +2028,20 @@ const WD_BOX_W = 200, WD_HEAD_H = 32, WD_ROW_H = 26, WD_PAD_B = 10;
 const wdBoxH = (d) => WD_HEAD_H + Math.max(d.inputs.length, d.outputs.length, 1) * WD_ROW_H + WD_PAD_B;
 const wdInPos = (d, i) => ({ x: d.x, y: d.y + WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2 });
 const wdOutPos = (d, i) => ({ x: d.x + WD_BOX_W, y: d.y + WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2 });
+/* ---- wiring print helpers: open a clean standalone window. The live diagram is
+   dark-themed and absolutely positioned, which does not print reliably in place. ---- */
+function wdEsc(t) {
+  return String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function wdOpenPrint(html) {
+  const win = window.open("", "_blank");
+  if (!win) { alert("Please allow pop-ups for this site to print / save as PDF."); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { try { win.print(); } catch (e) {} }, 250);
+}
 
 /* inline icons (Callboard doesn't bundle lucide-react) */
 function WdIcon({ name, size = 15 }) {
@@ -2304,6 +2318,66 @@ function WiringDiagram({ event, update, kind, canEdit }) {
     return a;
   }, {})).sort((a, b) => a.type.localeCompare(b.type));
 
+  /* ---- printing: a clean list, or the diagram as a standalone SVG ---- */
+  const kindLabel = kind === "audio" ? "Audio" : "Video";
+
+  const printList = () => {
+    const eq = devices.map((d) => `<tr><td>${wdEsc(d.name)}</td><td>${d.inputs.length}</td><td>${d.outputs.length}</td></tr>`).join("");
+    const cl = cableGroups.map((g) => `<tr><td>${wdEsc(g.type)}</td><td>${g.length} ft</td><td>${g.count}</td></tr>`).join("") || `<tr><td colspan="3">No cable runs yet.</td></tr>`;
+    const tot = cableTotals.map((t) => `<tr><td>${wdEsc(t.type)}</td><td>${t.count}</td><td>${t.feet} ft</td></tr>`).join("") || `<tr><td colspan="3">&mdash;</td></tr>`;
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${wdEsc(event.name)} - ${kindLabel} cable list</title><style>
+      body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px}
+      h1{font-size:18px;margin:0 0 4px}.sub{color:#666;font-size:12px;margin:0 0 18px}
+      h2{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:#555;margin:22px 0 6px;border-bottom:1px solid #ccc;padding-bottom:4px}
+      table{border-collapse:collapse;width:100%;max-width:480px}th,td{text-align:left;padding:6px 12px;border-bottom:1px solid #eee;font-size:13px}
+      th{color:#666;font-size:10px;text-transform:uppercase;letter-spacing:.05em}
+      td:nth-child(2),td:nth-child(3),th:nth-child(2),th:nth-child(3){text-align:right}
+    </style></head><body>
+      <h1>${wdEsc(event.name)} &mdash; ${kindLabel} cable &amp; equipment list</h1>
+      <div class="sub">${devices.length} devices &middot; ${connections.length} cable runs</div>
+      <h2>Equipment</h2><table><tr><th>Device</th><th>In</th><th>Out</th></tr>${eq}</table>
+      <h2>Cable list</h2><table><tr><th>Type</th><th>Length</th><th>Qty</th></tr>${cl}</table>
+      <h2>Totals by type</h2><table><tr><th>Type</th><th>Cables</th><th>Total</th></tr>${tot}</table>
+    </body></html>`;
+    wdOpenPrint(doc);
+  };
+
+  const printDiagram = () => {
+    const pad = 24;
+    const W = devices.reduce((m, d) => Math.max(m, (d.x || 0) + WD_BOX_W), 360) + pad * 2;
+    const H = devices.reduce((m, d) => Math.max(m, (d.y || 0) + wdBoxH(d)), 260) + pad * 2;
+    let inner = "";
+    connections.forEach((c) => {
+      const a = devices.find((d) => d.id === c.fromDeviceId), b = devices.find((d) => d.id === c.toDeviceId);
+      if (!a || !b) return;
+      const p1 = wdOutPos(a, a.outputs.findIndex((p) => p.id === c.fromPortId));
+      const p2 = wdInPos(b, b.inputs.findIndex((p) => p.id === c.toPortId));
+      const col = WD_CABLES[c.type] || "#333";
+      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+      const dash = c.type === "Power" ? ` stroke-dasharray="6 4"` : "";
+      inner += `<path d="M ${p1.x} ${p1.y} C ${p1.x + 60} ${p1.y}, ${p2.x - 60} ${p2.y}, ${p2.x} ${p2.y}" stroke="${col}" stroke-width="2.5" fill="none"${dash}/>`;
+      inner += `<g transform="translate(${mx},${my})"><rect x="-44" y="-11" width="88" height="22" rx="4" fill="#fff" stroke="${col}"/><text text-anchor="middle" dy="4" font-size="11" font-family="monospace" fill="${col}">${wdEsc(c.type)} &#183; ${c.length}ft</text></g>`;
+    });
+    devices.forEach((d) => {
+      const h = wdBoxH(d), x = d.x || 0, y = d.y || 0;
+      inner += `<g transform="translate(${x},${y})">`;
+      inner += `<rect x="0" y="0" width="${WD_BOX_W}" height="${h}" rx="6" fill="#fff" stroke="#333" stroke-width="1.5"/>`;
+      inner += `<rect x="0" y="0" width="${WD_BOX_W}" height="${WD_HEAD_H}" fill="#eee" stroke="#333"/>`;
+      inner += `<text x="${WD_BOX_W / 2}" y="${WD_HEAD_H / 2 + 4}" text-anchor="middle" font-size="12" font-weight="bold" font-family="monospace" fill="#111">${wdEsc(d.name)}</text>`;
+      d.inputs.forEach((p, i) => {
+        const py = WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2;
+        inner += `<circle cx="0" cy="${py}" r="5" fill="#fff" stroke="#555"/><text x="11" y="${py + 4}" font-size="11" font-family="monospace" fill="#111">${wdEsc(p.label)}</text>`;
+      });
+      d.outputs.forEach((p, i) => {
+        const py = WD_HEAD_H + i * WD_ROW_H + WD_ROW_H / 2;
+        inner += `<circle cx="${WD_BOX_W}" cy="${py}" r="5" fill="#fff" stroke="#555"/><text x="${WD_BOX_W - 11}" y="${py + 4}" text-anchor="end" font-size="11" font-family="monospace" fill="#111">${wdEsc(p.label)}</text>`;
+      });
+      inner += `</g>`;
+    });
+    const doc = `<!doctype html><html><head><meta charset="utf-8"><title>${wdEsc(event.name)} - ${kindLabel} wiring diagram</title><style>@page{size:landscape;margin:10mm}body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:16px}h1{font-size:16px;margin:0 0 12px}svg{max-width:100%;height:auto;border:1px solid #ddd}</style></head><body><h1>${wdEsc(event.name)} &mdash; ${kindLabel} wiring diagram</h1><svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><g transform="translate(${pad},${pad})">${inner}</g></svg></body></html>`;
+    wdOpenPrint(doc);
+  };
+
   /* live device list with the in-progress drag position applied */
   const dl = dragPos ? devices.map((d) => (d.id === dragPos.id ? { ...d, x: dragPos.x, y: dragPos.y } : d)) : devices;
 
@@ -2401,8 +2475,11 @@ function WiringDiagram({ event, update, kind, canEdit }) {
         <button className="wd-btn" onClick={() => setExpanded((v) => !v)} title={expanded ? "Exit full screen (Esc)" : "Full screen"}>
           <WdIcon name={expanded ? "shrink" : "expand"} size={15} /> {expanded ? "Exit" : "Full screen"}
         </button>
-        <button className="wd-btn" onClick={() => window.print()} title="Print the diagram and cable list (or save as PDF)">
-          <WdIcon name="print" size={15} /> Print
+        <button className="wd-btn" onClick={printDiagram} title="Print / save the diagram as PDF">
+          <WdIcon name="print" size={15} /> Print diagram
+        </button>
+        <button className="wd-btn" onClick={printList} title="Print / save the equipment & cable list as PDF">
+          <WdIcon name="print" size={15} /> Print list
         </button>
         {canEdit && (
           <div className="wd-modes">
@@ -2596,7 +2673,7 @@ function IOTab({ event, update, kind, isAdmin, editor }) {
       )}
 
       <div className="tab-lead" style={{ marginTop: 18 }}>
-        <p><b>{title} wiring diagram</b> — drag devices, wire ports, and auto-build the cable list. Prints with this tab.</p>
+        <p><b>{title} wiring diagram</b> — drag devices, wire ports, and auto-build the cable list. Use Print diagram / Print list on the canvas.</p>
       </div>
       <WiringDiagram event={event} update={update} kind={kind} canEdit={canEdit} />
     </div>
@@ -5457,6 +5534,7 @@ const CSS = `
   .cb .wd-setup-cols{grid-template-columns:1fr;}
 }
 @media print{
+  .cb .wd-wrap{display:none !important;}
   .cb .wd-noprint{display:none !important;}
   .cb .wd-canvas{overflow:visible !important; background:#fff !important; background-image:none !important;}
   .cb .wd-body{flex-direction:column;}
