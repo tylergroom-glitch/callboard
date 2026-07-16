@@ -913,7 +913,7 @@ function Callboard({ auth, onLogout }) {
 
       {/* body: the home board, or a single section page */}
       {tab === "home" ? (
-        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isShowAdmin} isSuperAdmin={isSuperAdmin} />
+        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isShowAdmin} isSuperAdmin={isSuperAdmin} canEdit={canEditTabs} />
       ) : (
         <>
           <div className="pagebar">
@@ -929,7 +929,7 @@ function Callboard({ auth, onLogout }) {
                   <div className="pagebar-backdrop" onClick={() => setNavOpen(false)} />
                   <div className="pagebar-menu">
                     <button className="pagebar-menu-item home" onClick={() => setTab("home")}>⌂ All sections</button>
-                    {SECTIONS.filter((sec) => (!sec.adminOnly || isShowAdmin) && (!sec.superOnly || isSuperAdmin)).map((sec) => (
+                    {SECTIONS.filter((sec) => (!sec.adminOnly || isShowAdmin) && (!sec.superOnly || isSuperAdmin) && (!sec.editorOnly || canEditTabs)).map((sec) => (
                       <button key={sec.key} className={"pagebar-menu-item" + (sec.key === tab ? " on" : "")} onClick={() => setTab(sec.key)}>
                         <span className="pagebar-menu-dot" style={{ background: sec.color }} />{sec.label}
                       </button>
@@ -953,7 +953,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "diagrams" && <LockWrapper canEdit={canEditTabs || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "records" && <LockWrapper canEdit={canEditTabs || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
-            {tab === "hours" && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
+            {tab === "hours" && canEditTabs && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
             {tab === "roster" && isSuperAdmin && <RosterTab />}
           </main>
@@ -991,7 +991,7 @@ const SECTIONS = [
   { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63" },
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3" },
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
-  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A" },
+  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
   { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true },
 ];
@@ -1091,7 +1091,7 @@ function LockWrapper({ canEdit, label, children }) {
   );
 }
 
-function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin }) {
+function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin, canEdit }) {
   return (
     <div className="home">
       <header className="hero">
@@ -1115,7 +1115,7 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
 
       <div className="board-label">Sections</div>
       <div className="tilegrid">
-        {SECTIONS.filter((s) => (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin)).map((s) => (
+        {SECTIONS.filter((s) => (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
           <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
             <span className="tile-ico"><TileIcon name={s.key} /></span>
             <span className="tile-label">{s.label}</span>
@@ -2948,6 +2948,11 @@ function RecordsTab({ event, update }) {
 function HoursTab({ event, update }) {
   const days = event.time.days;
   const crew = event.crew;
+  const [batchOpen, setBatchOpen] = useState(false);
+  const [batchIn, setBatchIn] = useState("");
+  const [batchOut, setBatchOut] = useState("");
+  const [batchDays, setBatchDays] = useState(() => new Set());
+  const [batchCrew, setBatchCrew] = useState(() => new Set());
 
   const setTime = (crewId, dayId, field, val) =>
     update((ev) => {
@@ -2955,6 +2960,26 @@ function HoursTab({ event, update }) {
       if (!ev.time.entries[crewId][dayId]) ev.time.entries[crewId][dayId] = { in: "", out: "" };
       ev.time.entries[crewId][dayId][field] = val;
     });
+
+  const openBatch = () => { setBatchDays(new Set(days.map((d) => d.id))); setBatchCrew(new Set()); setBatchOpen(true); };
+  const toggleIn = (setter) => (id) => setter((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleDay = toggleIn(setBatchDays);
+  const toggleCrew = toggleIn(setBatchCrew);
+  const canApplyBatch = batchCrew.size > 0 && batchDays.size > 0 && (batchIn || batchOut);
+  const applyBatch = () => {
+    if (!canApplyBatch) return;
+    update((ev) => {
+      batchCrew.forEach((cid) => {
+        if (!ev.time.entries[cid]) ev.time.entries[cid] = {};
+        batchDays.forEach((did) => {
+          if (!ev.time.entries[cid][did]) ev.time.entries[cid][did] = { in: "", out: "" };
+          if (batchIn) ev.time.entries[cid][did].in = batchIn;
+          if (batchOut) ev.time.entries[cid][did].out = batchOut;
+        });
+      });
+    });
+    setBatchCrew(new Set());
+  };
 
   const entry = (crewId, dayId) => event.time.entries?.[crewId]?.[dayId] || { in: "", out: "" };
   const personTotal = (crewId) => days.reduce((s, d) => s + hoursBetween(entry(crewId, d.id).in, entry(crewId, d.id).out), 0);
@@ -2998,8 +3023,48 @@ function HoursTab({ event, update }) {
     <div className="stack">
       <div className="tab-lead">
         <p>Enter time in / out for each person, per day. Hours calculate automatically — overnight shifts included.</p>
-        <AddBtn onClick={addDay}>Day</AddBtn>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="ts-batchbtn" onClick={() => (batchOpen ? setBatchOpen(false) : openBatch())}>⚡ Batch fill</button>
+          <AddBtn onClick={addDay}>Day</AddBtn>
+        </div>
       </div>
+
+      {batchOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Batch fill — set times, pick days, then select crew</div>
+          <div className="ts-batch-times">
+            <input className="ts-batch-time" placeholder="In" value={batchIn} onChange={(e) => setBatchIn(e.target.value)} onBlur={(e) => setBatchIn(fmtSchedTime(e.target.value))} />
+            <span className="ts-batch-arrow">→</span>
+            <input className="ts-batch-time" placeholder="Out" value={batchOut} onChange={(e) => setBatchOut(e.target.value)} onBlur={(e) => setBatchOut(fmtSchedTime(e.target.value))} />
+          </div>
+          <div className="ts-batch-sec">
+            <div className="ts-batch-seclbl"><span>Days</span></div>
+            <div className="ts-chips">
+              {days.map((d) => (
+                <button key={d.id} className={"ts-chip" + (batchDays.has(d.id) ? " on" : "")} onClick={() => toggleDay(d.id)}>{d.label}</button>
+              ))}
+            </div>
+          </div>
+          <div className="ts-batch-sec">
+            <div className="ts-batch-seclbl">
+              <span>Crew &mdash; tap to select</span>
+              <span className="ts-batch-quick">
+                <button onClick={() => setBatchCrew(new Set(crew.map((c) => c.id)))}>All</button>
+                <button onClick={() => setBatchCrew(new Set())}>None</button>
+              </span>
+            </div>
+            <div className="ts-chips">
+              {crew.map((c) => (
+                <button key={c.id} className={"ts-chip" + (batchCrew.has(c.id) ? " on" : "")} onClick={() => toggleCrew(c.id)}>{c.name || "—"}</button>
+              ))}
+            </div>
+          </div>
+          <div className="ts-batch-actions">
+            <button className="ts-batch-cancel" onClick={() => setBatchOpen(false)}>Close</button>
+            <button className="ts-batch-apply" disabled={!canApplyBatch} onClick={applyBatch}>Apply to {batchCrew.size} crew × {batchDays.size} {batchDays.size === 1 ? "day" : "days"}</button>
+          </div>
+        </div>
+      )}
 
       <div className="ts-wrap">
         <table className="timesheet">
@@ -3649,6 +3714,16 @@ function CostingTab({ event }) {
   const billEst = pnlNum(c.billableEst), billAct = pnlNum(c.billableAct);
   const netEst = billEst - laborEst - vendEst - miscEst;
   const netAct = billAct - laborAct - vendAct - miscAct;
+  // ---- 30% target-margin analysis ----
+  const TARGET_MARGIN = 0.30;
+  const totalExpEst = laborEst + vendEst + miscEst;
+  const totalExpAct = laborAct + vendAct + miscAct;
+  const targetNetEst = billEst * TARGET_MARGIN;
+  const targetNetAct = billAct * TARGET_MARGIN;
+  const targetExpEst = billEst * (1 - TARGET_MARGIN);
+  const targetExpAct = billAct * (1 - TARGET_MARGIN);
+  const overEst = totalExpEst - targetExpEst;
+  const overAct = totalExpAct - targetExpAct;
   const crewHrsLabel = (hrs) =>
     hrs.total ? fmtHrs(hrs.total) + "h" + (hrs.ot ? " · " + fmtHrs(hrs.ot) + " OT" : "") + (hrs.dt ? " · " + fmtHrs(hrs.dt) + " DT" : "") : "–";
 
@@ -3877,6 +3952,29 @@ function CostingTab({ event }) {
               <td className="pnl-sum-label">Profit margin</td>
               <td className="pnl-sum-num">{billEst ? pnlPct(netEst / billEst) : "—"}</td>
               <td className="pnl-sum-num">{billAct ? pnlPct(netAct / billAct) : "—"}</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label" colSpan={3} style={{ paddingTop: 14, color: "var(--amber)", fontWeight: 700, borderTop: "1px solid var(--line)" }}>Target — 30% margin</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label">Target net profit (30%)</td>
+              <td className="pnl-sum-num pos">{billEst ? pnlMoney(targetNetEst) : "—"}</td>
+              <td className="pnl-sum-num pos">{billAct ? pnlMoney(targetNetAct) : "—"}</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label">Expenses now</td>
+              <td className="pnl-sum-num">{pnlMoney(totalExpEst)}</td>
+              <td className="pnl-sum-num">{pnlMoney(totalExpAct)}</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label">Max expenses to hit 30%</td>
+              <td className="pnl-sum-num">{billEst ? pnlMoney(targetExpEst) : "—"}</td>
+              <td className="pnl-sum-num">{billAct ? pnlMoney(targetExpAct) : "—"}</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label">Over / (under) target</td>
+              <td className={"pnl-sum-num " + (overEst > 0 ? "neg" : "pos")}>{billEst ? pnlMoney(overEst) : "—"}</td>
+              <td className={"pnl-sum-num " + (overAct > 0 ? "neg" : "pos")}>{billAct ? pnlMoney(overAct) : "—"}</td>
             </tr>
           </tfoot>
         </table>
@@ -5306,6 +5404,26 @@ const CSS = `
 .cb .hrs{font-variant-numeric:tabular-nums; color:var(--faint); font-weight:600; min-width:38px;}
 .cb .hrs.on{color:var(--green);}
 .cb .ptotal{font-variant-numeric:tabular-nums; font-weight:700; color:var(--amber); background:#191C24; border-left:1px solid var(--line);}
+.cb .ts-batchbtn{display:inline-flex; align-items:center; gap:6px; background:var(--amber); color:#101218; border:0; border-radius:8px; padding:7px 13px; font-family:'Inter'; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;}
+.cb .ts-batchbtn:hover{filter:brightness(1.08);}
+.cb .ts-batch{background:#101218; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;}
+.cb .ts-batch-title{font-family:'Oswald'; letter-spacing:.04em; text-transform:uppercase; font-size:12px; color:var(--amber); margin-bottom:12px;}
+.cb .ts-batch-times{display:flex; align-items:center; gap:10px; margin-bottom:14px;}
+.cb .ts-batch-time{width:120px; background:#191C24; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 10px; font-size:14px; font-variant-numeric:tabular-nums; text-align:center;}
+.cb .ts-batch-arrow{color:var(--faint);}
+.cb .ts-batch-sec{margin-bottom:12px;}
+.cb .ts-batch-seclbl{display:flex; align-items:center; justify-content:space-between; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-bottom:7px;}
+.cb .ts-batch-quick{display:flex; gap:6px;}
+.cb .ts-batch-quick button{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:6px; padding:3px 10px; font-size:11px; cursor:pointer;}
+.cb .ts-batch-quick button:hover{color:var(--ink); border-color:var(--dim);}
+.cb .ts-chips{display:flex; flex-wrap:wrap; gap:7px;}
+.cb .ts-chip{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:999px; padding:6px 13px; font-size:13px; cursor:pointer; transition:background .12s,border-color .12s,color .12s;}
+.cb .ts-chip:hover{border-color:var(--dim); color:var(--ink);}
+.cb .ts-chip.on{background:var(--amber); border-color:var(--amber); color:#101218; font-weight:700;}
+.cb .ts-batch-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:16px;}
+.cb .ts-batch-cancel{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;}
+.cb .ts-batch-apply{background:var(--amber); color:#101218; border:0; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer;}
+.cb .ts-batch-apply:disabled{opacity:.4; cursor:not-allowed;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
