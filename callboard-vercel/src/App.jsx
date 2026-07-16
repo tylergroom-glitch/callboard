@@ -48,7 +48,7 @@ const ioRow = (num, name = "", patch = "", signal = "", notes = "") => ({
   id: uid(), num: String(num), name, patch, signal, length: "", notes,
 });
 const ioBlock = (name, ins = [], outs = []) => ({ id: uid(), name, ins, outs });
-const IO_SIGNAL_TYPES = ["SDI", "HDMI", "Fiber", "Ethernet", "XLR", "Power"];
+const IO_SIGNAL_TYPES = ["SDI", "HDMI", "DisplayPort", "Fiber", "Ethernet", "XLR", "Power"];
 
 /* ---------- pull list: categories + seed gear ---------- */
 const PULL_CATS = {
@@ -1232,6 +1232,7 @@ function CrewNameInput({ value, onChange, onSelect }) {
 
 function BriefTab({ event, update, isAdmin }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
+  const [phonesCopied, setPhonesCopied] = useState(false);
   const copyEmails = () => {
     const emails = event.crew
       .filter((c) => c.email)
@@ -1241,6 +1242,13 @@ function BriefTab({ event, update, isAdmin }) {
     navigator.clipboard?.writeText(emails).catch(() => {});
     setEmailsCopied(true);
     setTimeout(() => setEmailsCopied(false), 2000);
+  };
+  const copyPhones = () => {
+    const phones = [...new Set(event.crew.map((c) => c.phone).filter(Boolean))].join(", ");
+    if (!phones) return;
+    navigator.clipboard?.writeText(phones).catch(() => {});
+    setPhonesCopied(true);
+    setTimeout(() => setPhonesCopied(false), 2000);
   };
 
   const exportBriefPDF = () => {
@@ -1491,6 +1499,11 @@ function BriefTab({ event, update, isAdmin }) {
             {event.crew.some((c) => c.email) && (
               <button className="copy-emails-btn" onClick={copyEmails}>
                 {emailsCopied ? "✓ Copied!" : "Copy emails"}
+              </button>
+            )}
+            {event.crew.some((c) => c.phone) && (
+              <button className="copy-emails-btn" onClick={copyPhones}>
+                {phonesCopied ? "✓ Copied!" : "Copy phones"}
               </button>
             )}
             <AddBtn
@@ -2020,9 +2033,12 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
    (no Tailwind, no lucide-react) and rewired so all state lives in
    event[kind].wiring = { devices, connections } and autosaves.
    ============================================================ */
+const WD_CABLE_SHORT = { DisplayPort: "DP" };
+const wdShort = (t) => WD_CABLE_SHORT[t] || t;
 const WD_CABLES = {
   SDI: "#3b82f6",
   HDMI: "#a855f7",
+  DisplayPort: "#ec4899",
   Ethernet: "#22c55e",
   Fiber: "#f59e0b",
   XLR: "#ef4444",
@@ -2363,7 +2379,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
       const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
       const dash = c.type === "Power" ? ` stroke-dasharray="6 4"` : "";
       inner += `<path d="M ${p1.x} ${p1.y} C ${p1.x + 60} ${p1.y}, ${p2.x - 60} ${p2.y}, ${p2.x} ${p2.y}" stroke="${col}" stroke-width="2.5" fill="none"${dash}/>`;
-      inner += `<g transform="translate(${mx},${my})"><rect x="-44" y="-11" width="88" height="22" rx="4" fill="#fff" stroke="${col}"/><text text-anchor="middle" dy="4" font-size="11" font-family="monospace" fill="${col}">${wdEsc(c.type)} &#183; ${c.length}ft</text></g>`;
+      inner += `<g transform="translate(${mx},${my})"><rect x="-44" y="-11" width="88" height="22" rx="4" fill="#fff" stroke="${col}"/><text text-anchor="middle" dy="4" font-size="11" font-family="monospace" fill="${col}">${wdEsc(wdShort(c.type))} &#183; ${c.length}ft</text></g>`;
     });
     devices.forEach((d) => {
       const h = wdBoxH(d), x = d.x || 0, y = d.y || 0;
@@ -2528,7 +2544,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
                   <path d={dpath} stroke={col} strokeWidth={isSel ? 4 : 2.5} fill="none" strokeDasharray={c.type === "Power" ? "6 4" : "none"} />
                   <g transform={"translate(" + mx + "," + my + ")"}>
                     <rect x={-42} y={-11} width={84} height={22} rx={4} fill="#0f172a" stroke={col} strokeWidth={isSel ? 1.5 : 1} />
-                    <text textAnchor="middle" dy={4} fontSize={11} fontFamily="monospace" fill={col}>{c.type} · {c.length}ft</text>
+                    <text textAnchor="middle" dy={4} fontSize={11} fontFamily="monospace" fill={col}>{wdShort(c.type)} · {c.length}ft</text>
                   </g>
                 </g>
               );
