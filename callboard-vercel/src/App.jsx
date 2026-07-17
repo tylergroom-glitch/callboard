@@ -291,7 +291,7 @@ function normalize(e) {
   e.audio.wiring = e.audio.wiring || { devices: [], connections: [] };
   e.video.wiring = e.video.wiring || { devices: [], connections: [] };
   e.crew = e.crew.map((c) => ({
-    rosterId: null, rateType: "day", rate: "", crewNotes: "", ...c,
+    rosterId: null, rateType: "day", rate: "", crewNotes: "", callTime: "", ...c,
   }));
   e.records = e.records || [];
   e.diagrams = e.diagrams || [];
@@ -634,7 +634,7 @@ function Callboard({ auth, onLogout }) {
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
-  const [tab, setTab] = useState("home");
+  const [tab, setTab] = useState(level === "crew" ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
   const [toast, setToast] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -943,6 +943,7 @@ function Callboard({ auth, onLogout }) {
             </button>
           </div>
           <main className="content" data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
+            {tab === "mycall" && <MyCallTab event={event} showId={currentId} />}
             {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
@@ -981,6 +982,7 @@ function Callboard({ auth, onLogout }) {
    HOME BOARD — colored tiles that open each section
    ============================================================ */
 const SECTIONS = [
+  { key: "mycall", label: "My Call Sheet", desc: "Your call time, hotel & travel", color: "#00B4D8" },
   { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A" },
   { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC" },
   { key: "documents", label: "Show Documents", desc: "Show flows & agendas", color: "#4EA8DE" },
@@ -1229,6 +1231,144 @@ function CrewNameInput({ value, onChange, onSelect }) {
 /* ============================================================
    BRIEF TAB — event details, venue, contacts, crew, links
    ============================================================ */
+
+/* ============================================================
+   MY CALL SHEET — personalized, read-only view for one crew member.
+   Identity is self-selected (they pick their name) and remembered per
+   show on the device via localStorage. No pay is shown.
+   ============================================================ */
+function MyCallTab({ event, showId }) {
+  const key = "callboard_me_" + showId;
+  const [meId, setMeId] = useState(() => {
+    try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
+  });
+  const me = event.crew.find((c) => c.id === meId);
+  const pick = (id) => { try { localStorage.setItem(key, id); } catch (e) {} setMeId(id); };
+  const switchMe = () => { try { localStorage.removeItem(key); } catch (e) {} setMeId(""); };
+
+  const named = event.crew.filter((c) => (c.name || "").trim());
+
+  if (!me) {
+    return (
+      <div className="mc-wrap">
+        <div className="mc-picktitle">Which one are you?</div>
+        <div className="mc-pickhint">Tap your name to see your call sheet. It's remembered on this device.</div>
+        <div className="mc-picklist">
+          {named.map((c) => (
+            <button key={c.id} className="mc-pick" onClick={() => pick(c.id)}>
+              <span className="mc-pick-name">{c.name}</span>
+              {c.position && <span className="mc-pick-pos">{c.position}</span>}
+            </button>
+          ))}
+          {!named.length && <div className="mc-empty">No crew have been added to this show yet.</div>}
+        </div>
+      </div>
+    );
+  }
+
+  const norm = (v) => (v || "").trim().toLowerCase();
+  const stay = (event.itinerary && event.itinerary.stays || []).find((s) => norm(s.crewName) === norm(me.name));
+  const flights = (event.itinerary && event.itinerary.flights || []).filter((f) => norm(f.crewName) === norm(me.name));
+  const venue = event.venue || {};
+  const schedule = event.schedule || [];
+  const hotelName = event.itinerary && event.itinerary.hotelName;
+  const hotelAddress = event.itinerary && event.itinerary.hotelAddress;
+  const fmtDate = (d) => {
+    if (!d) return "";
+    const dt = new Date(d + "T00:00:00");
+    if (isNaN(dt.getTime())) return d;
+    return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  };
+
+  return (
+    <div className="mc-wrap">
+      <div className="mc-head">
+        <div>
+          <div className="mc-name">{me.name}</div>
+          {me.position && <div className="mc-pos">{me.position}</div>}
+        </div>
+        <button className="mc-switch" onClick={switchMe}>Not you?</button>
+      </div>
+
+      {me.callTime ? (
+        <div className="mc-call">
+          <div className="mc-call-lbl">Your call time</div>
+          <div className="mc-call-time">{me.callTime}</div>
+        </div>
+      ) : (
+        <div className="mc-call muted">
+          <div className="mc-call-lbl">Your call time</div>
+          <div className="mc-call-time dim">See schedule below</div>
+        </div>
+      )}
+
+      <div className="mc-cards">
+        {(venue.name || venue.address) && (
+          <div className="mc-card">
+            <div className="mc-card-h">Venue</div>
+            {venue.name && <div className="mc-card-main">{venue.name}</div>}
+            {venue.address && <div className="mc-card-sub">{venue.address}</div>}
+            {venue.mapLink && <a className="mc-link" href={venue.mapLink} target="_blank" rel="noreferrer">Open in Maps →</a>}
+          </div>
+        )}
+
+        {stay && (
+          <div className="mc-card">
+            <div className="mc-card-h">Hotel</div>
+            {hotelName && <div className="mc-card-main">{hotelName}</div>}
+            {hotelAddress && <div className="mc-card-sub">{hotelAddress}</div>}
+            <div className="mc-kv">
+              {stay.checkIn && <span><b>In</b> {fmtDate(stay.checkIn)}</span>}
+              {stay.checkOut && <span><b>Out</b> {fmtDate(stay.checkOut)}</span>}
+              {stay.confirmation && <span><b>Conf</b> {stay.confirmation}</span>}
+            </div>
+            {stay.notes && <div className="mc-card-note">{stay.notes}</div>}
+          </div>
+        )}
+
+        {flights.length > 0 && (
+          <div className="mc-card">
+            <div className="mc-card-h">Travel</div>
+            {flights.map((f) => (
+              <div className="mc-flight" key={f.id}>
+                <div className="mc-flight-top">{f.airport}{f.flightNo ? " · " + f.flightNo : ""}</div>
+                <div className="mc-card-sub">
+                  {[fmtDate(f.date), f.depart && (f.depart + (f.arrive ? " – " + f.arrive : "")), f.confirmation].filter(Boolean).join(" · ")}
+                </div>
+                {f.notes && <div className="mc-card-note">{f.notes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {schedule.length > 0 && (
+        <div className="mc-sched">
+          <div className="mc-card-h">Schedule</div>
+          {schedule.map((day) => (
+            <div className="mc-day" key={day.id}>
+              <div className="mc-day-h">{day.label}{day.date ? " · " + fmtDate(day.date) : ""}</div>
+              {(day.items || []).map((it) => (
+                <div className="mc-item" key={it.id}>
+                  <span className="mc-item-time">{it.time}</span>
+                  <span className="mc-item-act">{it.activity}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(me.phone || me.email) && (
+        <div className="mc-contact">
+          {me.phone && <span>{me.phone}</span>}
+          {me.email && <span>{me.email}</span>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function BriefTab({ event, update, isAdmin }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
@@ -1518,7 +1658,7 @@ function BriefTab({ event, update, isAdmin }) {
       >
         <div className="rows">
           <div className="rowhead crew-grid">
-            <span>Name</span><span>Position</span><span>Phone</span><span>Email</span><span />
+            <span>Name</span><span>Position</span><span>Phone</span><span>Email</span><span>Call</span><span />
           </div>
           {event.crew.map((c, i) => (
             <div className="row crew-grid" key={c.id}>
@@ -1540,6 +1680,7 @@ function BriefTab({ event, update, isAdmin }) {
               <input value={c.position} placeholder="Position" onChange={(e) => update((ev) => (ev.crew[i].position = e.target.value))} />
               <input value={c.phone} placeholder="Phone" onChange={(e) => update((ev) => (ev.crew[i].phone = e.target.value))} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) update((ev) => (ev.crew[i].phone = f)); }} />
               <input value={c.email} placeholder="Email" onChange={(e) => update((ev) => (ev.crew[i].email = e.target.value))} />
+              <input value={c.callTime || ""} placeholder="Call" onChange={(e) => update((ev) => (ev.crew[i].callTime = e.target.value))} onBlur={(e) => { const f = fmtSchedTime(e.target.value); if (f !== e.target.value) update((ev) => (ev.crew[i].callTime = f)); }} />
               <div className="row-tools">
                 <button
                   className="movebtn"
@@ -5338,7 +5479,7 @@ const CSS = `
 .cb .rowhead{display:grid; gap:8px; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; padding:0 2px 2px;}
 .cb .row{display:grid; gap:8px; align-items:center;}
 .cb .contact-grid{grid-template-columns:1.1fr 1.1fr 1fr 1.4fr 28px;}
-.cb .crew-grid{grid-template-columns:1.05fr 1.05fr 0.95fr 1.3fr 82px;}
+.cb .crew-grid{grid-template-columns:1.05fr 1.05fr 0.95fr 1.3fr 0.8fr 82px;}
 .cb .crew-admin-notes { grid-column:1 / -1; margin-top:3px; background:transparent; border:none; border-bottom:1px dashed rgba(255,176,32,.25); border-radius:0; padding:3px 4px; font-size:11.5px; color:var(--amber); opacity:.8; }
 .cb .crew-admin-notes:focus { outline:none; border-bottom-color:var(--amber); opacity:1; }
 .cb .crew-admin-notes::placeholder { color:var(--amber); opacity:.4; }
@@ -5424,6 +5565,58 @@ const CSS = `
 .cb .ts-batch-cancel{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer;}
 .cb .ts-batch-apply{background:var(--amber); color:#101218; border:0; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer;}
 .cb .ts-batch-apply:disabled{opacity:.4; cursor:not-allowed;}
+/* my call sheet */
+.cb .mc-wrap{max-width:640px;}
+.cb .mc-picktitle{font-family:'Oswald'; font-size:20px; letter-spacing:.02em; margin-bottom:4px;}
+.cb .mc-pickhint{color:var(--faint); font-size:13px; margin-bottom:18px;}
+.cb .mc-picklist{display:flex; flex-direction:column; gap:8px;}
+.cb .mc-pick{display:flex; align-items:center; justify-content:space-between; gap:12px; text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px; color:var(--ink); cursor:pointer; transition:border-color .12s;}
+.cb .mc-pick:hover{border-color:var(--amber);}
+.cb .mc-pick-name{font-weight:600; font-size:15px;}
+.cb .mc-pick-pos{color:var(--dim); font-size:12.5px;}
+.cb .mc-empty{color:var(--faint); font-size:13px; padding:24px 0; text-align:center;}
+
+.cb .mc-head{display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px;}
+.cb .mc-name{font-family:'Oswald'; font-size:24px; letter-spacing:.02em;}
+.cb .mc-pos{color:var(--amber); font-size:13px; text-transform:uppercase; letter-spacing:.06em; margin-top:2px;}
+.cb .mc-switch{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; white-space:nowrap;}
+.cb .mc-switch:hover{color:var(--ink); border-color:var(--dim);}
+
+.cb .mc-call{background:linear-gradient(135deg,#0D4F8C,#00B4D8); border-radius:14px; padding:18px 20px; margin-bottom:16px;}
+.cb .mc-call.muted{background:var(--panel2); border:1px solid var(--line);}
+.cb .mc-call-lbl{color:rgba(255,255,255,.8); font-size:11px; text-transform:uppercase; letter-spacing:.1em; font-weight:700;}
+.cb .mc-call.muted .mc-call-lbl{color:var(--faint);}
+.cb .mc-call-time{font-family:'Oswald'; font-size:34px; letter-spacing:.01em; color:#fff; margin-top:2px;}
+.cb .mc-call-time.dim{font-size:16px; color:var(--dim); font-family:'Inter'; font-weight:500; margin-top:6px;}
+
+.cb .mc-cards{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;}
+.cb .mc-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
+.cb .mc-card-h{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:700; margin-bottom:8px;}
+.cb .mc-card-main{font-weight:600; font-size:15px;}
+.cb .mc-card-sub{color:var(--dim); font-size:12.5px; margin-top:3px; line-height:1.4;}
+.cb .mc-card-note{color:var(--amber); font-size:12px; margin-top:6px; opacity:.85;}
+.cb .mc-kv{display:flex; flex-wrap:wrap; gap:12px; margin-top:8px; font-size:12.5px; color:var(--ink); font-variant-numeric:tabular-nums;}
+.cb .mc-kv b{color:var(--faint); font-weight:600; margin-right:3px; text-transform:uppercase; font-size:10px; letter-spacing:.05em;}
+.cb .mc-link{display:inline-block; margin-top:8px; color:var(--amber); font-size:12.5px; text-decoration:none;}
+.cb .mc-link:hover{text-decoration:underline;}
+.cb .mc-flight{padding:8px 0; border-top:1px solid var(--line);}
+.cb .mc-flight:first-of-type{border-top:0; padding-top:0;}
+.cb .mc-flight-top{font-weight:600; font-size:13.5px; font-variant-numeric:tabular-nums;}
+
+.cb .mc-sched{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin-bottom:16px;}
+.cb .mc-day{margin-top:12px;}
+.cb .mc-day:first-of-type{margin-top:0;}
+.cb .mc-day-h{font-weight:700; font-size:13px; color:var(--amber); padding-bottom:6px; border-bottom:1px solid var(--line); margin-bottom:8px;}
+.cb .mc-item{display:flex; gap:12px; padding:4px 0; font-size:13px; line-height:1.4;}
+.cb .mc-item-time{flex:0 0 78px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap;}
+.cb .mc-item-act{color:var(--ink);}
+
+.cb .mc-contact{display:flex; flex-wrap:wrap; gap:16px; color:var(--faint); font-size:12.5px; padding-top:4px;}
+
+@media (max-width:640px){
+  .cb .mc-cards{grid-template-columns:1fr;}
+  .cb .mc-item-time{flex-basis:64px;}
+}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
