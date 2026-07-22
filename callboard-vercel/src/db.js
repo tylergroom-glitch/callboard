@@ -77,6 +77,10 @@ export const getPositions = () => api("GET", "/api/roster?positions=1");
 export const savePositions = (positions) =>
   api("POST", "/api/roster?positions=1", { positions });
 export const generateOnboardLink = () => api("GET", "/api/onboard?generate=1");
+// Post-show survey: a signed, show-scoped link crew can fill out. Responses are
+// stored on that show's record, so they stay with the show year over year.
+export const generateSurveyLink = (id) =>
+  api("GET", "/api/survey?generate=1&id=" + encodeURIComponent(id));
 export const previewInventoryImport = (sheetUrl) =>
   api("POST", "/api/import-inventory", { sheetUrl, preview: true });
 export const confirmInventoryImport = (sheetUrl) =>

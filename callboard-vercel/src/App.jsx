@@ -11,6 +11,7 @@ import {
   deleteEvent as deleteEvent_api,
   setPassword as dbSetPassword,
   setShowPasswords,
+  generateSurveyLink,
   listTemplates,
   createTemplate,
   deleteTemplate,
@@ -273,6 +274,8 @@ function normalize(e) {
   e.contacts = e.contacts || [];
   e.crew = e.crew || [];
   e.schedule = e.schedule || [];
+  e.callTimes = e.callTimes || {};
+  e.surveys = e.surveys || [];
   e.itinerary = e.itinerary || { hotelName: "", hotelAddress: "", stays: [], flights: [] };
   e.meals = e.meals || [];
   e.notes = e.notes || [];
@@ -957,6 +960,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "hours" && canEditTabs && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
             {tab === "roster" && isSuperAdmin && <RosterTab />}
+            {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
           </main>
         </>
       )}
@@ -994,6 +998,7 @@ const SECTIONS = [
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3" },
   { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true },
+  { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
   { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true },
 ];
@@ -1237,6 +1242,200 @@ function CrewNameInput({ value, onChange, onSelect }) {
    Identity is self-selected (they pick their name) and remembered per
    show on the device via localStorage. No pay is shown.
    ============================================================ */
+/* ============================================================
+   POST-SHOW SURVEY — send a feedback link to the crew, and keep
+   every response attached to this show for next year's planning.
+   ============================================================ */
+function SurveyTab({ event, update, showId }) {
+  const [link, setLink] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+
+  const responses = event.surveys || [];
+  const emails = [...new Set(event.crew.map((c) => c.email).filter(Boolean))];
+
+  const makeLink = async () => {
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await generateSurveyLink(showId);
+      setLink(r.url);
+    } catch (e) {
+      setErr(e.message || "Couldn't create the link");
+    }
+    setBusy(false);
+  };
+
+  const copy = (text, what) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(what);
+    setTimeout(() => setCopied(""), 2000);
+  };
+
+  const mailto = () => {
+    const subject = "Post-show survey — " + (event.name || "our show");
+    const body =
+      "Hi all,\n\nThanks for a great show. When you have a few minutes, please fill out this short post-show survey — it takes about two minutes and helps us plan next year:\n\n" +
+      link +
+      "\n\nFour quick questions: what went well, what you'd like to see next year, gear that would help, and anything we were missing.\n\nThanks,\n";
+    window.location.href =
+      "mailto:?bcc=" + encodeURIComponent(emails.join(",")) +
+      "&subject=" + encodeURIComponent(subject) +
+      "&body=" + encodeURIComponent(body);
+  };
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setErr("");
+    try {
+      const fresh = await getEvent(showId);
+      update((ev) => (ev.surveys = fresh.surveys || []));
+    } catch (e) {
+      setErr(e.message || "Couldn't refresh");
+    }
+    setRefreshing(false);
+  };
+
+  const printResponses = () => {
+    const esc = (t) => wdEsc(t).replace(/\n/g, "<br>");
+    const blocks = responses
+      .map(
+        (r) =>
+          '<div class="r"><div class="rh">' +
+          esc(r.name || "Anonymous") +
+          '<span class="rd">' +
+          new Date(r.submittedAt).toLocaleDateString() +
+          "</span></div>" +
+          [
+            ["What went well", r.q1],
+            ["Next year", r.q2],
+            ["Gear that would help", r.q3],
+            ["What we were missing", r.q4],
+          ]
+            .filter((x) => x[1])
+            .map((x) => '<div class="q">' + x[0] + "</div><div class=\"a\">" + esc(x[1]) + "</div>")
+            .join("") +
+          "</div>"
+      )
+      .join("");
+    wdOpenPrint(
+      "<!doctype html><html><head><meta charset='utf-8'><title>" +
+        wdEsc(event.name) +
+        " - post-show survey</title><style>" +
+        "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px;max-width:760px}" +
+        "h1{font-size:18px;margin:0 0 4px}.sub{color:#666;font-size:12px;margin:0 0 20px}" +
+        ".r{border:1px solid #ddd;border-radius:8px;padding:14px 16px;margin-bottom:14px;page-break-inside:avoid}" +
+        ".rh{font-weight:700;font-size:14px;margin-bottom:10px;display:flex;justify-content:space-between}" +
+        ".rd{color:#888;font-weight:400;font-size:12px}" +
+        ".q{font-size:10.5px;text-transform:uppercase;letter-spacing:.06em;color:#666;font-weight:700;margin-top:10px}" +
+        ".a{font-size:13px;line-height:1.5;margin-top:3px;white-space:pre-wrap}" +
+        "</style></head><body><h1>" +
+        wdEsc(event.name) +
+        " &mdash; post-show survey</h1><div class='sub'>" +
+        responses.length +
+        " response" +
+        (responses.length === 1 ? "" : "s") +
+        "</div>" +
+        (blocks || "<p>No responses yet.</p>") +
+        "</body></html>"
+    );
+  };
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>Send the crew a four-question survey after the show. Every response is saved with this show, so it's here next year when you plan it again.</p>
+      </div>
+
+      <Panel title="Send the survey">
+        <div className="sv-send">
+          {!link ? (
+            <button className="ts-batchbtn" onClick={makeLink} disabled={busy}>
+              {busy ? "Creating…" : "Create survey link"}
+            </button>
+          ) : (
+            <>
+              <div className="sv-link">{link}</div>
+              <div className="sv-actions">
+                <button className="ts-batchbtn" onClick={mailto} disabled={!emails.length}>
+                  ✉️ Email {emails.length} crew
+                </button>
+                <button className="wd-btn" onClick={() => copy(link, "link")}>
+                  {copied === "link" ? "✓ Copied!" : "Copy link"}
+                </button>
+                {emails.length > 0 && (
+                  <button className="wd-btn" onClick={() => copy(emails.join("; "), "emails")}>
+                    {copied === "emails" ? "✓ Copied!" : "Copy emails"}
+                  </button>
+                )}
+              </div>
+              <p className="sv-note">
+                “Email {emails.length} crew” opens your mail app with everyone BCC’d and the link in the message — review it, then hit send. The link works for a year.
+              </p>
+            </>
+          )}
+          {!emails.length && (
+            <p className="sv-note warn">No crew on this show have an email address yet — add them in the Brief tab.</p>
+          )}
+          {err && <p className="sv-note warn">{err}</p>}
+        </div>
+      </Panel>
+
+      <Panel
+        title={"Responses (" + responses.length + ")"}
+        action={
+          <div className="day-tools">
+            <button className="daysort" type="button" onClick={refresh} disabled={refreshing}>
+              {refreshing ? "…" : "↻ Refresh"}
+            </button>
+            {responses.length > 0 && (
+              <button className="daysort" type="button" onClick={printResponses}>
+                🖨️ Print
+              </button>
+            )}
+          </div>
+        }
+      >
+        {!responses.length ? (
+          <Empty>No responses yet. They'll appear here as the crew submit them — tap Refresh to check.</Empty>
+        ) : (
+          <div className="sv-list">
+            {responses
+              .slice()
+              .reverse()
+              .map((r) => (
+                <div className="sv-resp" key={r.id}>
+                  <div className="sv-resp-head">
+                    <span className="sv-resp-name">{r.name || "Anonymous"}</span>
+                    <span className="sv-resp-date">
+                      {r.submittedAt ? new Date(r.submittedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : ""}
+                    </span>
+                  </div>
+                  {[
+                    ["What went well", r.q1],
+                    ["Next year", r.q2],
+                    ["Gear that would help", r.q3],
+                    ["What we were missing", r.q4],
+                  ]
+                    .filter((x) => x[1])
+                    .map((x) => (
+                      <div key={x[0]}>
+                        <div className="sv-q">{x[0]}</div>
+                        <div className="sv-a">{x[1]}</div>
+                      </div>
+                    ))}
+                </div>
+              ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+
 function MyCallTab({ event, showId }) {
   const key = "callboard_me_" + showId;
   const [meId, setMeId] = useState(() => {
@@ -1271,6 +1470,7 @@ function MyCallTab({ event, showId }) {
   const flights = (event.itinerary && event.itinerary.flights || []).filter((f) => norm(f.crewName) === norm(me.name));
   const venue = event.venue || {};
   const schedule = event.schedule || [];
+  const myCall = me.callTime || (schedule.map((day) => event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][me.id]).find(Boolean) || "");
   const hotelName = event.itinerary && event.itinerary.hotelName;
   const hotelAddress = event.itinerary && event.itinerary.hotelAddress;
   const fmtDate = (d) => {
@@ -1290,10 +1490,10 @@ function MyCallTab({ event, showId }) {
         <button className="mc-switch" onClick={switchMe}>Not you?</button>
       </div>
 
-      {me.callTime ? (
+      {myCall ? (
         <div className="mc-call">
           <div className="mc-call-lbl">Your call time</div>
-          <div className="mc-call-time">{me.callTime}</div>
+          <div className="mc-call-time">{myCall}</div>
         </div>
       ) : (
         <div className="mc-call muted">
@@ -1348,6 +1548,7 @@ function MyCallTab({ event, showId }) {
           {schedule.map((day) => (
             <div className="mc-day" key={day.id}>
               <div className="mc-day-h">{day.label}{day.date ? " · " + fmtDate(day.date) : ""}</div>
+              {event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][me.id] && <div className="mc-daycall">Your call · {event.callTimes[day.id][me.id]}</div>}
               {(day.items || []).map((it) => (
                 <div className="mc-item" key={it.id}>
                   <span className="mc-item-time">{it.time}</span>
@@ -1827,6 +2028,23 @@ function tidySchedDay(items) {
   return sortSchedItems(items.map((it) => ({ ...it, time: fmtSchedTime(it.time) })));
 }
 
+/* per-day call-time summary, grouped by time */
+function DayCallStrip({ event, dayId }) {
+  const map = (event.callTimes && event.callTimes[dayId]) || {};
+  const byTime = {};
+  event.crew.forEach((c) => { const t = map[c.id]; if (t) (byTime[t] || (byTime[t] = [])).push(c.name || "—"); });
+  const groups = Object.entries(byTime).sort((a, b) => (schedMinutes(a[0]) || 0) - (schedMinutes(b[0]) || 0));
+  if (!groups.length) return null;
+  return (
+    <div className="sched-calls">
+      <span className="sched-calls-lbl">Calls</span>
+      {groups.map(([t, names]) => (
+        <span className="sched-calls-grp" key={t}><b>{t}</b> {names.join(", ")}</span>
+      ))}
+    </div>
+  );
+}
+
 function ScheduleTab({ event, update, isAdmin, editor }) {
   const unlocked = !!event.scheduleUnlocked;
   const canEdit = isAdmin || editor || unlocked;
@@ -1834,6 +2052,28 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
     update((ev) =>
       ev.schedule.push({ id: uid(), label: "New day", date: ev.startDate, items: [{ id: uid(), time: "", activity: "" }] })
     );
+  const [callOpen, setCallOpen] = useState(false);
+  const [callTime, setCallTime] = useState("");
+  const [callDays, setCallDays] = useState(() => new Set());
+  const [callCrew, setCallCrew] = useState(() => new Set());
+  const openCalls = () => { setCallDays(new Set(event.schedule.map((d) => d.id))); setCallCrew(new Set()); setCallOpen(true); };
+  const toggleCallSet = (setter) => (id) => setter((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggleCallDay = toggleCallSet(setCallDays);
+  const toggleCallCrew = toggleCallSet(setCallCrew);
+  const applyCalls = () => {
+    if (!callCrew.size || !callDays.size) return;
+    update((ev) => {
+      if (!ev.callTimes) ev.callTimes = {};
+      callDays.forEach((did) => {
+        if (!ev.callTimes[did]) ev.callTimes[did] = {};
+        callCrew.forEach((cid) => {
+          if (callTime.trim()) ev.callTimes[did][cid] = callTime.trim();
+          else delete ev.callTimes[did][cid];
+        });
+      });
+    });
+    setCallCrew(new Set());
+  };
   return (
     <div className="stack">
       {/* lock bar */}
@@ -1860,8 +2100,50 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
 
       <div className="tab-lead">
         <p>Daily run of show. Add a day for each date, then list call times and activities.</p>
-        {canEdit && <AddBtn onClick={addDay}>Day</AddBtn>}
+        {canEdit && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
+            <AddBtn onClick={addDay}>Day</AddBtn>
+          </div>
+        )}
       </div>
+
+      {callOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Batch call times — set a time, pick days, then select crew</div>
+          <div className="ts-batch-times">
+            <input className="ts-batch-time" placeholder="Call time" value={callTime} onChange={(e) => setCallTime(e.target.value)} onBlur={(e) => setCallTime(fmtSchedTime(e.target.value))} />
+            <span className="ts-batch-hint">leave blank + Apply to clear those calls</span>
+          </div>
+          <div className="ts-batch-sec">
+            <div className="ts-batch-seclbl"><span>Days</span></div>
+            <div className="ts-chips">
+              {event.schedule.map((d) => (
+                <button key={d.id} className={"ts-chip" + (callDays.has(d.id) ? " on" : "")} onClick={() => toggleCallDay(d.id)}>{d.label || "Day"}</button>
+              ))}
+              {!event.schedule.length && <span className="ts-batch-none">Add a day first.</span>}
+            </div>
+          </div>
+          <div className="ts-batch-sec">
+            <div className="ts-batch-seclbl">
+              <span>Crew — tap to select</span>
+              <span className="ts-batch-quick">
+                <button onClick={() => setCallCrew(new Set(event.crew.filter((c) => c.name).map((c) => c.id)))}>All</button>
+                <button onClick={() => setCallCrew(new Set())}>None</button>
+              </span>
+            </div>
+            <div className="ts-chips">
+              {event.crew.filter((c) => c.name).map((c) => (
+                <button key={c.id} className={"ts-chip" + (callCrew.has(c.id) ? " on" : "")} onClick={() => toggleCallCrew(c.id)}>{c.name}</button>
+              ))}
+            </div>
+          </div>
+          <div className="ts-batch-actions">
+            <button className="ts-batch-cancel" onClick={() => setCallOpen(false)}>Close</button>
+            <button className="ts-batch-apply" disabled={!callCrew.size || !callDays.size} onClick={applyCalls}>{callTime.trim() ? "Set" : "Clear"} {callCrew.size} crew × {callDays.size} {callDays.size === 1 ? "day" : "days"}</button>
+          </div>
+        </div>
+      )}
 
       {event.schedule.map((day, di) =>
         canEdit ? (
@@ -1895,6 +2177,7 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
               </div>
             }
           >
+            <DayCallStrip event={event} dayId={day.id} />
             <div className="rows">
               {day.items.map((it, ii) => (
                 <div className="row sched-grid" key={it.id}>
@@ -1924,6 +2207,7 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
             title={<span className="daytitle-ro">{day.label || "Untitled day"}</span>}
             action={day.date ? <span className="daydate-ro">{prettyDate(day.date)}</span> : null}
           >
+            <DayCallStrip event={event} dayId={day.id} />
             <div className="sched-ro">
               {day.items.length ? (
                 day.items.map((it) => (
@@ -5612,11 +5896,30 @@ const CSS = `
 .cb .mc-item-act{color:var(--ink);}
 
 .cb .mc-contact{display:flex; flex-wrap:wrap; gap:16px; color:var(--faint); font-size:12.5px; padding-top:4px;}
+/* post-show survey */
+.cb .sv-send{display:flex; flex-direction:column; gap:12px; align-items:flex-start;}
+.cb .sv-link{width:100%; background:#0f172a; border:1px solid var(--line); border-radius:8px; padding:11px 13px; font-family:'JetBrains Mono','Menlo',monospace; font-size:12px; color:var(--amber); word-break:break-all; line-height:1.5;}
+.cb .sv-actions{display:flex; flex-wrap:wrap; gap:8px;}
+.cb .sv-note{color:var(--faint); font-size:12.5px; line-height:1.5; margin:0; max-width:560px;}
+.cb .sv-note.warn{color:var(--amber);}
+.cb .sv-list{display:flex; flex-direction:column; gap:12px;}
+.cb .sv-resp{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:14px 16px;}
+.cb .sv-resp-head{display:flex; align-items:baseline; justify-content:space-between; gap:12px; margin-bottom:6px;}
+.cb .sv-resp-name{font-weight:700; font-size:14.5px;}
+.cb .sv-resp-date{color:var(--faint); font-size:11.5px; white-space:nowrap;}
+.cb .sv-q{font-size:10.5px; text-transform:uppercase; letter-spacing:.07em; color:var(--dim); font-weight:700; margin-top:10px;}
+.cb .sv-a{font-size:13.5px; line-height:1.55; margin-top:3px; white-space:pre-wrap; color:var(--ink);}
 
 @media (max-width:640px){
   .cb .mc-cards{grid-template-columns:1fr;}
   .cb .mc-item-time{flex-basis:64px;}
 }
+.cb .sched-calls{display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 14px; margin-bottom:10px; padding:8px 11px; background:rgba(255,176,32,.06); border:1px solid rgba(255,176,32,.2); border-radius:8px; font-size:12.5px;}
+.cb .sched-calls-lbl{font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--amber); font-weight:700;}
+.cb .sched-calls-grp{color:var(--dim);}
+.cb .sched-calls-grp b{color:var(--ink); font-variant-numeric:tabular-nums; margin-right:2px;}
+.cb .ts-batch-hint, .cb .ts-batch-none{color:var(--faint); font-size:11.5px; font-style:italic;}
+.cb .mc-daycall{display:inline-block; margin-bottom:8px; padding:3px 11px; background:linear-gradient(135deg,#0D4F8C,#00B4D8); color:#fff; border-radius:999px; font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
