@@ -4629,6 +4629,38 @@ function PullTab({ event, update, isAdmin, editor }) {
       window.removeEventListener("afterprint", afterPrint);
     };
   }, [cases]);
+  const exportByVendor = () => {
+    const groups = {};
+    const add = (it, caseName) => {
+      if (!it.item || !it.item.trim()) return;
+      const vendor = (it.rentedFrom || "").trim() || (it.source || "").trim() || "Unassigned";
+      (groups[vendor] || (groups[vendor] = [])).push({ qty: it.qty, item: it.item, notes: it.notes, caseName: caseName });
+    };
+    cases.forEach((c) => (c.items || []).forEach((it) => add(it, c.case || ("Case " + (c.caseNo || "")))));
+    loose.forEach((it) => add(it, "Loose items"));
+    const vendors = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+    const esc = wdEsc;
+    const sections = vendors.map((v) => {
+      const list = groups[v].slice().sort((a, b) => (a.caseName || "").localeCompare(b.caseName || "") || (a.item || "").localeCompare(b.item || ""));
+      const rows = list.map((it) => "<tr><td class='q'>" + esc(it.qty == null ? "" : it.qty) + "</td><td>" + esc(it.item) + "</td><td class='c'>" + esc(it.caseName) + "</td><td class='n'>" + esc(it.notes || "") + "</td></tr>").join("");
+      return "<h2>" + esc(v) + "<span class='cnt'>" + list.length + " item" + (list.length === 1 ? "" : "s") + "</span></h2><table><tr><th class='q'>Qty</th><th>Item</th><th class='c'>Case</th><th class='n'>Notes</th></tr>" + rows + "</table>";
+    }).join("");
+    const doc = "<!doctype html><html><head><meta charset='utf-8'><title>" + esc(event.name) + " - pull by vendor</title><style>" +
+      "body{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#111;margin:28px;max-width:820px}" +
+      "h1{font-size:18px;margin:0 0 4px}.sub{color:#666;font-size:12px;margin:0 0 20px}" +
+      "h2{font-size:14px;margin:24px 0 8px;padding-bottom:5px;border-bottom:2px solid #111;display:flex;justify-content:space-between;align-items:baseline}" +
+      ".cnt{font-size:11px;color:#666;font-weight:400}" +
+      "table{border-collapse:collapse;width:100%;margin-bottom:6px}" +
+      "th,td{text-align:left;padding:5px 8px;border-bottom:1px solid #e5e5e5;font-size:12.5px;vertical-align:top}" +
+      "th{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:#666;border-bottom:1px solid #999}" +
+      "td.q,th.q{width:44px;text-align:right;font-variant-numeric:tabular-nums}" +
+      "td.c{color:#555;width:26%}td.n{color:#777;width:26%}" +
+      "tr{page-break-inside:avoid}" +
+      "</style></head><body><h1>" + esc(event.name) + " &mdash; pull by vendor</h1><div class='sub'>" +
+      vendors.length + " vendor" + (vendors.length === 1 ? "" : "s") + "</div>" +
+      (sections || "<p>No gear on the pull list yet.</p>") + "</body></html>";
+    wdOpenPrint(doc);
+  };
   const [activeCat, setActiveCat] = useState("All");
   const [query, setQuery] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -5209,6 +5241,7 @@ function PullTab({ event, update, isAdmin, editor }) {
         {!editOn && (
           <input className="pl-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search gear, case, or drawer…" />
         )}
+        <button className="pl-vendorbtn" onClick={exportByVendor} title="Print / save a pull list grouped by vendor (rental house)">Export by vendor</button>
       </div>
 
       {/* templates */}
@@ -6062,6 +6095,8 @@ const CSS = `
 .cb .daycall-name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .cb .daycall-input{flex:0 0 86px; background:#0f172a; border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:6px 8px; font-size:12.5px; font-variant-numeric:tabular-nums; text-align:center;}
 .cb .daycall-empty{color:var(--faint); font-size:12px; font-style:italic; margin-top:8px;}
+.cb .pl-vendorbtn{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 13px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;}
+.cb .pl-vendorbtn:hover{border-color:var(--amber); color:var(--amber);}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
