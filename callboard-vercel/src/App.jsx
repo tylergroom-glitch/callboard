@@ -4082,8 +4082,19 @@ function normalizeCosting(x) {
   return out;
 }
 const pnlNum = (v) => {
-  const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
-  return Number.isFinite(n) ? n : 0;
+  let str = String(v == null ? "" : v).trim();
+  if (!str) return 0;
+  str = str.replace(/[$,\s]/g, ""); // drop $, commas, spaces
+  // plain number → fast path
+  if (/^-?\d*\.?\d+$/.test(str)) { const n = parseFloat(str); return Number.isFinite(n) ? n : 0; }
+  // arithmetic expression (e.g. 4*650, (2+3)*95) → evaluate safely
+  if (/^[-+*/().\d]+$/.test(str)) {
+    try { const n = Function('"use strict"; return (' + str + ')')(); return Number.isFinite(n) ? n : 0; }
+    catch (e) { return 0; }
+  }
+  // fallback: first number found
+  const m = str.match(/-?\d*\.?\d+/);
+  return m ? (parseFloat(m[0]) || 0) : 0;
 };
 const pnlMoney = (n) => (n < 0 ? "\u2212$" : "$") + Math.abs(Math.round(n)).toLocaleString();
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
