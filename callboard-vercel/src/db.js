@@ -97,3 +97,5 @@ export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + en
 
 // Import gear from a quote PDF (passes the PDF to the Claude API for extraction).
 export const importQuote = (pdf) => api("POST", "/api/import-quote", { pdf });
+// Import an agenda / run-of-show and turn it into schedule days (paste text or a PDF).
+export const importAgenda = (payload) => api("POST", "/api/import-schedule", payload);

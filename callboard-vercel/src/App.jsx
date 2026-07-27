@@ -12,6 +12,7 @@ import {
   setPassword as dbSetPassword,
   setShowPasswords,
   generateSurveyLink,
+  importAgenda,
   listTemplates,
   createTemplate,
   deleteTemplate,
@@ -2074,6 +2075,43 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
     });
     setCallCrew(new Set());
   };
+  const [impOpen, setImpOpen] = useState(false);
+  const [impText, setImpText] = useState("");
+  const [impBusy, setImpBusy] = useState(false);
+  const [impErr, setImpErr] = useState("");
+  const [impDays, setImpDays] = useState(null);
+  const impFileRef = useRef(null);
+  const toDays = (days) => days.map((d) => ({ id: uid(), label: d.label || "Schedule", date: d.date || "", items: (d.items || []).map((it) => ({ id: uid(), time: it.time || "", activity: it.activity || "" })) }));
+  const parseAgendaText = async () => {
+    if (!impText.trim()) return;
+    setImpBusy(true); setImpErr(""); setImpDays(null);
+    try { const r = await importAgenda({ text: impText }); setImpDays(r.days || []); }
+    catch (e) { setImpErr(e.message || "Couldn't read that agenda"); }
+    setImpBusy(false);
+  };
+  const parseAgendaPdf = async (file) => {
+    if (!file) return;
+    setImpBusy(true); setImpErr(""); setImpDays(null);
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = (ev) => res(ev.target.result.split(",")[1]);
+        r.onerror = () => rej(new Error("Couldn't read that file"));
+        r.readAsDataURL(file);
+      });
+      const r = await importAgenda({ pdf: base64 });
+      setImpDays(r.days || []);
+    } catch (e) { setImpErr(e.message || "Couldn't read that PDF"); }
+    setImpBusy(false);
+  };
+  const applyImport = (mode) => {
+    if (!impDays || !impDays.length) return;
+    update((ev) => {
+      const built = toDays(impDays);
+      ev.schedule = mode === "replace" ? built : ev.schedule.concat(built);
+    });
+    setImpOpen(false); setImpText(""); setImpDays(null); setImpErr("");
+  };
   return (
     <div className="stack">
       {/* lock bar */}
@@ -2102,11 +2140,43 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
         <p>Daily run of show. Add a day for each date, then list call times and activities.</p>
         {canEdit && (
           <div style={{ display: "flex", gap: 8 }}>
+            <button className="ts-batchbtn" onClick={() => { setImpOpen((o) => !o); setImpDays(null); setImpErr(""); }}>Import agenda</button>
             <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
             <AddBtn onClick={addDay}>Day</AddBtn>
           </div>
         )}
       </div>
+
+      {impOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Import agenda — paste it or upload a PDF</div>
+          <textarea className="imp-text" rows={6} placeholder="Paste your agenda / run of show here…" value={impText} onChange={(e) => setImpText(e.target.value)} />
+          <div className="ts-batch-actions" style={{ justifyContent: "flex-start" }}>
+            <button className="ts-batchbtn" onClick={parseAgendaText} disabled={impBusy || !impText.trim()}>{impBusy ? "Reading…" : "Read pasted text"}</button>
+            <button className="wd-btn" onClick={() => impFileRef.current && impFileRef.current.click()} disabled={impBusy}>Upload PDF</button>
+            <input ref={impFileRef} type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; parseAgendaPdf(f); }} />
+            <button className="ts-batch-cancel" onClick={() => { setImpOpen(false); setImpDays(null); setImpErr(""); }}>Close</button>
+          </div>
+          {impErr && <p className="sv-note warn">{impErr}</p>}
+          {impDays && (
+            <div className="imp-preview">
+              <div className="imp-preview-h">Found {impDays.length} day{impDays.length === 1 ? "" : "s"} · {impDays.reduce((n, d) => n + (d.items ? d.items.length : 0), 0)} lines — review, then add or replace</div>
+              {impDays.map((d, di) => (
+                <div className="imp-day" key={di}>
+                  <div className="imp-day-h">{d.label}{d.date ? " · " + d.date : ""}</div>
+                  {(d.items || []).map((it, ii) => (
+                    <div className="imp-item" key={ii}><span className="imp-item-time">{it.time || "—"}</span><span>{it.activity}</span></div>
+                  ))}
+                </div>
+              ))}
+              <div className="ts-batch-actions">
+                <button className="wd-btn" onClick={() => applyImport("append")}>Add to schedule</button>
+                <button className="ts-batch-apply" onClick={() => applyImport("replace")}>Replace schedule</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {callOpen && (
         <div className="ts-batch">
@@ -5920,6 +5990,13 @@ const CSS = `
 .cb .sched-calls-grp b{color:var(--ink); font-variant-numeric:tabular-nums; margin-right:2px;}
 .cb .ts-batch-hint, .cb .ts-batch-none{color:var(--faint); font-size:11.5px; font-style:italic;}
 .cb .mc-daycall{display:inline-block; margin-bottom:8px; padding:3px 11px; background:linear-gradient(135deg,#0D4F8C,#00B4D8); color:#fff; border-radius:999px; font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums;}
+.cb .imp-text{width:100%; background:#191C24; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:11px 12px; font-family:'Inter'; font-size:13.5px; line-height:1.5; resize:vertical; margin-bottom:12px;}
+.cb .imp-preview{margin-top:14px; border-top:1px solid var(--line); padding-top:14px;}
+.cb .imp-preview-h{font-size:12px; color:var(--dim); font-weight:700; text-transform:uppercase; letter-spacing:.05em; margin-bottom:12px;}
+.cb .imp-day{margin-bottom:14px;}
+.cb .imp-day-h{font-weight:700; font-size:13px; color:var(--amber); margin-bottom:6px;}
+.cb .imp-item{display:flex; gap:12px; padding:3px 0; font-size:13px; line-height:1.4;}
+.cb .imp-item-time{flex:0 0 84px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
