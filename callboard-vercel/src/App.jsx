@@ -1471,7 +1471,7 @@ function MyCallTab({ event, showId }) {
   const flights = (event.itinerary && event.itinerary.flights || []).filter((f) => norm(f.crewName) === norm(me.name));
   const venue = event.venue || {};
   const schedule = event.schedule || [];
-  const myCall = me.callTime || (schedule.map((day) => event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][me.id]).find(Boolean) || "");
+  const myCall = me.callTime || ([...schedule].sort(schedDaySort).map((day) => event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][me.id]).find(Boolean) || "");
   const hotelName = event.itinerary && event.itinerary.hotelName;
   const hotelAddress = event.itinerary && event.itinerary.hotelAddress;
   const fmtDate = (d) => {
@@ -1546,7 +1546,7 @@ function MyCallTab({ event, showId }) {
       {schedule.length > 0 && (
         <div className="mc-sched">
           <div className="mc-card-h">Schedule</div>
-          {schedule.map((day) => (
+          {[...schedule].sort(schedDaySort).map((day) => (
             <div className="mc-day" key={day.id}>
               <div className="mc-day-h">{day.label}{day.date ? " · " + fmtDate(day.date) : ""}</div>
               {event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][me.id] && <div className="mc-daycall">Your call · {event.callTimes[day.id][me.id]}</div>}
@@ -1628,7 +1628,7 @@ function BriefTab({ event, update, isAdmin }) {
       </tr>`;
     }).join("");
 
-    const schedRows = schedule.map((day) => `
+    const schedRows = [...schedule].sort(schedDaySort).map((day) => `
       <div style="margin-bottom:14pt;break-inside:avoid">
         <div style="font-size:10.5pt;font-weight:700;margin-bottom:4pt;padding-bottom:3pt;border-bottom:0.5pt solid #ddd">
           ${day.label || "Day"}${day.date ? " &nbsp;·&nbsp; " + fmt(day.date) : ""}
@@ -1970,6 +1970,13 @@ function BriefTab({ event, update, isAdmin }) {
 /* ---------- schedule time sorting ----------
    Parse the free-text Time field into minutes-since-midnight so lines can be
    ordered chronologically. Handles "6:00 AM", "6am", "0600", "600", "13:30", "6". */
+function schedDaySort(a, b) {
+  const av = a.date || "", bv = b.date || "";
+  if (av && bv) return av < bv ? -1 : av > bv ? 1 : 0;
+  if (av) return -1;
+  if (bv) return 1;
+  return 0;
+}
 function schedMinutes(raw) {
   if (raw == null) return null;
   let s = String(raw).trim().toLowerCase().replace(/\s+/g, "");
@@ -2075,6 +2082,14 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
     });
     setCallCrew(new Set());
   };
+  const [callRows, setCallRows] = useState(() => new Set());
+  const toggleCallRows = (id) => setCallRows((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const setPersonCall = (dayId, crewId, val) => update((ev) => {
+    if (!ev.callTimes) ev.callTimes = {};
+    if (!ev.callTimes[dayId]) ev.callTimes[dayId] = {};
+    if (val && val.trim()) ev.callTimes[dayId][crewId] = val;
+    else delete ev.callTimes[dayId][crewId];
+  });
   const [impOpen, setImpOpen] = useState(false);
   const [impText, setImpText] = useState("");
   const [impBusy, setImpBusy] = useState(false);
@@ -2188,7 +2203,7 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
           <div className="ts-batch-sec">
             <div className="ts-batch-seclbl"><span>Days</span></div>
             <div className="ts-chips">
-              {event.schedule.map((d) => (
+              {[...event.schedule].sort(schedDaySort).map((d) => (
                 <button key={d.id} className={"ts-chip" + (callDays.has(d.id) ? " on" : "")} onClick={() => toggleCallDay(d.id)}>{d.label || "Day"}</button>
               ))}
               {!event.schedule.length && <span className="ts-batch-none">Add a day first.</span>}
@@ -2215,15 +2230,17 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
         </div>
       )}
 
-      {event.schedule.map((day, di) =>
-        canEdit ? (
+      {[...event.schedule].sort(schedDaySort).map((day) => {
+        const dref = (ev) => ev.schedule.find((d) => d.id === day.id);
+        const didx = (ev) => ev.schedule.findIndex((d) => d.id === day.id);
+        return canEdit ? (
           <Panel
             key={day.id}
             title={
               <input
                 className="daytitle"
                 value={day.label}
-                onChange={(e) => update((ev) => (ev.schedule[di].label = e.target.value))}
+                onChange={(e) => update((ev) => (dref(ev).label = e.target.value))}
                 placeholder="Day label"
               />
             }
@@ -2233,7 +2250,7 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                   className="daysort"
                   type="button"
                   title="Sort this day's lines by time"
-                  onClick={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
+                  onClick={() => update((ev) => (dref(ev).items = tidySchedDay(dref(ev).items)))}
                 >
                   ↕ Time
                 </button>
@@ -2241,13 +2258,42 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                   type="date"
                   className="daydate"
                   value={day.date || ""}
-                  onChange={(e) => update((ev) => (ev.schedule[di].date = e.target.value))}
+                  onChange={(e) => update((ev) => (dref(ev).date = e.target.value))}
                 />
-                <RemoveBtn title="Remove day" onClick={() => update((ev) => ev.schedule.splice(di, 1))} />
+                <RemoveBtn title="Remove day" onClick={() => update((ev) => ev.schedule.splice(didx(ev), 1))} />
               </div>
             }
           >
             <DayCallStrip event={event} dayId={day.id} />
+            <div className="daycall-edit">
+              <button className="daycall-toggle" onClick={() => toggleCallRows(day.id)}>
+                {callRows.has(day.id) ? "▾ Call times (per person)" : "▸ Call times (per person)"}
+              </button>
+              {callRows.has(day.id) &&
+                (event.crew.filter((c) => c.name).length ? (
+                  <div className="daycall-list">
+                    {event.crew
+                      .filter((c) => c.name)
+                      .map((c) => {
+                        const v = (event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][c.id]) || "";
+                        return (
+                          <label className="daycall-cell" key={c.id}>
+                            <span className="daycall-name">{c.name}</span>
+                            <input
+                              className="daycall-input"
+                              value={v}
+                              placeholder="—"
+                              onChange={(e) => setPersonCall(day.id, c.id, e.target.value)}
+                              onBlur={(e) => setPersonCall(day.id, c.id, fmtSchedTime(e.target.value))}
+                            />
+                          </label>
+                        );
+                      })}
+                  </div>
+                ) : (
+                  <div className="daycall-empty">Add crew in the Brief tab to set their call times.</div>
+                ))}
+            </div>
             <div className="rows">
               {day.items.map((it, ii) => (
                 <div className="row sched-grid" key={it.id}>
@@ -2255,19 +2301,19 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                     className="time-in-text"
                     value={it.time}
                     placeholder="Time"
-                    onChange={(e) => update((ev) => (ev.schedule[di].items[ii].time = e.target.value))}
-                    onBlur={() => update((ev) => (ev.schedule[di].items = tidySchedDay(ev.schedule[di].items)))}
+                    onChange={(e) => update((ev) => (dref(ev).items[ii].time = e.target.value))}
+                    onBlur={() => update((ev) => (dref(ev).items = tidySchedDay(dref(ev).items)))}
                   />
                   <input
                     value={it.activity}
                     placeholder="Activity"
-                    onChange={(e) => update((ev) => (ev.schedule[di].items[ii].activity = e.target.value))}
+                    onChange={(e) => update((ev) => (dref(ev).items[ii].activity = e.target.value))}
                   />
-                  <RemoveBtn onClick={() => update((ev) => ev.schedule[di].items.splice(ii, 1))} />
+                  <RemoveBtn onClick={() => update((ev) => dref(ev).items.splice(ii, 1))} />
                 </div>
               ))}
             </div>
-            <AddBtn onClick={() => update((ev) => ev.schedule[di].items.push({ id: uid(), time: "", activity: "" }))}>
+            <AddBtn onClick={() => update((ev) => dref(ev).items.push({ id: uid(), time: "", activity: "" }))}>
               Line
             </AddBtn>
           </Panel>
@@ -2291,8 +2337,8 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
               )}
             </div>
           </Panel>
-        )
-      )}
+        );
+      })}
       {!event.schedule.length && (
         <Panel title="Run of show">
           <Empty>{canEdit ? "No days yet. Add your first day to start the schedule." : "No schedule posted yet."}</Empty>
@@ -5997,6 +6043,14 @@ const CSS = `
 .cb .imp-day-h{font-weight:700; font-size:13px; color:var(--amber); margin-bottom:6px;}
 .cb .imp-item{display:flex; gap:12px; padding:3px 0; font-size:13px; line-height:1.4;}
 .cb .imp-item-time{flex:0 0 84px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap;}
+.cb .daycall-edit{margin:10px 0 4px;}
+.cb .daycall-toggle{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:7px; padding:6px 12px; font-size:12.5px; cursor:pointer;}
+.cb .daycall-toggle:hover{color:var(--ink); border-color:var(--dim);}
+.cb .daycall-list{display:grid; grid-template-columns:repeat(auto-fill, minmax(210px, 1fr)); gap:8px; margin-top:10px;}
+.cb .daycall-cell{display:flex; align-items:center; gap:8px; justify-content:space-between; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:6px 8px 6px 11px;}
+.cb .daycall-name{font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .daycall-input{flex:0 0 86px; background:#0f172a; border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:6px 8px; font-size:12.5px; font-variant-numeric:tabular-nums; text-align:center;}
+.cb .daycall-empty{color:var(--faint); font-size:12px; font-style:italic; margin-top:8px;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
