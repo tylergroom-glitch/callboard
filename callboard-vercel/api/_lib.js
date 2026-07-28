@@ -6,11 +6,13 @@ const {
   AIRTABLE_BASE_ID,
   AIRTABLE_TABLE = "Events",
   ADMIN_PASSWORD,
+  ADMIN_PASSWORD_2,
   APP_SECRET,
 } = process.env;
 
 export const env = {
   ADMIN_PASSWORD,
+  ADMIN_PASSWORD_2,
   hasConfig: !!(AIRTABLE_TOKEN && AIRTABLE_BASE_ID && APP_SECRET && ADMIN_PASSWORD),
 };
 export const TOKEN_TTL = 1000 * 60 * 60 * 12; // 12 hours
