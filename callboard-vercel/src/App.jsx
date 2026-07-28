@@ -4806,6 +4806,20 @@ function PullTab({ event, update, isAdmin, editor }) {
     if (!it || !it.out) return;
     patchItem(cid, iid, { in: !it.in });
   };
+  const caseOut = (cid) => update((ev) => {
+    const c = ev.pull.cases.find((x) => x.id === cid);
+    if (!c || !c.items.length) return;
+    const allOut = c.items.every((i) => i.out);
+    c.items.forEach((i) => { if (allOut) { i.out = false; i.in = false; } else { i.out = true; } });
+  });
+  const caseIn = (cid) => update((ev) => {
+    const c = ev.pull.cases.find((x) => x.id === cid);
+    if (!c) return;
+    const out = c.items.filter((i) => i.out);
+    if (!out.length) return;
+    const allIn = out.every((i) => i.in);
+    out.forEach((i) => { i.in = !allIn; });
+  });
 
   const setLock = (val) => update((ev) => (ev.gearEditUnlocked = val));
 
@@ -5556,6 +5570,8 @@ function PullTab({ event, update, isAdmin, editor }) {
           const p = prog(c);
           const isOpen = open.has(c.id) || (!!q && !editOn) || editOn;
           const done = p.total > 0 && p.back === p.total;
+          const allOut = p.total > 0 && p.out === p.total;
+          const allIn = p.out > 0 && p.back === p.out;
           return (
             <div className="pl-card" key={c.id} style={{ borderColor: cc.ring }}>
               {editOn ? (
@@ -5570,18 +5586,24 @@ function PullTab({ event, update, isAdmin, editor }) {
                   <button className="pl-del" onClick={() => deleteCase(c.id)} title="Delete case">Delete</button>
                 </div>
               ) : (
-                <button className="pl-head" style={{ background: cc.soft }} onClick={() => toggleCase(c.id)}>
-                  <span className="pl-bar2" style={{ background: cc.color }} />
-                  <span className="pl-caseno" style={{ background: cc.color }}>#{c.caseNo}</span>
-                  <span className="pl-casename">{c.case}</span>
-                  <span className="pl-tag" style={{ color: cc.color, borderColor: cc.ring }}>{c.category}</span>
-                  <span className="pl-spacer" />
-                  <span className="pl-count">
-                    {p.out}/{p.total} pulled
-                    {p.out > 0 && <em style={{ color: done ? "#059669" : "#64748B" }}> · {p.back}/{p.out} back</em>}
-                  </span>
-                  <span className="pl-chev" style={{ transform: isOpen ? "rotate(90deg)" : "none" }}>›</span>
-                </button>
+                <div className="pl-headrow" style={{ background: cc.soft }}>
+                  <button className="pl-head" onClick={() => toggleCase(c.id)}>
+                    <span className="pl-bar2" style={{ background: cc.color }} />
+                    <span className="pl-caseno" style={{ background: cc.color }}>#{c.caseNo}</span>
+                    <span className="pl-casename">{c.case}</span>
+                    <span className="pl-tag" style={{ color: cc.color, borderColor: cc.ring }}>{c.category}</span>
+                    <span className="pl-spacer" />
+                    <span className="pl-count">
+                      {p.out}/{p.total} pulled
+                      {p.out > 0 && <em style={{ color: done ? "#059669" : "#64748B" }}> · {p.back}/{p.out} back</em>}
+                    </span>
+                    <span className="pl-chev" style={{ transform: isOpen ? "rotate(90deg)" : "none" }}>›</span>
+                  </button>
+                  <div className="pl-headact">
+                    <button className={"pl-check " + (allOut ? "on" : "")} style={allOut ? { background: cc.color, borderColor: cc.color, color: "#fff" } : {}} onClick={() => caseOut(c.id)} title="Check out whole case">{allOut ? "✓ " : ""}Out</button>
+                    <button className={"pl-check green " + (allIn ? "on" : "") + (!p.out ? " dis" : "")} disabled={!p.out} onClick={() => caseIn(c.id)} title={!p.out ? "Pull the case out first" : "Check in whole case"}>{allIn ? "✓ " : ""}In</button>
+                  </div>
+                </div>
               )}
               {isOpen && (editOn ? caseBodyEdit(c) : caseBodyRead(c, cc))}
             </div>
@@ -6097,6 +6119,11 @@ const CSS = `
 .cb .daycall-empty{color:var(--faint); font-size:12px; font-style:italic; margin-top:8px;}
 .cb .pl-vendorbtn{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 13px; font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap;}
 .cb .pl-vendorbtn:hover{border-color:var(--amber); color:var(--amber);}
+.cb .pl-caseact{display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:9px 12px; border-bottom:1px solid var(--line);}
+.cb .pl-caseact-lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-right:2px;}
+.cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
+.cb .pl-headrow .pl-head{flex:1; min-width:0; background:transparent !important;}
+.cb .pl-headact{display:flex; align-items:center; gap:6px; padding:6px 12px 6px 4px; flex:0 0 auto;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
 .cb .timesheet tfoot td{background:#101218; font-weight:600; border-bottom:none;}
 .cb .foot{font-family:'Oswald'; letter-spacing:.04em; color:var(--dim);}
