@@ -19,7 +19,10 @@ export default async function handler(req, res) {
 
   try {
     if (mode === "admin") {
-      if (password !== env.ADMIN_PASSWORD) return json(res, 401, { error: "Wrong admin password" });
+      const adminOk =
+        password === env.ADMIN_PASSWORD ||
+        (env.ADMIN_PASSWORD_2 && password === env.ADMIN_PASSWORD_2);
+      if (!adminOk) return json(res, 401, { error: "Wrong admin password" });
       return json(res, 200, { scope: "admin", token: signToken({ scope: "admin", exp: Date.now() + TOKEN_TTL }) });
     }
 
