@@ -4099,6 +4099,31 @@ const pnlNum = (v) => {
 const pnlMoney = (n) => (n < 0 ? "\u2212$" : "$") + Math.abs(Math.round(n)).toLocaleString();
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
 
+const PNL_VIEWS = [
+  { key: "estimate", label: "Estimate" },
+  { key: "tracking", label: "Tracking" },
+  { key: "reconcile", label: "Reconcile" },
+  { key: "all", label: "All" },
+];
+const PNL_LABOR_W = { name: "minmax(120px,1.1fr)", time: "66px", rate: "118px", pd: "70px", travel: "66px", est: "78px", tracked: "84px", invoice: "88px", delta: "80px", notes: "minmax(110px,.9fr)", paid: "150px" };
+const PNL_LABOR_COLS = {
+  estimate: ["name", "est", "notes"],
+  tracking: ["name", "time", "rate", "pd", "travel", "tracked"],
+  reconcile: ["name", "est", "tracked", "invoice", "delta", "notes", "paid"],
+  all: ["name", "time", "rate", "pd", "travel", "est", "tracked", "invoice", "delta", "notes", "paid"],
+};
+const PNL_LABOR_HEAD = { name: "Contractor", time: "Time", rate: "Rate", pd: "Per diem", travel: "Travel", est: "Est.", tracked: "Tracked", invoice: "Invoiced", delta: "Δ vs est", notes: "Notes", paid: "Paid" };
+const PNL_VEND_W = { vname: "1fr", gear: "1.4fr", vest: "84px", vinv: "88px", vdelta: "80px", vnotes: ".9fr", vpaid: "150px" };
+const PNL_VEND_COLS = {
+  estimate: ["vname", "gear", "vest", "vnotes"],
+  tracking: ["vname", "gear", "vest", "vnotes"],
+  reconcile: ["vname", "gear", "vest", "vinv", "vdelta", "vnotes", "vpaid"],
+  all: ["vname", "gear", "vest", "vinv", "vdelta", "vnotes", "vpaid"],
+};
+const PNL_VEND_HEAD = { vname: "Vendor", gear: "Gear rented", vest: "Est.", vinv: "Invoiced", vdelta: "Δ vs est", vnotes: "Notes", vpaid: "Paid" };
+const pnlGrid = (cols, W, tail) => cols.map((k) => W[k]).join(" ") + (tail ? " " + tail : "");
+const pnlGridMinW = (cols, W, tail) => cols.reduce((sm, k) => sm + (/px$/.test(W[k]) ? parseInt(W[k], 10) : 130), 0) + (tail || 0);
+
 function CostingTab({ event }) {
   const [c, setC] = useState(null);
   const [state, setState] = useState("loading"); // loading | idle | error
@@ -4106,6 +4131,16 @@ function CostingTab({ event }) {
   const timer = useRef(null);
   const [pnlImp, setPnlImp] = useState({ open: false, phase: "idle", preview: null, error: "" });
   const pnlInputRef = useRef(null);
+  const [pnlView, setPnlView] = useState(() => { try { return localStorage.getItem("pnl_view") || "all"; } catch (e) { return "all"; } });
+  const setView = (v) => { try { localStorage.setItem("pnl_view", v); } catch (e) {} setPnlView(v); };
+  const lcols = PNL_LABOR_COLS[pnlView] || PNL_LABOR_COLS.all;
+  const lgrid = pnlGrid(lcols, PNL_LABOR_W, "44px");
+  const lmin = pnlGridMinW(lcols, PNL_LABOR_W, 44);
+  const lHas = (k) => lcols.indexOf(k) !== -1;
+  const vcols = PNL_VEND_COLS[pnlView] || PNL_VEND_COLS.all;
+  const vgrid = pnlGrid(vcols, PNL_VEND_W, "44px");
+  const vmin = pnlGridMinW(vcols, PNL_VEND_W, 44);
+  const vHas = (k) => vcols.indexOf(k) !== -1;
   // Local draft prevents focus loss on every keystroke
   const [draft, setDraft] = useState({});
   const draftVal = (key, fallback) => key in draft ? draft[key] : (fallback ?? "");
@@ -4226,6 +4261,8 @@ function CostingTab({ event }) {
   const crewPerDiem = (cid) => crewHours(cid).days * perDiemRate;
   const crewTravel = (cid) => pnlNum((c.crewCost[cid] || {}).travel);
   const crewTotalActual = (cid) => (crewActual(cid) || 0) + crewPerDiem(cid) + crewTravel(cid);
+  const crewInvoice = (cid) => pnlNum((c.crewCost[cid] || {}).invoice);
+  const crewActualUsed = (cid) => { const inv = crewInvoice(cid); return inv > 0 ? inv : crewTotalActual(cid); };
 
   // GSA per-diem lookup, seeded with the event location + fiscal year
   const gsaLoc = (event.venue?.address || event.venue?.name || "").trim();
@@ -4259,7 +4296,7 @@ function CostingTab({ event }) {
 
   // ---- totals (roster + manual extras) ----
   const laborEst = crewRows.reduce((s, cm) => s + pnlNum(c.crewCost[cm.id]?.est), 0) + sum(c.laborExtra, "est");
-  const laborAct = crewRows.reduce((s, cm) => s + crewTotalActual(cm.id), 0) + sum(c.laborExtra, "act");
+  const laborAct = crewRows.reduce((s, cm) => s + crewActualUsed(cm.id), 0) + sum(c.laborExtra, "act");
   const vendEst = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.est), 0) + sum(c.vendorExtra, "est");
   const vendAct = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.act), 0) + sum(c.vendorExtra, "act");
   const miscEst = sum(c.misc, "est"), miscAct = sum(c.misc, "act");
@@ -4276,6 +4313,15 @@ function CostingTab({ event }) {
   const targetExpAct = billAct * (1 - TARGET_MARGIN);
   const overEst = totalExpEst - targetExpEst;
   const overAct = totalExpAct - targetExpAct;
+  // outstanding (unpaid) — uses actual where entered, else the estimate
+  const amtOwed = (act, est) => (act > 0 ? act : est);
+  const unpaidLabor =
+    crewRows.reduce((sm, cm) => { const cc = c.crewCost[cm.id] || {}; return sm + (cc.paid ? 0 : crewActualUsed(cm.id)); }, 0) +
+    c.laborExtra.reduce((sm, r) => sm + (r.paid ? 0 : amtOwed(pnlNum(r.act), pnlNum(r.est))), 0);
+  const unpaidVendor =
+    vendorRows.reduce((sm, v) => { const vc = c.vendorCost[v.name] || {}; return sm + (vc.paid ? 0 : amtOwed(pnlNum(vc.act), pnlNum(vc.est))); }, 0) +
+    c.vendorExtra.reduce((sm, r) => sm + (r.paid ? 0 : amtOwed(pnlNum(r.act), pnlNum(r.est))), 0);
+  const unpaidTotal = unpaidLabor + unpaidVendor;
   const crewHrsLabel = (hrs) =>
     hrs.total ? fmtHrs(hrs.total) + "h" + (hrs.ot ? " · " + fmtHrs(hrs.ot) + " OT" : "") + (hrs.dt ? " · " + fmtHrs(hrs.dt) + " DT" : "") : "–";
 
@@ -4378,7 +4424,15 @@ function CostingTab({ event }) {
         </div>
       </Panel>
 
-      <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "", paid: false }))}>Non-roster line</AddBtn>}>
+      <div className="pnl-viewbar">
+        <span className="pnl-viewlabel">View</span>
+        <div className="pnl-viewchips">
+          {PNL_VIEWS.map((vw) => (
+            <button key={vw.key} className={"pnl-viewchip" + (pnlView === vw.key ? " on" : "")} onClick={() => setView(vw.key)}>{vw.label}</button>
+          ))}
+        </div>
+      </div>
+      <Panel title="Labor" sub="Estimate up front · track from hours during the show · enter each invoice after. Actual uses the invoice when set, else tracked." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "", paid: false }))}>Non-roster line</AddBtn>}>
         <div className="pnl-pdbar">
           <span className="pnl-pdlabel">Per diem rate</span>
           <input className="pnl-money" value={draftVal("perDiemRate", c.perDiemRate)} placeholder="$/day"
@@ -4391,84 +4445,128 @@ function CostingTab({ event }) {
         </div>
         <div className="pnl-hscroll">
           <div className="rows">
-            <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Per diem</span><span>Travel</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span>Paid</span><span /></div>
+            <div className="rowhead pnl-labor-grid" style={{ display: "grid", gridTemplateColumns: lgrid, minWidth: lmin }}>{lcols.map((k) => <span key={k}>{PNL_LABOR_HEAD[k]}</span>)}<span /></div>
             {crewRows.map((cm) => {
               const cc = c.crewCost[cm.id] || {};
               const hrs = crewHours(cm.id);
               const rt = cc.rateType || "hourly";
+              const dv = crewActualUsed(cm.id) - pnlNum(cc.est);
+              const hasNum = pnlNum(cc.est) || crewActualUsed(cm.id);
               return (
-                <div className="row pnl-labor-grid" key={cm.id}>
-                  <span className="pnl-person"><b>{cm.name}</b><em>{cm.position || "—"}</em></span>
-                  <span className="pnl-time" title={`Regular ${fmtHrs(hrs.total - hrs.ot - hrs.dt)} · OT ${fmtHrs(hrs.ot)} · DT ${fmtHrs(hrs.dt)}`}>
-                    <b>{hrs.total ? fmtHrs(hrs.total) + "h" : "–"}</b>
-                    <em>{hrs.days ? hrs.days + (hrs.days === 1 ? " day" : " days") : ""}</em>
-                  </span>
-                  <span className="pnl-rate">
-                    <select value={rt} onChange={(e) => setCrew(cm.id, "rateType", e.target.value)}>
-                      <option value="hourly">Hourly</option>
-                      <option value="day">Day rate</option>
-                    </select>
-                    <input className="pnl-money" value={cc.rate || ""} placeholder={"$/" + (rt === "day" ? "day" : "hr")} onChange={(e) => setCrew(cm.id, "rate", e.target.value)} />
-                  </span>
-                  <span className="pnl-actual pd" title={`${hrs.days} day${hrs.days === 1 ? "" : "s"} × ${pnlMoney(perDiemRate)}`}>{perDiemRate && hrs.days ? pnlMoney(crewPerDiem(cm.id)) : "–"}</span>
-                  <input className="pnl-money" value={cc.travel || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "travel", e.target.value)} />
-                  <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />
-                  <span className="pnl-actual" title="labor + per diem + travel">{pnlMoney(crewTotalActual(cm.id))}</span>
-                  <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />
-                  <label className="pnl-paid" title="Mark paid"><input type="checkbox" checked={!!cc.paid} onChange={(e) => setCrew(cm.id, "paid", e.target.checked)} /></label>
+                <div className="row pnl-labor-grid" key={cm.id} style={{ display: "grid", gridTemplateColumns: lgrid, minWidth: lmin }}>
+                  {lHas("name") && <span className="pnl-person"><b>{cm.name}</b><em>{cm.position || "—"}</em></span>}
+                  {lHas("time") && (
+                    <span className="pnl-time" title={`Regular ${fmtHrs(hrs.total - hrs.ot - hrs.dt)} · OT ${fmtHrs(hrs.ot)} · DT ${fmtHrs(hrs.dt)}`}>
+                      <b>{hrs.total ? fmtHrs(hrs.total) + "h" : "–"}</b>
+                      <em>{hrs.days ? hrs.days + (hrs.days === 1 ? " day" : " days") : ""}</em>
+                    </span>
+                  )}
+                  {lHas("rate") && (
+                    <span className="pnl-rate">
+                      <select value={rt} onChange={(e) => setCrew(cm.id, "rateType", e.target.value)}>
+                        <option value="hourly">Hourly</option>
+                        <option value="day">Day rate</option>
+                      </select>
+                      <input className="pnl-money" value={cc.rate || ""} placeholder={"$/" + (rt === "day" ? "day" : "hr")} onChange={(e) => setCrew(cm.id, "rate", e.target.value)} />
+                    </span>
+                  )}
+                  {lHas("pd") && <span className="pnl-actual pd" title={`${hrs.days} day${hrs.days === 1 ? "" : "s"} × ${pnlMoney(perDiemRate)}`}>{perDiemRate && hrs.days ? pnlMoney(crewPerDiem(cm.id)) : "–"}</span>}
+                  {lHas("travel") && <input className="pnl-money" value={cc.travel || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "travel", e.target.value)} />}
+                  {lHas("est") && <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />}
+                  {lHas("tracked") && <span className="pnl-actual" title="Calculated from tracked hours + per diem + travel">{pnlMoney(crewTotalActual(cm.id))}</span>}
+                  {lHas("invoice") && <input className="pnl-money" value={cc.invoice || ""} placeholder="$" title="What they actually invoiced" onChange={(e) => setCrew(cm.id, "invoice", e.target.value)} />}
+                  {lHas("delta") && <span className={"pnl-delta " + (dv > 0 ? "neg" : dv < 0 ? "pos" : "")} title="Actual (invoiced or tracked) vs estimate">{hasNum ? (dv > 0 ? "+" : "") + pnlMoney(dv) : "–"}</span>}
+                  {lHas("notes") && <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />}
+                  {lHas("paid") && (
+                    <span className="pnl-paid" title="Mark paid">
+                      <input type="checkbox" checked={!!cc.paid} onChange={(e) => { setCrew(cm.id, "paid", e.target.checked); if (e.target.checked && !cc.paidDate) setCrew(cm.id, "paidDate", new Date().toLocaleDateString("en-CA")); }} />
+                      {cc.paid && <input type="date" className="pnl-paiddate" value={cc.paidDate || ""} title="Payment date" onChange={(e) => setCrew(cm.id, "paidDate", e.target.value)} />}
+                    </span>
+                  )}
                   <span className="pnl-tag" title="From the crew roster">roster</span>
                 </div>
               );
             })}
-            {c.laborExtra.map((r, i) => (
-              <div className="row pnl-labor-grid" key={r.id}>
-                <span className="pnl-person"><input value={r.contractor} placeholder="Name" onChange={(e) => mutate((n) => (n.laborExtra[i].contractor = e.target.value))} /><input value={r.role} placeholder="Role" onChange={(e) => mutate((n) => (n.laborExtra[i].role = e.target.value))} /></span>
-                <span className="pnl-time dim">—</span>
-                <span className="pnl-rate dim">manual →</span>
-                <span className="pnl-actual pd dim">—</span>
-                <input className="pnl-money" value={r.travel || ""} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].travel = e.target.value))} />
-                <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />
-                <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />
-                <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />
-                <label className="pnl-paid" title="Mark paid"><input type="checkbox" checked={!!r.paid} onChange={(e) => mutate((n) => (n.laborExtra[i].paid = e.target.checked))} /></label>
+            {c.laborExtra.map((r, i) => {
+              const dv = pnlNum(r.act) - pnlNum(r.est);
+              const hasNum = pnlNum(r.est) || pnlNum(r.act);
+              return (
+              <div className="row pnl-labor-grid" key={r.id} style={{ display: "grid", gridTemplateColumns: lgrid, minWidth: lmin }}>
+                {lHas("name") && <span className="pnl-person"><input value={r.contractor} placeholder="Name" onChange={(e) => mutate((n) => (n.laborExtra[i].contractor = e.target.value))} /><input value={r.role} placeholder="Role" onChange={(e) => mutate((n) => (n.laborExtra[i].role = e.target.value))} /></span>}
+                {lHas("time") && <span className="pnl-time dim">—</span>}
+                {lHas("rate") && <span className="pnl-rate dim">manual →</span>}
+                {lHas("pd") && <span className="pnl-actual pd dim">—</span>}
+                {lHas("travel") && <input className="pnl-money" value={r.travel || ""} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].travel = e.target.value))} />}
+                {lHas("est") && <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />}
+                {lHas("tracked") && <span className="pnl-actual dim">—</span>}
+                {lHas("invoice") && <input className="pnl-money" value={r.act} placeholder="$" title="Invoiced amount" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />}
+                {lHas("delta") && <span className={"pnl-delta " + (dv > 0 ? "neg" : dv < 0 ? "pos" : "")}>{hasNum ? (dv > 0 ? "+" : "") + pnlMoney(dv) : "–"}</span>}
+                {lHas("notes") && <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />}
+                {lHas("paid") && (
+                  <span className="pnl-paid" title="Mark paid">
+                    <input type="checkbox" checked={!!r.paid} onChange={(e) => mutate((n) => { n.laborExtra[i].paid = e.target.checked; if (e.target.checked && !n.laborExtra[i].paidDate) n.laborExtra[i].paidDate = new Date().toLocaleDateString("en-CA"); })} />
+                    {r.paid && <input type="date" className="pnl-paiddate" value={r.paidDate || ""} title="Payment date" onChange={(e) => mutate((n) => (n.laborExtra[i].paidDate = e.target.value))} />}
+                  </span>
+                )}
                 <RemoveBtn onClick={() => mutate((n) => n.laborExtra.splice(i, 1))} />
               </div>
-            ))}
+              );
+            })}
             {!crewRows.length && !c.laborExtra.length && <Empty>Add crew on the Brief tab and they’ll appear here with their hours.</Empty>}
           </div>
         </div>
-        <div className="pnl-subtotal">Labor subtotal (incl. per diem &amp; travel) — est {pnlMoney(laborEst)} · actual {pnlMoney(laborAct)}</div>
+        <div className="pnl-subtotal">Labor subtotal (incl. per diem &amp; travel) — est {pnlMoney(laborEst)} · actual {pnlMoney(laborAct)}{unpaidLabor > 0 && <span className="pnl-unpaid"> · unpaid {pnlMoney(unpaidLabor)}</span>}</div>
       </Panel>
 
-      <Panel title="Gear & Vendors" sub="Vendors pulled from the “Rented From” field on the Pull List" action={<AddBtn onClick={() => mutate((n) => n.vendorExtra.push({ id: uid(), vendor: "", notes: "", est: "", act: "" }))}>Non-list line</AddBtn>}>
+      <Panel title="Gear & Vendors" sub="Vendors pulled from the “Rented From” field on the Pull List" action={<AddBtn onClick={() => mutate((n) => n.vendorExtra.push({ id: uid(), vendor: "", notes: "", est: "", act: "", paid: false }))}>Non-list line</AddBtn>}>
         <div className="rows">
-          <div className="rowhead pnl-vendor-grid"><span>Vendor</span><span>Gear rented</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
+          <div className="rowhead pnl-vendor-grid" style={{ display: "grid", gridTemplateColumns: vgrid, minWidth: vmin }}>{vcols.map((k) => <span key={k}>{PNL_VEND_HEAD[k]}</span>)}<span /></div>
           {vendorRows.map((v) => {
             const vc = c.vendorCost[v.name] || {};
+            const dv = pnlNum(vc.act) - pnlNum(vc.est);
+            const hasNum = pnlNum(vc.est) || pnlNum(vc.act);
             return (
-              <div className="row pnl-vendor-grid" key={v.name}>
-                <span className="pnl-derived">{v.name}</span>
-                <span className="pnl-gear" title={v.items.join(", ")}>{gearSummary(v.items) || `${v.count} item${v.count === 1 ? "" : "s"}`}</span>
-                <input className="pnl-money" value={vc.est || ""} placeholder="$" onChange={(e) => setVend(v.name, "est", e.target.value)} />
-                <input className="pnl-money" value={vc.act || ""} placeholder="$" onChange={(e) => setVend(v.name, "act", e.target.value)} />
-                <input value={vc.notes || ""} placeholder="Notes" onChange={(e) => setVend(v.name, "notes", e.target.value)} />
+              <div className="row pnl-vendor-grid" key={v.name} style={{ display: "grid", gridTemplateColumns: vgrid, minWidth: vmin }}>
+                {vHas("vname") && <span className="pnl-derived">{v.name}</span>}
+                {vHas("gear") && <span className="pnl-gear" title={v.items.join(", ")}>{gearSummary(v.items) || `${v.count} item${v.count === 1 ? "" : "s"}`}</span>}
+                {vHas("vest") && <input className="pnl-money" value={vc.est || ""} placeholder="$" onChange={(e) => setVend(v.name, "est", e.target.value)} />}
+                {vHas("vinv") && <input className="pnl-money" value={vc.act || ""} placeholder="$" title="Invoiced amount" onChange={(e) => setVend(v.name, "act", e.target.value)} />}
+                {vHas("vdelta") && <span className={"pnl-delta " + (dv > 0 ? "neg" : dv < 0 ? "pos" : "")}>{hasNum ? (dv > 0 ? "+" : "") + pnlMoney(dv) : "–"}</span>}
+                {vHas("vnotes") && <input value={vc.notes || ""} placeholder="Notes" onChange={(e) => setVend(v.name, "notes", e.target.value)} />}
+                {vHas("vpaid") && (
+                  <span className="pnl-paid" title="Mark paid">
+                    <input type="checkbox" checked={!!vc.paid} onChange={(e) => { setVend(v.name, "paid", e.target.checked); if (e.target.checked && !vc.paidDate) setVend(v.name, "paidDate", new Date().toLocaleDateString("en-CA")); }} />
+                    {vc.paid && <input type="date" className="pnl-paiddate" value={vc.paidDate || ""} title="Payment date" onChange={(e) => setVend(v.name, "paidDate", e.target.value)} />}
+                  </span>
+                )}
                 <span className="pnl-tag" title="From the Pull List">pull</span>
               </div>
             );
           })}
-          {c.vendorExtra.map((r, i) => (
-            <div className="row pnl-vendor-grid" key={r.id}>
-              <input value={r.vendor} placeholder="Vendor" onChange={(e) => mutate((n) => (n.vendorExtra[i].vendor = e.target.value))} />
-              <span className="pnl-gear dim">—</span>
-              <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.vendorExtra[i].est = e.target.value))} />
-              <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.vendorExtra[i].act = e.target.value))} />
-              <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.vendorExtra[i].notes = e.target.value))} />
+          {c.vendorExtra.map((r, i) => {
+            const dv = pnlNum(r.act) - pnlNum(r.est);
+            const hasNum = pnlNum(r.est) || pnlNum(r.act);
+            return (
+            <div className="row pnl-vendor-grid" key={r.id} style={{ display: "grid", gridTemplateColumns: vgrid, minWidth: vmin }}>
+              {vHas("vname") && <input value={r.vendor} placeholder="Vendor" onChange={(e) => mutate((n) => (n.vendorExtra[i].vendor = e.target.value))} />}
+              {vHas("gear") && <span className="pnl-gear dim">—</span>}
+              {vHas("vest") && <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.vendorExtra[i].est = e.target.value))} />}
+              {vHas("vinv") && <input className="pnl-money" value={r.act} placeholder="$" title="Invoiced amount" onChange={(e) => mutate((n) => (n.vendorExtra[i].act = e.target.value))} />}
+              {vHas("vdelta") && <span className={"pnl-delta " + (dv > 0 ? "neg" : dv < 0 ? "pos" : "")}>{hasNum ? (dv > 0 ? "+" : "") + pnlMoney(dv) : "–"}</span>}
+              {vHas("vnotes") && <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.vendorExtra[i].notes = e.target.value))} />}
+              {vHas("vpaid") && (
+                <span className="pnl-paid" title="Mark paid">
+                  <input type="checkbox" checked={!!r.paid} onChange={(e) => mutate((n) => { n.vendorExtra[i].paid = e.target.checked; if (e.target.checked && !n.vendorExtra[i].paidDate) n.vendorExtra[i].paidDate = new Date().toLocaleDateString("en-CA"); })} />
+                  {r.paid && <input type="date" className="pnl-paiddate" value={r.paidDate || ""} title="Payment date" onChange={(e) => mutate((n) => (n.vendorExtra[i].paidDate = e.target.value))} />}
+                </span>
+              )}
               <RemoveBtn onClick={() => mutate((n) => n.vendorExtra.splice(i, 1))} />
             </div>
-          ))}
+            );
+          })}
           {!vendorRows.length && !c.vendorExtra.length && <Empty>Set “Rented From” on Pull List items and those vendors will appear here.</Empty>}
         </div>
-        <div className="pnl-subtotal">Gear subtotal — est {pnlMoney(vendEst)} · actual {pnlMoney(vendAct)}</div>
+        <div className="pnl-subtotal">Gear subtotal — est {pnlMoney(vendEst)} · actual {pnlMoney(vendAct)}{unpaidVendor > 0 && <span className="pnl-unpaid"> · unpaid {pnlMoney(unpaidVendor)}</span>}</div>
       </Panel>
 
       <Panel title="Misc" sub="Travel, per diem, expendables, etc." action={<AddBtn onClick={() => mutate((n) => n.misc.push({ id: uid(), name: "", est: "", act: "" }))}>Line</AddBtn>}>
@@ -4529,6 +4627,10 @@ function CostingTab({ event }) {
               <td className="pnl-sum-label">Over / (under) target</td>
               <td className={"pnl-sum-num " + (overEst > 0 ? "neg" : "pos")}>{billEst ? pnlMoney(overEst) : "—"}</td>
               <td className={"pnl-sum-num " + (overAct > 0 ? "neg" : "pos")}>{billAct ? pnlMoney(overAct) : "—"}</td>
+            </tr>
+            <tr>
+              <td className="pnl-sum-label" style={{ paddingTop: 14, borderTop: "1px solid var(--line)" }}>Outstanding (unpaid)</td>
+              <td className="pnl-sum-num" colSpan={2} style={{ paddingTop: 14, borderTop: "1px solid var(--line)", color: unpaidTotal > 0 ? "var(--amber)" : "var(--green)", fontWeight: 700 }}>{unpaidTotal > 0 ? pnlMoney(unpaidTotal) : "All paid ✓"}</td>
             </tr>
           </tfoot>
         </table>
@@ -6147,10 +6249,21 @@ const CSS = `
 .cb .pnl-save{margin-left:10px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint);}
 .cb .pnl-billable{display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:520px;}
 .cb .pnl-hscroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
-.cb .pnl-labor-grid{grid-template-columns:minmax(120px,1.1fr) 66px 120px 68px 66px 66px 78px minmax(110px,.9fr) 46px 30px; min-width:826px;}
-.cb .pnl-paid{display:flex; align-items:center; justify-content:center;}
-.cb .pnl-paid input{width:17px; height:17px; cursor:pointer; accent-color:var(--green);}
-.cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 30px;}
+.cb .pnl-labor-grid{grid-template-columns:minmax(120px,1.1fr) 66px 120px 68px 66px 66px 78px minmax(110px,.9fr) 148px 30px; min-width:928px;}
+.cb .pnl-paid{display:flex; align-items:center; justify-content:flex-start; gap:6px;}
+.cb .pnl-paid input[type="checkbox"]{width:17px; height:17px; cursor:pointer; accent-color:var(--green); flex:0 0 auto;}
+.cb .pnl-paiddate{width:120px; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:4px 6px; font-size:11.5px; font-variant-numeric:tabular-nums; flex:0 0 auto;}
+.cb .pnl-unpaid{color:var(--amber); font-weight:700;}
+.cb .pnl-viewbar{display:flex; align-items:center; gap:12px; margin:2px 0 14px; flex-wrap:wrap;}
+.cb .pnl-viewlabel{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:700;}
+.cb .pnl-viewchips{display:inline-flex; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px;}
+.cb .pnl-viewchip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 14px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .pnl-viewchip:hover{color:var(--ink);}
+.cb .pnl-viewchip.on{background:var(--amber); color:#101218;}
+.cb .pnl-delta{font-variant-numeric:tabular-nums; font-size:12.5px; text-align:right; color:var(--dim);}
+.cb .pnl-delta.neg{color:var(--danger);}
+.cb .pnl-delta.pos{color:var(--green);}
+.cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 148px 30px;}
 .cb .pnl-misc-grid{grid-template-columns:2fr 92px 92px 28px;}
 .cb .pnl-pdbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--line);}
 .cb .pnl-pdlabel{font-family:'Oswald'; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
