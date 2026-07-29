@@ -4378,7 +4378,7 @@ function CostingTab({ event }) {
         </div>
       </Panel>
 
-      <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "" }))}>Non-roster line</AddBtn>}>
+      <Panel title="Labor" sub="Crew from the Brief. Set a rate and the actual cost calculates from tracked hours." action={<AddBtn onClick={() => mutate((n) => n.laborExtra.push({ id: uid(), contractor: "", role: "", est: "", act: "", notes: "", paid: false }))}>Non-roster line</AddBtn>}>
         <div className="pnl-pdbar">
           <span className="pnl-pdlabel">Per diem rate</span>
           <input className="pnl-money" value={draftVal("perDiemRate", c.perDiemRate)} placeholder="$/day"
@@ -4391,7 +4391,7 @@ function CostingTab({ event }) {
         </div>
         <div className="pnl-hscroll">
           <div className="rows">
-            <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Per diem</span><span>Travel</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span /></div>
+            <div className="rowhead pnl-labor-grid"><span>Contractor</span><span>Time</span><span>Rate</span><span>Per diem</span><span>Travel</span><span>Est. $</span><span>Actual $</span><span>Notes</span><span>Paid</span><span /></div>
             {crewRows.map((cm) => {
               const cc = c.crewCost[cm.id] || {};
               const hrs = crewHours(cm.id);
@@ -4415,6 +4415,7 @@ function CostingTab({ event }) {
                   <input className="pnl-money" value={cc.est || ""} placeholder="$" onChange={(e) => setCrew(cm.id, "est", e.target.value)} />
                   <span className="pnl-actual" title="labor + per diem + travel">{pnlMoney(crewTotalActual(cm.id))}</span>
                   <input value={cc.notes || ""} placeholder="Notes" onChange={(e) => setCrew(cm.id, "notes", e.target.value)} />
+                  <label className="pnl-paid" title="Mark paid"><input type="checkbox" checked={!!cc.paid} onChange={(e) => setCrew(cm.id, "paid", e.target.checked)} /></label>
                   <span className="pnl-tag" title="From the crew roster">roster</span>
                 </div>
               );
@@ -4429,6 +4430,7 @@ function CostingTab({ event }) {
                 <input className="pnl-money" value={r.est} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].est = e.target.value))} />
                 <input className="pnl-money" value={r.act} placeholder="$" onChange={(e) => mutate((n) => (n.laborExtra[i].act = e.target.value))} />
                 <input value={r.notes} placeholder="Notes" onChange={(e) => mutate((n) => (n.laborExtra[i].notes = e.target.value))} />
+                <label className="pnl-paid" title="Mark paid"><input type="checkbox" checked={!!r.paid} onChange={(e) => mutate((n) => (n.laborExtra[i].paid = e.target.checked))} /></label>
                 <RemoveBtn onClick={() => mutate((n) => n.laborExtra.splice(i, 1))} />
               </div>
             ))}
@@ -6145,7 +6147,9 @@ const CSS = `
 .cb .pnl-save{margin-left:10px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--faint);}
 .cb .pnl-billable{display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:520px;}
 .cb .pnl-hscroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
-.cb .pnl-labor-grid{grid-template-columns:minmax(120px,1.1fr) 66px 120px 68px 66px 66px 78px minmax(110px,.9fr) 30px; min-width:780px;}
+.cb .pnl-labor-grid{grid-template-columns:minmax(120px,1.1fr) 66px 120px 68px 66px 66px 78px minmax(110px,.9fr) 46px 30px; min-width:826px;}
+.cb .pnl-paid{display:flex; align-items:center; justify-content:center;}
+.cb .pnl-paid input{width:17px; height:17px; cursor:pointer; accent-color:var(--green);}
 .cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 30px;}
 .cb .pnl-misc-grid{grid-template-columns:2fr 92px 92px 28px;}
 .cb .pnl-pdbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--line);}
