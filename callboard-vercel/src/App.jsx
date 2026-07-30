@@ -370,6 +370,162 @@ function otBreakdown(h) {
 }
 
 /* ---------- blank + seed data ---------- */
+function demoEvent() {
+  const crew = [
+    { id: "c1", name: "Morgan Avery", position: "Production Manager", phone: "555-0142", email: "morgan@example.com" },
+    { id: "c2", name: "Sam Rivera", position: "A1", phone: "555-0173", email: "sam@example.com" },
+    { id: "c3", name: "Casey Nguyen", position: "V1", phone: "555-0198", email: "casey@example.com" },
+    { id: "c4", name: "Alex Park", position: "L1", phone: "555-0125", email: "alex@example.com" },
+    { id: "c5", name: "Jamie Cole", position: "LED Lead", phone: "555-0160", email: "jamie@example.com" },
+    { id: "c6", name: "Drew Ellis", position: "Camera Op", phone: "555-0119", email: "drew@example.com" },
+  ];
+  const cc = (color, time, end, room, activity, notes, done) => ({ id: uid(), time, end, room, activity, notes: notes || "", color: color || "", done: !!done });
+  const schedule = [
+    { id: "sd1", label: "Load-In", date: "2026-09-14", items: [
+      cc("tan", "7:00 AM", "8:00 AM", "Loading Dock", "Crew call / unload trucks", "2 semis", true),
+      cc("tan", "8:00 AM", "12:00 PM", "Hall C", "Rig & set staging", "Coordinate with venue rigger"),
+      cc("blue", "1:00 PM", "5:00 PM", "Hall C", "Audio / video / lighting setup", ""),
+      cc("green", "12:00 PM", "1:00 PM", "Green Room", "Lunch", "Provided by venue"),
+      cc("red", "7:00 PM", "7:00 AM", "Hall C", "Overnight security", "Room locked"),
+    ] },
+    { id: "sd2", label: "Show Day", date: "2026-09-15", items: [
+      cc("tan", "6:30 AM", "8:00 AM", "Hall C", "Crew call / final checks", ""),
+      cc("blue", "8:00 AM", "9:00 AM", "Hall C", "Rehearsal & mic check", ""),
+      cc("purple", "9:00 AM", "12:00 PM", "Hall C", "General Session", "Doors 8:30"),
+      cc("green", "12:00 PM", "1:00 PM", "Foyer", "Lunch break", ""),
+      cc("purple", "1:00 PM", "4:00 PM", "Breakouts", "Breakout sessions", "3 rooms"),
+      cc("tan", "4:00 PM", "8:00 PM", "Hall C", "Strike & load-out", ""),
+    ] },
+  ];
+  const ri = (dur, seg, resp, vid, notes, color, done) => ({ id: uid(), kind: "item", dur, color: color || "", done: !!done, cells: { seg, resp: resp || "", vid: vid || "", notes: notes || "" } });
+  const rundown = {
+    start: "9:00 AM", date: "2026-09-15",
+    columns: [
+      { id: "num", type: "num", label: "#" },
+      { id: "start", type: "start", label: "Start" },
+      { id: "dur", type: "dur", label: "Dur" },
+      { id: "seg", type: "text", label: "Segment" },
+      { id: "end", type: "end", label: "End" },
+      { id: "resp", type: "text", label: "Responsible" },
+      { id: "vid", type: "text", label: "Video Notes" },
+      { id: "notes", type: "text", label: "Notes/Equipment" },
+    ],
+    rows: [
+      { id: uid(), kind: "section", title: "Pre-Show", color: "gray" },
+      ri("15m", "Walk-in loop & music", "Casey (V1)", "Loop reel 01, hold on logo", "House music bed", "", true),
+      ri("5m", "Doors close / house to half", "Morgan (PM)", "", "Stage manager cue", "", true),
+      { id: uid(), kind: "section", title: "General Session", color: "blue" },
+      ri("10m", "Opening video", "Casey (V1)", "Roll OPEN_v3, 1080p", "Audio stem 2", "blue"),
+      ri("20m", "CEO Keynote", "Sam (A1)", "Center screen IMAG", "Lav mic 1 + handheld", "blue"),
+      ri("15m", "Product Demo", "Drew (Cam)", "Live demo cam + screen capture", "Confidence monitor on", "blue"),
+      ri("10m", "Q&A", "Morgan (PM)", "Two-box: host + audience", "Runner mics x2", "blue"),
+      { id: uid(), kind: "section", title: "Close", color: "green" },
+      ri("5m", "Closing remarks & CTA", "Sam (A1)", "Lower-third: event hashtag", "", "green"),
+      ri("5m", "Walk-out video", "Casey (V1)", "Roll CLOSE_v2", "House music up", "green"),
+    ],
+    run: { on: false, showStart: 0, segIdx: 0, segStart: 0 },
+    shares: [
+      { id: "share-video", name: "Video Dept", cols: ["num", "start", "dur", "seg", "end", "vid"], editCols: ["vid"] },
+      { id: "share-audio", name: "Audio Dept", cols: ["num", "start", "dur", "seg", "end", "notes"], editCols: ["notes"] },
+    ],
+  };
+  const pi = (drawer, item, qty, source, rentedFrom, notes) => ({ id: uid(), drawer: drawer || "", item, qty, source: source || "TCG", rentedFrom: rentedFrom || "", notes: notes || "", out: false, in: false });
+  const pull = { cases: [
+    { id: uid(), caseNo: "1", case: "Audio Rack", category: "Audio", items: [
+      pi("", "DiGiCo S21 Console", "1", "TCG", ""),
+      pi("", "Shure ULXD Wireless Kit", "8", "Sub Rental", "Rhino Rentals", "4 handheld / 4 lav"),
+      pi("", "L-Acoustics X8 Speakers", "6", "Sub Rental", "Rhino Rentals"),
+    ] },
+    { id: uid(), caseNo: "2", case: "Video Case", category: "Video", items: [
+      pi("", "Blackmagic ATEM Switcher", "1", "TCG", ""),
+      pi("", "PTZ Cameras", "3", "Sub Rental", "PixelWorks", "with controller"),
+      pi("", "7th Gen Media Server", "1", "Sub Rental", "PixelWorks"),
+    ] },
+    { id: uid(), caseNo: "3", case: "Lighting", category: "Lighting", items: [
+      pi("", "GrandMA3 Console", "1", "TCG", ""),
+      pi("", "Robe LED Wash", "12", "Sub Rental", "Rhino Rentals"),
+    ] },
+  ], loose: [] };
+  const crewCost = {
+    c1: { rateType: "day", rate: "850", est: "2550", invoice: "2550", notes: "", travel: "300", paid: true, paidDate: "2026-09-20" },
+    c2: { rateType: "day", rate: "700", est: "1400", invoice: "1400", notes: "", travel: "250", paid: true, paidDate: "2026-09-20" },
+    c3: { rateType: "day", rate: "700", est: "1400", invoice: "1500", notes: "OT on show day", travel: "250", paid: false },
+    c4: { rateType: "day", rate: "650", est: "1300", invoice: "", notes: "", travel: "", paid: false },
+    c5: { rateType: "day", rate: "650", est: "1300", invoice: "", notes: "", travel: "200", paid: false },
+    c6: { rateType: "day", rate: "600", est: "600", invoice: "600", notes: "", travel: "", paid: true, paidDate: "2026-09-19" },
+  };
+  const vendorCost = {
+    "Rhino Rentals": { est: "6500", act: "6725", notes: "Audio + lighting", paid: false },
+    "PixelWorks": { est: "4200", act: "4200", notes: "Cameras + server", paid: true, paidDate: "2026-09-18" },
+  };
+  const io = (i, o) => ({ in: i, out: o });
+  const time = {
+    days: [ { id: "sd1", label: "Load-In" }, { id: "sd2", label: "Show Day" } ],
+    entries: {
+      c2: { sd1: io("07:00", "17:00"), sd2: io("06:30", "20:00") },
+      c3: { sd1: io("07:00", "17:00"), sd2: io("06:30", "20:30") },
+      c4: { sd1: io("08:00", "17:00"), sd2: io("06:30", "20:00") },
+    },
+  };
+  return {
+    id: uid(),
+    name: "Aurora Dynamics — Annual Kickoff 2026 (DEMO)",
+    client: "Aurora Dynamics",
+    startDate: "2026-09-14",
+    endDate: "2026-09-15",
+    venue: { name: "Cascade Convention Center — Hall C", address: "1200 Summit Blvd, Denver, CO 80202", mapLink: "" },
+    contacts: [
+      { id: uid(), role: "Production Manager", name: "Morgan Avery", phone: "555-0142", email: "morgan@example.com" },
+      { id: uid(), role: "Venue CSM", name: "Riley Chen", phone: "555-0188", email: "riley@cascadecc.example.com" },
+      { id: uid(), role: "Client", name: "Jordan Blake", phone: "555-0155", email: "jordan@auroradynamics.example.com" },
+    ],
+    crew,
+    schedule,
+    rundown,
+    callTimes: { sd2: { c1: "6:30 AM", c2: "6:30 AM", c3: "6:30 AM", c4: "6:30 AM", c5: "7:00 AM", c6: "7:30 AM" } },
+    itinerary: {
+      hotelName: "Summit Grand Hotel",
+      hotelAddress: "500 Peak Ave, Denver, CO 80202",
+      stays: [
+        { id: uid(), crewName: "Morgan Avery", checkIn: "2026-09-13", checkOut: "2026-09-15", confirmation: "AUR1001", notes: "" },
+        { id: uid(), crewName: "Sam Rivera", checkIn: "2026-09-13", checkOut: "2026-09-15", confirmation: "AUR1002", notes: "" },
+        { id: uid(), crewName: "Casey Nguyen", checkIn: "2026-09-13", checkOut: "2026-09-15", confirmation: "AUR1003", notes: "" },
+      ],
+      flights: [
+        { id: uid(), crewName: "Sam Rivera", date: "2026-09-13", airport: "LAX → DEN", flightNo: "UA482", depart: "08:10", arrive: "11:25", confirmation: "K9WQ2P", notes: "Non-stop" },
+        { id: uid(), crewName: "Casey Nguyen", date: "2026-09-13", airport: "SEA → DEN", flightNo: "AS612", depart: "09:40", arrive: "13:20", confirmation: "T4RM8L", notes: "Non-stop" },
+      ],
+    },
+    meals: [
+      { id: uid(), date: "2026-09-14", time: "12:00 PM", type: "Crew lunch", link: "" },
+      { id: uid(), date: "2026-09-15", time: "12:00 PM", type: "Crew lunch", link: "" },
+    ],
+    wardrobe: "Blacks. No visible logos other than crew shirt. Closed-toe shoes on the deck.",
+    notes: [
+      { id: uid(), date: "2026-09-12", text: "Client wants IMAG on both side screens for keynote." },
+      { id: uid(), date: "2026-09-12", text: "Confirm confidence monitor at podium." },
+    ],
+    links: [
+      { id: uid(), label: "Show Flow (Google Doc)", url: "" },
+      { id: uid(), label: "Stage Plot", url: "" },
+    ],
+    time,
+    audio: { blocks: [ioBlock("Main")] },
+    video: { blocks: [ioBlock("Main")] },
+    records: [],
+    diagrams: [],
+    documents: [],
+    pull,
+    crewCost,
+    laborExtra: [ { id: uid(), contractor: "Local Stagehands (x2)", role: "Load-in help", est: "800", act: "800", notes: "Via venue labor", travel: "", paid: true, paidDate: "2026-09-15" } ],
+    vendorCost,
+    vendorExtra: [ { id: uid(), vendor: "Trucking — Summit Logistics", notes: "2 semis round trip", est: "3200", act: "3200", paid: false } ],
+    misc: [ { id: uid(), name: "Expendables (gaff, batteries, etc.)", est: "400", act: "365" } ],
+    perDiemRate: "65",
+    billableEst: "42000",
+    billableAct: "42000",
+  };
+}
 function blankEvent() {
   const today = new Date().toISOString().slice(0, 10);
   return {
@@ -784,6 +940,22 @@ function Callboard({ auth, onLogout }) {
     }
   }
 
+  async function newDemoEvent() {
+    try {
+      const e = demoEvent();
+      const created = await createEvent({ name: e.name, client: e.client, startDate: e.startDate, endDate: e.endDate, data: e, password: "" });
+      e.id = created.id;
+      setEvents((prev) => [...prev, created]);
+      loadingRef.current = true;
+      setCurrentId(e.id);
+      setEvent(e);
+      setTab("home");
+      flash("Demo event created — explore or delete it anytime");
+    } catch (err) {
+      flash(err.message || "Couldn't create demo");
+    }
+  }
+
   async function duplicateEvent() {
     if (!event) return;
     const e = clone(event);
@@ -907,6 +1079,7 @@ function Callboard({ auth, onLogout }) {
             </div>
             <div className="top-actions">
               <button className="btn" onClick={newEvent}>+ New</button>
+              <button className="btn ghost" onClick={newDemoEvent} title="Create a fully populated fictional event for demos">Demo</button>
               <button className="btn ghost" onClick={duplicateEvent}>Duplicate</button>
               <button className="btn ghost" onClick={() => setShowAccessOpen(true)}>Show access</button>
               <button className="btn danger ghost" onClick={deleteEvent}>Delete</button>
@@ -2158,6 +2331,14 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const [colMgr, setColMgr] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [toSchedOpen, setToSchedOpen] = useState(false);
+  const [impOpen, setImpOpen] = useState(false);
+  const [impText, setImpText] = useState("");
+  const [impBusy, setImpBusy] = useState(false);
+  const [impErr, setImpErr] = useState("");
+  const [impDays, setImpDays] = useState(null);
+  const impFileRef = useRef(null);
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
@@ -2232,6 +2413,104 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
       try { await navigator.clipboard.writeText(r.url); } catch (e) {}
     } catch (e) { setShareLinks((m) => ({ ...m, [shareId]: "Could not generate link — save the show first, then retry." })); }
   };
+  const schedDayCount = (event.schedule || []).length;
+  const schedCount = (event.schedule || []).reduce((n, d) => n + (d.items || []).length, 0);
+  const scheduleToRows = () => {
+    const out = [];
+    let firstStart = "", needRoom = false;
+    (event.schedule || []).forEach((day) => {
+      out.push({ id: uid(), kind: "section", title: (day.label || "Day") + (day.date ? " · " + prettyDate(day.date) : ""), color: "" });
+      (day.items || []).forEach((it) => {
+        if (!firstStart && it.time) firstStart = it.time;
+        const cells = { seg: it.activity || "", notes: it.notes || "" };
+        if (it.room) { cells.room = it.room; needRoom = true; }
+        out.push({ id: uid(), kind: "item", dur: schedDur(it.time, it.end), color: it.color || "", done: !!it.done, cells });
+      });
+    });
+    return { rows: out, firstStart, needRoom };
+  };
+  const agendaToRows = (days) => {
+    const out = [];
+    let firstStart = "";
+    (days || []).forEach((day) => {
+      out.push({ id: uid(), kind: "section", title: (day.label || "Schedule") + (day.date ? " · " + day.date : ""), color: "" });
+      const its = day.items || [];
+      its.forEach((it, i) => {
+        if (!firstStart && it.time) firstStart = it.time;
+        let dur = "";
+        const a = schedMinutes(it.time), nxt = its[i + 1];
+        if (a != null && nxt && schedMinutes(nxt.time) != null) { let d = schedMinutes(nxt.time) - a; if (d < 0) d += 1440; if (d > 0) dur = String(d); }
+        out.push({ id: uid(), kind: "item", dur, color: "", done: false, cells: { seg: it.activity || "" } });
+      });
+    });
+    return { rows: out, firstStart, needRoom: false };
+  };
+  const applyRows = (built, mode) => {
+    if (!built.rows.length) return;
+    mut((r) => {
+      if (built.needRoom && !(r.columns || []).some((c) => c.id === "room")) {
+        r.columns = r.columns || [];
+        const idx = r.columns.findIndex((c) => c.id === "seg");
+        const roomCol = { id: "room", type: "text", label: "Room" };
+        if (idx >= 0) r.columns.splice(idx + 1, 0, roomCol); else r.columns.push(roomCol);
+      }
+      r.rows = mode === "replace" ? built.rows : (r.rows || []).concat(built.rows);
+      if (built.firstStart && !r.start) r.start = built.firstStart;
+    });
+  };
+  const copyFromSchedule = (mode) => { applyRows(scheduleToRows(), mode); setCopyOpen(false); };
+  const parseText = async () => {
+    if (!impText.trim()) return;
+    setImpBusy(true); setImpErr(""); setImpDays(null);
+    try { const r = await importAgenda({ text: impText }); setImpDays(r.days || []); }
+    catch (e) { setImpErr(e.message || "Couldn't read that agenda"); }
+    setImpBusy(false);
+  };
+  const parsePdf = async (file) => {
+    if (!file) return;
+    setImpBusy(true); setImpErr(""); setImpDays(null);
+    try {
+      const base64 = await new Promise((res, rej) => { const rr = new FileReader(); rr.onload = (ev) => res(ev.target.result.split(",")[1]); rr.onerror = () => rej(new Error("Couldn't read that file")); rr.readAsDataURL(file); });
+      const r = await importAgenda({ pdf: base64 }); setImpDays(r.days || []);
+    } catch (e) { setImpErr(e.message || "Couldn't read that PDF"); }
+    setImpBusy(false);
+  };
+  const applyAgenda = (mode) => { if (!impDays || !impDays.length) return; applyRows(agendaToRows(impDays), mode); setImpOpen(false); setImpText(""); setImpDays(null); setImpErr(""); };
+  const copyOneDay = (dayId) => {
+    const day = (event.schedule || []).find((d) => d.id === dayId);
+    if (!day) return;
+    const out = [];
+    let needRoom = false;
+    out.push({ id: uid(), kind: "section", title: (day.label || "Day") + (day.date ? " · " + prettyDate(day.date) : ""), color: "" });
+    (day.items || []).forEach((it) => {
+      const cells = { seg: it.activity || "", notes: it.notes || "" };
+      if (it.room) { cells.room = it.room; needRoom = true; }
+      out.push({ id: uid(), kind: "item", dur: schedDur(it.time, it.end), color: it.color || "", done: !!it.done, cells });
+    });
+    applyRows({ rows: out, firstStart: (day.items && day.items[0] && day.items[0].time) || "", needRoom }, "append");
+  };
+  const rundownToSchedule = () => {
+    const textCols = columns.filter((c) => c.type === "text");
+    const days = [];
+    let cur = null;
+    const ensureDay = (title) => { cur = { id: uid(), label: title || "Run of Show", date: "", items: [] }; days.push(cur); };
+    rows.forEach((r) => {
+      if (r.kind === "section") { ensureDay(r.title); return; }
+      if (!cur) ensureDay("Run of Show");
+      const pl = planned[r.id] || {};
+      const seg = r.cells ? r.cells.seg || "" : "";
+      const roomV = r.cells ? r.cells.room || "" : "";
+      let notesV = r.cells ? r.cells.notes || "" : "";
+      textCols.forEach((c) => {
+        if (c.id === "seg" || c.id === "notes" || c.id === "room") return;
+        const v = r.cells ? r.cells[c.id] || "" : "";
+        if (v) notesV = (notesV ? notesV + " · " : "") + c.label + ": " + v;
+      });
+      cur.items.push({ id: uid(), time: pl.start == null ? "" : fmtTOD(pl.start), end: pl.end == null ? "" : fmtTOD(pl.end), activity: seg, room: roomV, notes: notesV, color: r.color || "", done: !!r.done });
+    });
+    return days;
+  };
+  const copyToSchedule = (mode) => { const days = rundownToSchedule(); if (!days.length) return; update((ev) => { ev.schedule = mode === "replace" ? days : (ev.schedule || []).concat(days); }); setToSchedOpen(false); };
   const startShow = () => mut((r) => { r.run = { on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() }; });
   const endShow = () => mut((r) => { r.run.on = false; });
   const nextSeg = () => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); if (r.run.segIdx < its.length - 1) { r.run.segIdx++; r.run.segStart = Date.now(); } else { r.run.on = false; } });
@@ -2296,6 +2575,74 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           <span className="rd-total">Total runtime: {Math.floor(totalDur / 60)}h {totalDur % 60}m · {items.length} segment{items.length === 1 ? "" : "s"}</span>
           <button className={"ts-batchbtn" + (colMgr ? " on" : "")} onClick={() => setColMgr((v) => !v)}>Edit columns</button>
           {isAdmin && <button className={"ts-batchbtn" + (shareOpen ? " on" : "")} onClick={() => setShareOpen((v) => !v)}>Share links</button>}
+          <button className={"ts-batchbtn" + (copyOpen ? " on" : "")} onClick={() => { setCopyOpen((v) => !v); setImpOpen(false); }}>Copy from Schedule</button>
+          <button className={"ts-batchbtn" + (impOpen ? " on" : "")} onClick={() => { setImpOpen((v) => !v); setCopyOpen(false); setImpDays(null); setImpErr(""); }}>Import agenda</button>
+          <button className={"ts-batchbtn" + (toSchedOpen ? " on" : "")} onClick={() => { setToSchedOpen((v) => !v); setCopyOpen(false); setImpOpen(false); }}>Rundown → Schedule</button>
+        </div>
+      )}
+
+      {canEdit && copyOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Copy the Schedule tab into this rundown</div>
+          <p className="rd-sharehint">{schedCount} line{schedCount === 1 ? "" : "s"} across {schedDayCount} day{schedDayCount === 1 ? "" : "s"} come in as sections + segments. Start/end times become durations you can fine-tune; colors, notes & rooms carry over.</p>
+          {schedDayCount > 0 && (
+            <div className="rd-daylist">
+              {(event.schedule || []).map((d) => (
+                <div className="rd-dayrow" key={d.id}>
+                  <span>{d.label || "Day"}{d.date ? " · " + prettyDate(d.date) : ""} — {(d.items || []).length} line{(d.items || []).length === 1 ? "" : "s"}</span>
+                  <button className="wd-btn" onClick={() => copyOneDay(d.id)}>Add this day</button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="ts-batch-actions">
+            <button className="wd-btn" onClick={() => copyFromSchedule("append")} disabled={!schedCount}>Add to rundown</button>
+            <button className="ts-batch-apply" onClick={() => copyFromSchedule("replace")} disabled={!schedCount}>Replace rundown</button>
+            <button className="ts-batch-cancel" onClick={() => setCopyOpen(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {canEdit && impOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Import agenda / run of show — paste it or upload a PDF</div>
+          <textarea className="imp-text" rows={6} placeholder="Paste your agenda or run of show here…" value={impText} onChange={(e) => setImpText(e.target.value)} />
+          <div className="ts-batch-actions" style={{ justifyContent: "flex-start" }}>
+            <button className="ts-batchbtn" onClick={parseText} disabled={impBusy || !impText.trim()}>{impBusy ? "Reading…" : "Read pasted text"}</button>
+            <button className="wd-btn" onClick={() => impFileRef.current && impFileRef.current.click()} disabled={impBusy}>Upload PDF</button>
+            <input ref={impFileRef} type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; parsePdf(f); }} />
+            <button className="ts-batch-cancel" onClick={() => { setImpOpen(false); setImpDays(null); setImpErr(""); }}>Close</button>
+          </div>
+          {impErr && <p className="sv-note warn">{impErr}</p>}
+          {impDays && (
+            <div className="imp-preview">
+              <div className="imp-preview-h">Found {impDays.length} day{impDays.length === 1 ? "" : "s"} · {impDays.reduce((n, d) => n + (d.items ? d.items.length : 0), 0)} lines — review, then add or replace</div>
+              {impDays.map((d, di) => (
+                <div className="imp-day" key={di}>
+                  <div className="imp-day-h">{d.label}{d.date ? " · " + d.date : ""}</div>
+                  {(d.items || []).map((it, ii) => (
+                    <div className="imp-item" key={ii}><span className="imp-item-time">{it.time || "—"}</span><span>{it.activity}</span></div>
+                  ))}
+                </div>
+              ))}
+              <div className="ts-batch-actions">
+                <button className="wd-btn" onClick={() => applyAgenda("append")}>Add to rundown</button>
+                <button className="ts-batch-apply" onClick={() => applyAgenda("replace")}>Replace rundown</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {canEdit && toSchedOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Copy this rundown into the Schedule tab</div>
+          <p className="rd-sharehint">Each section becomes a day and each segment a line, using the rundown’s calculated start/end times. Colors, notes & rooms carry over; any extra columns fold into the line’s notes.</p>
+          <div className="ts-batch-actions">
+            <button className="wd-btn" onClick={() => copyToSchedule("append")} disabled={!rows.length}>Add to Schedule</button>
+            <button className="ts-batch-apply" onClick={() => copyToSchedule("replace")} disabled={!rows.length}>Replace Schedule</button>
+            <button className="ts-batch-cancel" onClick={() => setToSchedOpen(false)}>Cancel</button>
+          </div>
         </div>
       )}
 
@@ -6593,6 +6940,8 @@ const CSS = `
 .cb .rd-coltype{font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint); width:40px;}
 .cb .rd-collock{opacity:.6; font-size:13px; width:24px; text-align:center;}
 .cb .rd-sharehint{color:var(--dim); font-size:13px; padding:4px 0 8px;}
+.cb .rd-daylist{display:flex; flex-direction:column; gap:8px; margin:6px 0 14px; border-top:1px solid var(--line); padding-top:12px;}
+.cb .rd-dayrow{display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink);}
 .cb .rd-share{border:1px solid var(--line); border-radius:9px; padding:12px; margin-bottom:12px;}
 .cb .rd-share-top{display:flex; gap:8px; align-items:center; margin-bottom:10px;}
 .cb .rd-share-cols{display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px 14px;}
