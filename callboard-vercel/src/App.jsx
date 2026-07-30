@@ -291,6 +291,8 @@ function normalize(e) {
   e.rundown.rows.forEach((r) => { if (r.kind === "item" && !r.cells) r.cells = { seg: r.name || "", resp: r.responsible || "", notes: r.notes || "" }; });
   if (typeof e.rundownUnlocked !== "boolean") e.rundownUnlocked = false;
   if (!Array.isArray(e.rundown.shares)) e.rundown.shares = [];
+  if (!Array.isArray(e.todos)) e.todos = [];
+  if (typeof e.todosUnlocked !== "boolean") e.todosUnlocked = false;
   e.callTimes = e.callTimes || {};
   e.surveys = e.surveys || [];
   e.itinerary = e.itinerary || { hotelName: "", hotelAddress: "", stays: [], flights: [] };
@@ -1136,10 +1138,11 @@ function Callboard({ auth, onLogout }) {
             </button>
           </div>
           <main className="content" data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
-            {tab === "mycall" && <MyCallTab event={event} showId={currentId} />}
+            {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
             {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
+            {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
             {tab === "itinerary" && <LockWrapper canEdit={canEditTabs || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
@@ -1181,6 +1184,7 @@ const SECTIONS = [
   { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A" },
   { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC" },
   { key: "rundown", label: "Run of Show", desc: "Live rundown & show clock", color: "#E8683D" },
+  { key: "todos", label: "To-Do", desc: "Tasks & assignments", color: "#E9C46A" },
   { key: "documents", label: "Show Documents", desc: "Show flows & agendas", color: "#4EA8DE" },
   { key: "itinerary", label: "Itinerary", desc: "Hotels & flights", color: "#46C5B8" },
   { key: "notes", label: "Meals & Notes", desc: "Catering, pre-con notes", color: "#F0895C" },
@@ -1256,6 +1260,8 @@ function tileStat(key, event) {
         }
       return `${fmtHrs(t)} hrs logged`;
     }
+    case "rundown": { const n = (event.rundown && event.rundown.rows ? event.rundown.rows : []).filter((r) => r.kind === "item").length; return `${n} segment${n === 1 ? "" : "s"}`; }
+    case "todos": { const open = (event.todos || []).filter((t) => !t.done).length; const over = (event.todos || []).filter(todoOverdue).length; return over > 0 ? `${open} open · ${over} overdue` : `${open} open`; }
     case "costing": return "Admin only";
     case "roster": return "Admin only";
     default: return "";
@@ -1267,6 +1273,7 @@ const TAB_LOCKS = [
   { label: "Brief",          key: "briefUnlocked" },
   { label: "Schedule",       key: "scheduleUnlocked" },
   { label: "Run of Show",    key: "rundownUnlocked" },
+  { label: "To-Do",          key: "todosUnlocked" },
   { label: "Show Documents", key: "documentsUnlocked" },
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
@@ -1629,7 +1636,7 @@ function SurveyTab({ event, update, showId }) {
 }
 
 
-function MyCallTab({ event, showId }) {
+function MyCallTab({ event, showId, update }) {
   const key = "callboard_me_" + showId;
   const [meId, setMeId] = useState(() => {
     try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
@@ -1640,6 +1647,8 @@ function MyCallTab({ event, showId }) {
 
   const named = event.crew.filter((c) => (c.name || "").trim());
 
+  const openTasksFor = (name) => (event.todos || []).filter((t) => t.assignee === name && !t.done).length;
+  const overdueFor = (name) => (event.todos || []).filter((t) => t.assignee === name && todoOverdue(t)).length;
   if (!me) {
     return (
       <div className="mc-wrap">
@@ -1650,6 +1659,7 @@ function MyCallTab({ event, showId }) {
             <button key={c.id} className="mc-pick" onClick={() => pick(c.id)}>
               <span className="mc-pick-name">{c.name}</span>
               {c.position && <span className="mc-pick-pos">{c.position}</span>}
+              {openTasksFor(c.name) > 0 && <span className={"mc-pick-badge" + (overdueFor(c.name) ? " over" : "")}>{openTasksFor(c.name)}</span>}
             </button>
           ))}
           {!named.length && <div className="mc-empty">No crew have been added to this show yet.</div>}
@@ -1673,6 +1683,17 @@ function MyCallTab({ event, showId }) {
     return dt.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   };
 
+  const myTasks = (event.todos || [])
+    .filter((t) => me && t.assignee === me.name)
+    .slice()
+    .sort((a, b) => {
+      if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+      if (!a.done && !!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;
+      const ak = (a.due || "9999-99-99") + "|" + String(schedMinutes(a.dueTime) == null ? 99999 : schedMinutes(a.dueTime)).padStart(5, "0");
+      const bk = (b.due || "9999-99-99") + "|" + String(schedMinutes(b.dueTime) == null ? 99999 : schedMinutes(b.dueTime)).padStart(5, "0");
+      return ak < bk ? -1 : ak > bk ? 1 : 0;
+    });
+  const toggleTask = (id) => update && update((ev) => { if (!Array.isArray(ev.todos)) return; const x = ev.todos.find((z) => z.id === id); if (x) x.done = !x.done; });
   return (
     <div className="mc-wrap">
       <div className="mc-head">
@@ -1692,6 +1713,30 @@ function MyCallTab({ event, showId }) {
         <div className="mc-call muted">
           <div className="mc-call-lbl">Your call time</div>
           <div className="mc-call-time dim">See schedule below</div>
+        </div>
+      )}
+
+      {myTasks.length > 0 && (
+        <div className="mc-tasks">
+          <div className="mc-tasks-h">Your tasks <span className="mc-tasks-count">{myTasks.filter((t) => !t.done).length} open</span></div>
+          {myTasks.map((t) => {
+            const pr = todoPri(t.priority);
+            return (
+              <label className={"mc-task" + (t.done ? " done" : "")} key={t.id}>
+                <input type="checkbox" checked={!!t.done} onChange={() => toggleTask(t.id)} />
+                <span className="mc-task-body">
+                  <span className="mc-task-title">{t.urgent && !t.done && <span className="mc-task-flag">URGENT</span>}{todoOverdue(t) && <span className="mc-task-flag over">OVERDUE</span>}{t.title || "Untitled task"}</span>
+                  {(t.due || t.dueTime || (t.priority && t.priority !== "")) && (
+                    <span className="mc-task-meta">
+                      {t.priority && <span style={{ color: pr.color === "transparent" ? "var(--dim)" : pr.color }}>{pr.label} priority</span>}
+                      {(t.due || t.dueTime) && <span className={todoOverdue(t) ? "mc-task-over" : ""}>Due {t.due ? prettyDate(t.due) : ""}{t.dueTime ? " · " + t.dueTime : ""}</span>}
+                    </span>
+                  )}
+                  {t.notes && <span className="mc-task-notes">{t.notes}</span>}
+                </span>
+              </label>
+            );
+          })}
         </div>
       )}
 
@@ -2746,6 +2791,109 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   );
 }
 
+function todoOverdue(t) {
+  if (!t || t.done || !t.due) return false;
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const today = d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+  if (t.due < today) return true;
+  if (t.due > today) return false;
+  if (!t.dueTime) return false;
+  const m = schedMinutes(t.dueTime);
+  if (m == null) return false;
+  return d.getHours() * 60 + d.getMinutes() > m;
+}
+const TODO_PRI = [
+  { key: "high", label: "High", color: "#EF4444" },
+  { key: "med", label: "Med", color: "#F59E0B" },
+  { key: "low", label: "Low", color: "#22C55E" },
+  { key: "", label: "—", color: "transparent" },
+];
+const todoPri = (k) => TODO_PRI.find((x) => x.key === k) || TODO_PRI[3];
+function TodoTab({ event, update, isAdmin, editor }) {
+  const unlocked = !!event.todosUnlocked;
+  const canEdit = isAdmin || editor || unlocked;
+  const todos = event.todos || [];
+  const [filter, setFilter] = useState("open");
+  const [who, setWho] = useState("");
+  const mut = (fn) => update((ev) => { if (!Array.isArray(ev.todos)) ev.todos = []; fn(ev.todos); });
+  const set = (id, k, v) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x[k] = v; });
+  const add = () => mut((t) => t.push({ id: uid(), title: "", assignee: "", due: "", dueTime: "", priority: "", urgent: false, done: false, notes: "" }));
+  const remove = (id) => mut((t) => { const i = t.findIndex((z) => z.id === id); if (i >= 0) t.splice(i, 1); });
+  const toggle = (id) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x.done = !x.done; });
+  const priRank = (k) => (k === "high" ? 0 : k === "med" ? 1 : k === "low" ? 2 : 3);
+  const shown = todos
+    .filter((t) => (filter === "open" ? !t.done : filter === "done" ? t.done : true))
+    .filter((t) => (who ? t.assignee === who : true))
+    .slice()
+    .sort((a, b) => {
+      if (!!a.done !== !!b.done) return a.done ? 1 : -1;
+      if (!a.done && !!a.urgent !== !!b.urgent) return a.urgent ? -1 : 1;
+      const ak = (a.due || "9999-99-99") + "|" + String(schedMinutes(a.dueTime) == null ? 99999 : schedMinutes(a.dueTime)).padStart(5, "0");
+      const bk = (b.due || "9999-99-99") + "|" + String(schedMinutes(b.dueTime) == null ? 99999 : schedMinutes(b.dueTime)).padStart(5, "0");
+      if (ak !== bk) return ak < bk ? -1 : 1;
+      return priRank(a.priority) - priRank(b.priority);
+    });
+  const openCount = todos.filter((t) => !t.done).length;
+  const doneCount = todos.length - openCount;
+  const names = (event.crew || []).filter((c) => c.name).map((c) => c.name);
+  return (
+    <div className="stack">
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.todosUnlocked = !unlocked))}>{unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}</button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 To-Do locked — view only</span>
+          )}
+          {isAdmin && <span className="pl-lockhint">{unlocked ? "Any crew on this show can add & check off tasks." : "Only you (admin) & editors can edit tasks."}</span>}
+        </div>
+      </div>
+      <div className="tab-lead">
+        <p>Track anything that needs doing and assign it to crew. {openCount} open · {doneCount} done.</p>
+        {canEdit && <AddBtn onClick={add}>Task</AddBtn>}
+      </div>
+      <div className="todo-filters">
+        {["open", "all", "done"].map((f) => (
+          <button key={f} className={"todo-chip" + (filter === f ? " on" : "")} onClick={() => setFilter(f)}>{f[0].toUpperCase() + f.slice(1)}</button>
+        ))}
+        <select className="todo-who" value={who} onChange={(e) => setWho(e.target.value)}>
+          <option value="">Everyone</option>
+          {names.map((n) => <option key={n} value={n}>{n}</option>)}
+        </select>
+      </div>
+      {shown.length === 0 ? (
+        <Panel title="To-Do"><Empty>{canEdit ? "No tasks here. Add one to get started." : "No tasks yet."}</Empty></Panel>
+      ) : (
+        <div className="todo-scroll">
+          <div className="rowhead todo-grid"><span /><span title="Urgent">🚩</span><span>Task</span><span>Assignee</span><span>Due</span><span>By</span><span>Priority</span><span>Notes</span><span /></div>
+          {shown.map((t) => {
+            const pr = todoPri(t.priority);
+            return (
+              <div className={"row todo-grid" + (t.done ? " sched-done" : "") + (todoOverdue(t) ? " todo-over" : "")} key={t.id} style={{ borderLeft: "4px solid " + ((t.urgent && !t.done) || todoOverdue(t) ? "#EF4444" : pr.color) }}>
+                <span className="todo-ck"><input type="checkbox" checked={!!t.done} disabled={!canEdit} onChange={() => toggle(t.id)} /></span>
+                {canEdit ? <button className={"todo-flag" + (t.urgent ? " on" : "")} title="Flag urgent" onClick={() => set(t.id, "urgent", !t.urgent)}>🚩</button> : <span className="todo-flag-ro">{t.urgent ? "🚩" : ""}</span>}
+                {canEdit ? <input value={t.title || ""} placeholder="What needs doing?" onChange={(e) => set(t.id, "title", e.target.value)} /> : <span>{t.title}</span>}
+                {canEdit ? <CrewSelect crew={event.crew} value={t.assignee} onChange={(e) => set(t.id, "assignee", e.target.value)} /> : <span>{t.assignee || "—"}</span>}
+                {canEdit ? <input type="date" value={t.due || ""} onChange={(e) => set(t.id, "due", e.target.value)} /> : <span className="rd-time">{t.due ? prettyDate(t.due) : "—"}</span>}
+                {canEdit ? <input className="rd-time" value={t.dueTime || ""} placeholder="By" onChange={(e) => set(t.id, "dueTime", e.target.value)} onBlur={(e) => set(t.id, "dueTime", fmtSchedTime(e.target.value))} /> : <span className="rd-time">{t.dueTime || ""}</span>}
+                {canEdit ? (
+                  <select value={t.priority || ""} onChange={(e) => set(t.id, "priority", e.target.value)}>{TODO_PRI.map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}</select>
+                ) : <span style={{ color: pr.color === "transparent" ? "var(--dim)" : pr.color, fontWeight: 700 }}>{pr.label}</span>}
+                {canEdit ? <input value={t.notes || ""} placeholder="Notes" onChange={(e) => set(t.id, "notes", e.target.value)} /> : <span>{t.notes}</span>}
+                {canEdit ? <RemoveBtn onClick={() => remove(t.id)} /> : <span />}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 function ScheduleTab({ event, update, isAdmin, editor }) {
   const unlocked = !!event.scheduleUnlocked;
   const canEdit = isAdmin || editor || unlocked;
@@ -6942,6 +7090,37 @@ const CSS = `
 .cb .rd-sharehint{color:var(--dim); font-size:13px; padding:4px 0 8px;}
 .cb .rd-daylist{display:flex; flex-direction:column; gap:8px; margin:6px 0 14px; border-top:1px solid var(--line); padding-top:12px;}
 .cb .rd-dayrow{display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink);}
+.cb .todo-filters{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px;}
+.cb .todo-chip{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:7px 15px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .todo-chip.on{background:var(--amber); color:#101218; border-color:var(--amber);}
+.cb .todo-who{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:7px 10px; font-size:13px; margin-left:4px;}
+.cb .todo-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+.cb .todo-grid{display:grid; grid-template-columns:34px 40px minmax(150px,1.5fr) 140px 124px 88px 80px minmax(110px,1fr) 28px; gap:8px; align-items:center; min-width:880px;}
+.cb .todo-flag{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:6px; width:30px; height:30px; cursor:pointer; font-size:13px; padding:0; opacity:.5;}
+.cb .todo-flag.on{background:rgba(239,68,68,.18); border-color:#EF4444; opacity:1;}
+.cb .todo-flag-ro{text-align:center;}
+.cb .mc-tasks{background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:14px 16px; margin-bottom:16px;}
+.cb .mc-tasks-h{font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-bottom:8px; display:flex; gap:10px; align-items:center;}
+.cb .mc-tasks-count{color:var(--amber);}
+.cb .mc-task{display:flex; gap:11px; align-items:flex-start; padding:9px 0; border-bottom:1px solid var(--line); cursor:pointer;}
+.cb .mc-task:last-child{border-bottom:none;}
+.cb .mc-task input{width:19px; height:19px; margin-top:2px; accent-color:var(--green); cursor:pointer; flex:0 0 auto;}
+.cb .mc-task.done .mc-task-title{text-decoration:line-through; color:var(--dim);}
+.cb .mc-task-body{display:flex; flex-direction:column; gap:3px; min-width:0;}
+.cb .mc-task-title{font-size:15px; font-weight:600; display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+.cb .mc-task-flag{background:#EF4444; color:#fff; font-size:10px; font-weight:800; padding:2px 7px; border-radius:5px; letter-spacing:.05em;}
+.cb .mc-task-meta{display:flex; gap:14px; flex-wrap:wrap; font-size:12.5px; color:var(--dim); font-weight:600;}
+.cb .mc-task-notes{font-size:13px; color:var(--dim);}
+.cb .mc-task-flag.over{background:#DC2626;}
+.cb .mc-task-over{color:#f87171; font-weight:700;}
+.cb .todo-over{background:rgba(239,68,68,.07);}
+.cb .mc-pick{position:relative;}
+.cb .mc-pick-badge{position:absolute; top:8px; right:8px; min-width:22px; height:22px; padding:0 6px; border-radius:11px; background:var(--amber); color:#101218; font-size:12px; font-weight:800; display:flex; align-items:center; justify-content:center;}
+.cb .mc-pick-badge.over{background:#DC2626; color:#fff;}
+.cb .todo-grid.row{padding:6px 6px 6px 4px; border-radius:0 6px 6px 0; margin-bottom:4px; background:var(--panel);}
+.cb .rowhead.todo-grid{padding:0 6px 5px 12px;}
+.cb .todo-ck{display:flex; align-items:center; justify-content:center;}
+.cb .todo-ck input{width:17px; height:17px; accent-color:var(--green); cursor:pointer;}
 .cb .rd-share{border:1px solid var(--line); border-radius:9px; padding:12px; margin-bottom:12px;}
 .cb .rd-share-top{display:flex; gap:8px; align-items:center; margin-bottom:10px;}
 .cb .rd-share-cols{display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px 14px;}
