@@ -12,6 +12,7 @@ import {
   setPassword as dbSetPassword,
   setShowPasswords,
   generateSurveyLink,
+  generateRundownShareLink,
   importAgenda,
   listTemplates,
   createTemplate,
@@ -275,6 +276,21 @@ function normalize(e) {
   e.contacts = e.contacts || [];
   e.crew = e.crew || [];
   e.schedule = e.schedule || [];
+  e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
+  if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
+  if (!e.rundown.run) e.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
+  if (!(Array.isArray(e.rundown.columns) && e.rundown.columns.length)) e.rundown.columns = [
+    { id: "num", type: "num", label: "#" },
+    { id: "start", type: "start", label: "Start" },
+    { id: "dur", type: "dur", label: "Dur" },
+    { id: "seg", type: "text", label: "Segment" },
+    { id: "end", type: "end", label: "End" },
+    { id: "resp", type: "text", label: "Responsible" },
+    { id: "notes", type: "text", label: "Notes/Equipment" },
+  ];
+  e.rundown.rows.forEach((r) => { if (r.kind === "item" && !r.cells) r.cells = { seg: r.name || "", resp: r.responsible || "", notes: r.notes || "" }; });
+  if (typeof e.rundownUnlocked !== "boolean") e.rundownUnlocked = false;
+  if (!Array.isArray(e.rundown.shares)) e.rundown.shares = [];
   e.callTimes = e.callTimes || {};
   e.surveys = e.surveys || [];
   e.itinerary = e.itinerary || { hotelName: "", hotelAddress: "", stays: [], flights: [] };
@@ -631,7 +647,7 @@ function Callboard({ auth, onLogout }) {
   const isShowAdmin = level === "admin";                       // sees P&L + Roster, edits everything on this show
   const isEditor = level === "editor";                         // edits production tabs, no P&L / Roster
   const canEditTabs = isShowAdmin || isEditor;                 // may edit tab content
-  const levelLabel = isSuperAdmin ? "Admin \u00b7 all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
+  const levelLabel = isSuperAdmin ? "Admin · all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
   const [showAccessOpen, setShowAccessOpen] = useState(false);
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
@@ -950,6 +966,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} />}
             {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
             {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
             {tab === "itinerary" && <LockWrapper canEdit={canEditTabs || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
@@ -990,6 +1007,7 @@ const SECTIONS = [
   { key: "mycall", label: "My Call Sheet", desc: "Your call time, hotel & travel", color: "#00B4D8" },
   { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A" },
   { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC" },
+  { key: "rundown", label: "Run of Show", desc: "Live rundown & show clock", color: "#E8683D" },
   { key: "documents", label: "Show Documents", desc: "Show flows & agendas", color: "#4EA8DE" },
   { key: "itinerary", label: "Itinerary", desc: "Hotels & flights", color: "#46C5B8" },
   { key: "notes", label: "Meals & Notes", desc: "Catering, pre-con notes", color: "#F0895C" },
@@ -1075,6 +1093,7 @@ function tileStat(key, event) {
 const TAB_LOCKS = [
   { label: "Brief",          key: "briefUnlocked" },
   { label: "Schedule",       key: "scheduleUnlocked" },
+  { label: "Run of Show",    key: "rundownUnlocked" },
   { label: "Show Documents", key: "documentsUnlocked" },
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
@@ -2070,6 +2089,312 @@ function DayCallStrip({ event, dayId }) {
       {groups.map(([t, names]) => (
         <span className="sched-calls-grp" key={t}><b>{t}</b> {names.join(", ")}</span>
       ))}
+    </div>
+  );
+}
+
+function fmtTOD(min) {
+  if (min == null || isNaN(min)) return "—";
+  let m = Math.round(min);
+  m = ((m % 1440) + 1440) % 1440;
+  let h = Math.floor(m / 60), mm = m % 60;
+  const ap = h < 12 ? "AM" : "PM";
+  let h12 = h % 12; if (h12 === 0) h12 = 12;
+  return h12 + ":" + String(mm).padStart(2, "0") + " " + ap;
+}
+function todClock(ms) {
+  const d = new Date(ms);
+  let h = d.getHours();
+  const ap = h < 12 ? "AM" : "PM";
+  let h12 = h % 12 || 12;
+  return h12 + ":" + String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0") + " " + ap;
+}
+function parseDur(v) {
+  if (v == null) return 0;
+  const t = String(v).trim().toLowerCase();
+  if (!t) return 0;
+  const colon = t.match(/^(\d+):(\d+)$/);
+  if (colon) return parseInt(colon[1], 10) * 60 + parseInt(colon[2], 10);
+  const hm = t.match(/^(\d+)\s*h\s*(\d+)?\s*m?$/);
+  if (hm) return parseInt(hm[1], 10) * 60 + (hm[2] ? parseInt(hm[2], 10) : 0);
+  const hOnly = t.match(/^(\d+(?:\.\d+)?)\s*h$/);
+  if (hOnly) return Math.round(parseFloat(hOnly[1]) * 60);
+  const num = parseFloat(t.replace(/[^0-9.]/g, ""));
+  return isNaN(num) ? 0 : Math.round(num);
+}
+function fmtClock(sec) {
+  const neg = sec < 0;
+  let a = Math.abs(Math.round(sec));
+  const m = Math.floor(a / 60), ss = a % 60;
+  return (neg ? "-" : "") + m + ":" + String(ss).padStart(2, "0");
+}
+function fmtLate(sec) {
+  const r = Math.round(sec);
+  if (Math.abs(r) < 30) return "on time";
+  const a = Math.abs(r), m = Math.floor(a / 60), ss = a % 60;
+  const body = (m ? m + "m " : "") + ss + "s";
+  return (r > 0 ? "+" : "−") + body + (r > 0 ? " late" : " early");
+}
+const RD_W = { num: 40, start: 84, dur: 64, end: 84, text: 160 };
+const RD_WCSS = { num: "40px", start: "84px", dur: "64px", end: "84px", text: "minmax(150px,1fr)" };
+const RD_DEFAULT_COLS = [
+  { id: "num", type: "num", label: "#" },
+  { id: "start", type: "start", label: "Start" },
+  { id: "dur", type: "dur", label: "Dur" },
+  { id: "seg", type: "text", label: "Segment" },
+  { id: "end", type: "end", label: "End" },
+  { id: "resp", type: "text", label: "Responsible" },
+  { id: "notes", type: "text", label: "Notes/Equipment" },
+];
+function RundownTab({ event, update, isAdmin, editor, showId }) {
+  const unlocked = !!event.rundownUnlocked;
+  const canEdit = isAdmin || editor || unlocked;
+  const rd = event.rundown || { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS, run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
+  const rows = rd.rows || [];
+  const run = rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 };
+  const columns = rd.columns && rd.columns.length ? rd.columns : RD_DEFAULT_COLS;
+  const visCols = columns.filter((c) => !c.hidden);
+  const [now, setNow] = useState(Date.now());
+  const [colMgr, setColMgr] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareLinks, setShareLinks] = useState({});
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const base = schedMinutes(rd.start);
+  const items = rows.filter((r) => r.kind === "item");
+  const planned = {};
+  let off = 0;
+  rows.forEach((r) => {
+    if (r.kind === "item") {
+      const d = parseDur(r.dur);
+      planned[r.id] = { start: base == null ? null : base + off, end: base == null ? null : base + off + d, dur: d };
+      off += d;
+    }
+  });
+  const totalDur = off;
+  const schedEndMin = base == null ? null : base + totalDur;
+
+  const segItem = run.on ? items[run.segIdx] : null;
+  const segName = segItem ? ((segItem.cells && (segItem.cells.seg || Object.values(segItem.cells).find((x) => x && String(x).trim()))) || "Segment " + (run.segIdx + 1)) : "";
+  let remaining = 0, totalLate = 0;
+  if (run.on && segItem) {
+    const segDurSec = parseDur(segItem.dur) * 60;
+    const elapsed = (now - run.segStart) / 1000;
+    remaining = segDurSec - elapsed;
+    let plannedOff = 0;
+    for (let i = 0; i < run.segIdx; i++) plannedOff += parseDur(items[i].dur);
+    const actualOff = (run.segStart - run.showStart) / 1000;
+    const overage = Math.max(0, elapsed - segDurSec);
+    totalLate = (actualOff - plannedOff * 60) + overage;
+  }
+
+  const gridT = visCols.map((c) => RD_WCSS[c.type] || "minmax(150px,1fr)").join(" ") + (canEdit ? " 150px" : "");
+  const minW = visCols.reduce((sm, c) => sm + (RD_W[c.type] || 160), 0) + (canEdit ? 150 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
+
+  const mut = (fn) => update((ev) => {
+    if (!ev.rundown) ev.rundown = { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS.map((c) => ({ ...c })), run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
+    if (!Array.isArray(ev.rundown.rows)) ev.rundown.rows = [];
+    if (!Array.isArray(ev.rundown.columns) || !ev.rundown.columns.length) ev.rundown.columns = RD_DEFAULT_COLS.map((c) => ({ ...c }));
+    if (!ev.rundown.run) ev.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
+    fn(ev.rundown);
+  });
+  const setRow = (id, k, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x[k] = v; });
+  const setCell = (id, colId, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) { if (!x.cells) x.cells = {}; x.cells[colId] = v; } });
+  const setMeta = (k, v) => mut((r) => { r[k] = v; });
+  const addItem = () => mut((r) => r.rows.push({ id: uid(), kind: "item", dur: "30m", color: "", done: false, cells: {} }));
+  const addSection = () => mut((r) => r.rows.push({ id: uid(), kind: "section", title: "New section", color: "blue" }));
+  const removeRow = (id) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); if (i >= 0) r.rows.splice(i, 1); });
+  const moveRow = (id, dir) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= r.rows.length) return; const [x] = r.rows.splice(i, 1); r.rows.splice(j, 0, x); });
+  const setCol = (id, k, v) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c[k] = v; });
+  const toggleCol = (id) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c.hidden = !c.hidden; });
+  const addCol = () => mut((r) => r.columns.push({ id: uid(), type: "text", label: "New column" }));
+  const removeCol = (id) => mut((r) => { r.columns = r.columns.filter((x) => x.id !== id); });
+  const moveCol = (id, dir) => mut((r) => { const i = r.columns.findIndex((x) => x.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= r.columns.length) return; const [x] = r.columns.splice(i, 1); r.columns.splice(j, 0, x); });
+  const shares = rd.shares || [];
+  const addShare = () => mut((r) => { if (!Array.isArray(r.shares)) r.shares = []; r.shares.push({ id: uid(), name: "New department", cols: columns.map((c) => c.id), editCols: [] }); });
+  const setShare = (id, k, v) => mut((r) => { const x = (r.shares || []).find((z) => z.id === id); if (x) x[k] = v; });
+  const removeShare = (id) => mut((r) => { r.shares = (r.shares || []).filter((z) => z.id !== id); });
+  const toggleShareCol = (id, key, colId) => mut((r) => {
+    const x = (r.shares || []).find((z) => z.id === id); if (!x) return;
+    if (!Array.isArray(x[key])) x[key] = [];
+    const i = x[key].indexOf(colId);
+    if (i >= 0) x[key].splice(i, 1); else x[key].push(colId);
+    if (key === "editCols" && x.editCols.indexOf(colId) >= 0) { if (!Array.isArray(x.cols)) x.cols = []; if (x.cols.indexOf(colId) < 0) x.cols.push(colId); }
+    if (key === "cols" && x.cols.indexOf(colId) < 0) { x.editCols = (x.editCols || []).filter((z) => z !== colId); }
+  });
+  const copyLink = async (shareId) => {
+    try {
+      const r = await generateRundownShareLink(showId, shareId);
+      setShareLinks((m) => ({ ...m, [shareId]: r.url }));
+      try { await navigator.clipboard.writeText(r.url); } catch (e) {}
+    } catch (e) { setShareLinks((m) => ({ ...m, [shareId]: "Could not generate link — save the show first, then retry." })); }
+  };
+  const startShow = () => mut((r) => { r.run = { on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() }; });
+  const endShow = () => mut((r) => { r.run.on = false; });
+  const nextSeg = () => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); if (r.run.segIdx < its.length - 1) { r.run.segIdx++; r.run.segStart = Date.now(); } else { r.run.on = false; } });
+  const prevSeg = () => mut((r) => { if (r.run.segIdx > 0) { r.run.segIdx--; r.run.segStart = Date.now(); } });
+  const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
+  const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
+
+  const renderCell = (r, c, pl, num) => {
+    if (c.type === "num") return <span className="rd-num" key={c.id}>{canEdit ? <input type="checkbox" className="sched-done-ck" checked={!!r.done} title="Mark done" onChange={() => toggleDone(r.id)} /> : num}</span>;
+    if (c.type === "start") return <span className="rd-time" key={c.id}>{pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
+    if (c.type === "end") return <span className="rd-time" key={c.id}>{pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
+    if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder="30m" onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
+    const v = r.cells ? r.cells[c.id] || "" : "";
+    return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
+  };
+
+  return (
+    <div className="stack">
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.rundownUnlocked = !unlocked))}>{unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}</button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 Run of show locked — view only</span>
+          )}
+          {isAdmin && <span className="pl-lockhint">{unlocked ? "Any crew on this show can edit the rundown." : "Only you (admin) & editors can edit the rundown."}</span>}
+        </div>
+      </div>
+
+      <div className="rd-clockbar">
+        <div className="rd-clock-left">
+          <button className={"rd-start" + (run.on ? " live" : "")} onClick={run.on ? endShow : startShow} disabled={!canEdit || !items.length}>{run.on ? "■ End show" : "▶ Start show"}</button>
+          {run.on && (
+            <>
+              <button className="rd-ctrl" onClick={prevSeg} disabled={!canEdit}>◀ Prev</button>
+              <button className="rd-ctrl" onClick={nextSeg} disabled={!canEdit}>Next ▶</button>
+              <button className="rd-ctrl" onClick={() => nudge(-1)} disabled={!canEdit}>−1m</button>
+              <button className="rd-ctrl" onClick={() => nudge(1)} disabled={!canEdit}>+1m</button>
+            </>
+          )}
+        </div>
+        <div className="rd-clock-right">
+          {run.on && segItem && (
+            <div className="rd-countbox">
+              <span className="rd-count-label">On air: {segName}</span>
+              <span className={"rd-count" + (remaining < 0 ? " over" : "")}>{fmtClock(remaining)}</span>
+            </div>
+          )}
+          <div className="rd-tod"><span>Time of day</span><b>{todClock(now)}</b></div>
+          <div className="rd-ends"><span>Rundown ends</span><b>{schedEndMin == null ? "—" : fmtTOD(schedEndMin + (run.on ? totalLate / 60 : 0))}</b>{run.on && <em className={totalLate > 30 ? "late" : totalLate < -30 ? "early" : ""}>{fmtLate(totalLate)}</em>}</div>
+        </div>
+      </div>
+
+      {canEdit && (
+        <div className="rd-config">
+          <label>Show start <input value={rd.start || ""} placeholder="10:00 AM" onChange={(e) => setMeta("start", e.target.value)} onBlur={(e) => setMeta("start", fmtSchedTime(e.target.value))} /></label>
+          <label>Date <input type="date" value={rd.date || ""} onChange={(e) => setMeta("date", e.target.value)} /></label>
+          <span className="rd-total">Total runtime: {Math.floor(totalDur / 60)}h {totalDur % 60}m · {items.length} segment{items.length === 1 ? "" : "s"}</span>
+          <button className={"ts-batchbtn" + (colMgr ? " on" : "")} onClick={() => setColMgr((v) => !v)}>Edit columns</button>
+          {isAdmin && <button className={"ts-batchbtn" + (shareOpen ? " on" : "")} onClick={() => setShareOpen((v) => !v)}>Share links</button>}
+        </div>
+      )}
+
+      {canEdit && colMgr && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Columns — show/hide, rename, reorder, add your own (e.g. Video notes, Audio notes)</div>
+          {columns.map((c) => (
+            <div className="rd-colrow" key={c.id}>
+              <label className="rd-colvis" title={c.hidden ? "Hidden" : "Visible"}><input type="checkbox" checked={!c.hidden} onChange={() => toggleCol(c.id)} /></label>
+              <input className="rd-collabel" value={c.label} onChange={(e) => setCol(c.id, "label", e.target.value)} />
+              <span className="rd-coltype">{c.type === "text" ? "text" : "auto"}</span>
+              <button className="rd-move" onClick={() => moveCol(c.id, -1)}>▲</button>
+              <button className="rd-move" onClick={() => moveCol(c.id, 1)}>▼</button>
+              {c.type === "text" ? <RemoveBtn onClick={() => removeCol(c.id)} /> : <span className="rd-collock" title="Built-in column (can hide/rename/reorder, not delete)">🔒</span>}
+            </div>
+          ))}
+          <div className="rd-addrow"><button className="ts-batchbtn" onClick={addCol}>+ Add column</button></div>
+        </div>
+      )}
+
+      {isAdmin && shareOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Department share links — each link shows only the columns you pick, and can edit only the ones marked “edit”</div>
+          {shares.length === 0 && <p className="rd-sharehint">No links yet. Add one per department (e.g. Video, Audio), choose their columns, then Copy link.</p>}
+          {shares.map((sh) => (
+            <div className="rd-share" key={sh.id}>
+              <div className="rd-share-top">
+                <input className="rd-collabel" value={sh.name || ""} placeholder="Department name" onChange={(e) => setShare(sh.id, "name", e.target.value)} />
+                <button className="ts-batchbtn" onClick={() => copyLink(sh.id)}>Copy link</button>
+                <RemoveBtn onClick={() => removeShare(sh.id)} />
+              </div>
+              <div className="rd-share-cols">
+                {columns.map((c) => (
+                  <div className="rd-share-col" key={c.id}>
+                    <span className="rd-share-colname">{c.label}</span>
+                    <label><input type="checkbox" checked={(sh.cols || []).indexOf(c.id) >= 0} onChange={() => toggleShareCol(sh.id, "cols", c.id)} /> show</label>
+                    <label><input type="checkbox" checked={(sh.editCols || []).indexOf(c.id) >= 0} onChange={() => toggleShareCol(sh.id, "editCols", c.id)} /> edit</label>
+                  </div>
+                ))}
+              </div>
+              {shareLinks[sh.id] && <div className="rd-share-url">{shareLinks[sh.id]}</div>}
+            </div>
+          ))}
+          <div className="rd-addrow"><button className="ts-batchbtn" onClick={addShare}>+ Add department link</button></div>
+        </div>
+      )}
+
+      {rows.length === 0 ? (
+        <Panel title="Run of Show"><Empty>{canEdit ? "No rundown yet. Add a section and segments to build your running order." : "No rundown posted yet."}</Empty></Panel>
+      ) : (
+        <div className="rd-scroll">
+          <div className="rowhead rd-grid" style={{ gridTemplateColumns: gridT, minWidth: minW, paddingLeft: 12 }}>
+            {visCols.map((c) => <span key={c.id}>{c.label}</span>)}
+            {canEdit && <span />}
+          </div>
+          {rows.map((r) => {
+            if (r.kind === "section") {
+              const scol = schedColor(r.color);
+              return (
+                <div className="rd-section" key={r.id} style={{ borderLeft: "4px solid " + scol.bar, background: scol.bg, minWidth: minW }}>
+                  {canEdit ? <input className="rd-section-title" value={r.title || ""} placeholder="Section title" onChange={(e) => setRow(r.id, "title", e.target.value)} /> : <span className="rd-section-title">{r.title}</span>}
+                  {canEdit && (
+                    <div className="rd-rowctrl">
+                      <select value={r.color || ""} onChange={(e) => setRow(r.id, "color", e.target.value)}>{SCHED_COLORS.map((cc) => <option key={cc.key} value={cc.key}>{cc.label}</option>)}</select>
+                      <button className="rd-move" onClick={() => moveRow(r.id, -1)}>▲</button>
+                      <button className="rd-move" onClick={() => moveRow(r.id, 1)}>▼</button>
+                      <RemoveBtn onClick={() => removeRow(r.id)} />
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            const pl = planned[r.id] || {};
+            const scol = schedColor(r.color);
+            const isLive = run.on && segItem && segItem.id === r.id;
+            const num = items.indexOf(r) + 1;
+            return (
+              <div className={"row rd-grid" + (isLive ? " rd-live" : "") + (r.done ? " sched-done" : "")} key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, borderLeft: "4px solid " + scol.bar, background: isLive ? "rgba(34,197,94,.12)" : scol.bg, paddingLeft: 8 }}>
+                {visCols.map((c) => renderCell(r, c, pl, num))}
+                {canEdit && (
+                  <div className="rd-rowctrl">
+                    <select value={r.color || ""} onChange={(e) => setRow(r.id, "color", e.target.value)}>{SCHED_COLORS.map((cc) => <option key={cc.key} value={cc.key}>{cc.label}</option>)}</select>
+                    <button className="rd-move" onClick={() => moveRow(r.id, -1)}>▲</button>
+                    <button className="rd-move" onClick={() => moveRow(r.id, 1)}>▼</button>
+                    <RemoveBtn onClick={() => removeRow(r.id)} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="rd-addrow">
+          <AddBtn onClick={addItem}>Segment</AddBtn>
+          <button className="ts-batchbtn" onClick={addSection}>+ Section</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -4254,7 +4579,7 @@ const pnlNum = (v) => {
   const m = str.match(/-?\d*\.?\d+/);
   return m ? (parseFloat(m[0]) || 0) : 0;
 };
-const pnlMoney = (n) => (n < 0 ? "\u2212$" : "$") + Math.abs(Math.round(n)).toLocaleString();
+const pnlMoney = (n) => (n < 0 ? "−$" : "$") + Math.abs(Math.round(n)).toLocaleString();
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
 
 const PNL_VIEWS = [
@@ -6224,6 +6549,58 @@ const CSS = `
 .cb .sched-ro-row.sched-done{opacity:.48;}
 .cb .sched-ro-row.sched-done .sched-ro-time, .cb .sched-ro-row.sched-done .sched-ro-act{text-decoration:line-through;}
 .cb .sched-hidden-note{font-size:12px; color:var(--faint); font-style:italic; padding:6px 2px 2px;}
+.cb .rd-clockbar{display:flex; flex-wrap:wrap; gap:16px 24px; justify-content:space-between; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px;}
+.cb .rd-clock-left{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+.cb .rd-clock-right{display:flex; gap:22px; align-items:center; flex-wrap:wrap;}
+.cb .rd-start{border:0; border-radius:8px; padding:11px 20px; font-family:'Inter'; font-weight:700; font-size:14px; cursor:pointer; background:var(--green); color:#08120a;}
+.cb .rd-start.live{background:#dc2626; color:#fff;}
+.cb .rd-start:disabled{opacity:.45; cursor:not-allowed;}
+.cb .rd-ctrl{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:9px 12px; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .rd-ctrl:disabled{opacity:.5;}
+.cb .rd-countbox{display:flex; flex-direction:column; align-items:flex-end;}
+.cb .rd-count-label{font-size:11px; color:var(--dim); max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .rd-count{font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--green); line-height:1.1;}
+.cb .rd-count.over{color:#f87171;}
+.cb .rd-tod, .cb .rd-ends{display:flex; flex-direction:column; gap:1px;}
+.cb .rd-tod span, .cb .rd-ends span{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700;}
+.cb .rd-tod b, .cb .rd-ends b{font-size:17px; font-variant-numeric:tabular-nums;}
+.cb .rd-ends em{font-size:12px; font-style:normal; font-weight:700; color:var(--dim);}
+.cb .rd-ends em.late{color:#f87171;}
+.cb .rd-ends em.early{color:var(--green);}
+.cb .rd-config{display:flex; gap:18px; margin-bottom:12px; flex-wrap:wrap; align-items:center;}
+.cb .rd-config label{font-size:12px; color:var(--dim); display:flex; gap:8px; align-items:center;}
+.cb .rd-config input{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px; font-variant-numeric:tabular-nums;}
+.cb .rd-total{font-size:12px; color:var(--dim);}
+.cb .rd-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+.cb .rd-grid{display:grid; grid-template-columns:38px 84px 64px minmax(180px,1.4fr) 84px 140px minmax(140px,1fr) 148px; gap:8px; align-items:center; min-width:944px;}
+.cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px;}
+.cb .rowhead.rd-grid{padding:0 6px 5px 12px;}
+.cb .rd-section{min-width:944px; display:flex; align-items:center; gap:10px; padding:8px 12px; margin:14px 0 6px; border-radius:0 6px 6px 0;}
+.cb .rd-section-title{background:transparent; border:0; color:var(--ink); font-weight:800; font-size:14px; flex:1; letter-spacing:.02em;}
+.cb .rd-live{outline:2px solid var(--green); outline-offset:-2px;}
+.cb .rd-num{color:var(--dim); font-weight:700; text-align:center; display:flex; align-items:center; justify-content:center;}
+.cb .rd-time{font-variant-numeric:tabular-nums; font-size:13px; color:var(--dim);}
+.cb .rd-dur{font-variant-numeric:tabular-nums;}
+.cb .rd-rowctrl{display:flex; gap:4px; align-items:center;}
+.cb .rd-rowctrl select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:5px 3px; max-width:64px;}
+.cb .rd-move{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:5px; width:24px; height:28px; cursor:pointer; font-size:10px; padding:0;}
+.cb .rd-move:hover{color:var(--ink); border-color:var(--dim);}
+.cb .rd-addrow{display:flex; gap:8px; margin-top:14px; align-items:center;}
+.cb .rd-colrow{display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--line);}
+.cb .rd-colvis{display:flex; align-items:center;}
+.cb .rd-colvis input{width:16px; height:16px; accent-color:var(--amber); cursor:pointer;}
+.cb .rd-collabel{flex:1; max-width:320px; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px;}
+.cb .rd-coltype{font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint); width:40px;}
+.cb .rd-collock{opacity:.6; font-size:13px; width:24px; text-align:center;}
+.cb .rd-sharehint{color:var(--dim); font-size:13px; padding:4px 0 8px;}
+.cb .rd-share{border:1px solid var(--line); border-radius:9px; padding:12px; margin-bottom:12px;}
+.cb .rd-share-top{display:flex; gap:8px; align-items:center; margin-bottom:10px;}
+.cb .rd-share-cols{display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px 14px;}
+.cb .rd-share-col{display:flex; align-items:center; gap:10px; font-size:12.5px;}
+.cb .rd-share-colname{flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink);}
+.cb .rd-share-col label{display:flex; align-items:center; gap:4px; color:var(--dim); cursor:pointer;}
+.cb .rd-share-col input{width:14px; height:14px; accent-color:var(--amber);}
+.cb .rd-share-url{margin-top:10px; padding:8px 10px; background:#0e1420; border:1px solid var(--line); border-radius:7px; font-size:12px; color:var(--accent); word-break:break-all; font-family:ui-monospace,monospace;}
 .cb .ts-batchbtn.on{background:var(--amber); color:#101218; border-color:var(--amber);}
 .cb .sched-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:10px;}
 .cb .sched-color{font-size:12px; padding:6px 6px; border-radius:6px; border:1px solid var(--line); font-weight:600; cursor:pointer;}

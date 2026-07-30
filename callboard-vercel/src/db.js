@@ -81,6 +81,9 @@ export const generateOnboardLink = () => api("GET", "/api/onboard?generate=1");
 // stored on that show's record, so they stay with the show year over year.
 export const generateSurveyLink = (id) =>
   api("GET", "/api/survey?generate=1&id=" + encodeURIComponent(id));
+// Department-scoped rundown share link (admin): visible/editable columns per link.
+export const generateRundownShareLink = (id, shareId) =>
+  api("GET", "/api/rundown-share?generate=1&id=" + encodeURIComponent(id) + "&share=" + encodeURIComponent(shareId));
 export const previewInventoryImport = (sheetUrl) =>
   api("POST", "/api/import-inventory", { sheetUrl, preview: true });
 export const confirmInventoryImport = (sheetUrl) =>
