@@ -1977,6 +1977,27 @@ function schedDaySort(a, b) {
   if (bv) return 1;
   return 0;
 }
+const SCHED_COLORS = [
+  { key: "", label: "None", bar: "transparent", bg: "transparent" },
+  { key: "green", label: "Green", bar: "#22C55E", bg: "rgba(34,197,94,.14)" },
+  { key: "tan", label: "Tan", bar: "#D9A441", bg: "rgba(217,164,65,.14)" },
+  { key: "blue", label: "Blue", bar: "#3B82F6", bg: "rgba(59,130,246,.15)" },
+  { key: "red", label: "Red", bar: "#EF4444", bg: "rgba(239,68,68,.15)" },
+  { key: "orange", label: "Orange", bar: "#F97316", bg: "rgba(249,115,22,.15)" },
+  { key: "purple", label: "Purple", bar: "#A855F7", bg: "rgba(168,85,247,.15)" },
+  { key: "gray", label: "Gray", bar: "#64748B", bg: "rgba(100,116,139,.17)" },
+];
+const schedColor = (key) => SCHED_COLORS.find((c) => c.key === key) || SCHED_COLORS[0];
+const schedDur = (start, end) => {
+  const a = schedMinutes(start), b = schedMinutes(end);
+  if (a == null || b == null) return "";
+  let d = b - a;
+  if (d < 0) d += 1440;
+  if (!d) return "";
+  const h = Math.floor(d / 60), m = d % 60;
+  return (h ? h + "h" : "") + (h && m ? " " : "") + (m ? m + "m" : "");
+};
+
 function schedMinutes(raw) {
   if (raw == null) return null;
   let s = String(raw).trim().toLowerCase().replace(/\s+/g, "");
@@ -2095,18 +2116,22 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
   const [impBusy, setImpBusy] = useState(false);
   const [impErr, setImpErr] = useState("");
   const [impDays, setImpDays] = useState(null);
+  const [recon, setRecon] = useState(null);
+  const [reconSel, setReconSel] = useState(() => new Set());
   const impFileRef = useRef(null);
+  const [hideDone, setHideDone] = useState(() => { try { return localStorage.getItem("sched_hide_done") === "1"; } catch (e) { return false; } });
+  const toggleHideDone = () => setHideDone((v) => { const nv = !v; try { localStorage.setItem("sched_hide_done", nv ? "1" : "0"); } catch (e) {} return nv; });
   const toDays = (days) => days.map((d) => ({ id: uid(), label: d.label || "Schedule", date: d.date || "", items: (d.items || []).map((it) => ({ id: uid(), time: it.time || "", activity: it.activity || "" })) }));
   const parseAgendaText = async () => {
     if (!impText.trim()) return;
-    setImpBusy(true); setImpErr(""); setImpDays(null);
+    setImpBusy(true); setImpErr(""); setImpDays(null); setRecon(null);
     try { const r = await importAgenda({ text: impText }); setImpDays(r.days || []); }
     catch (e) { setImpErr(e.message || "Couldn't read that agenda"); }
     setImpBusy(false);
   };
   const parseAgendaPdf = async (file) => {
     if (!file) return;
-    setImpBusy(true); setImpErr(""); setImpDays(null);
+    setImpBusy(true); setImpErr(""); setImpDays(null); setRecon(null);
     try {
       const base64 = await new Promise((res, rej) => {
         const r = new FileReader();
@@ -2125,7 +2150,89 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
       const built = toDays(impDays);
       ev.schedule = mode === "replace" ? built : ev.schedule.concat(built);
     });
-    setImpOpen(false); setImpText(""); setImpDays(null); setImpErr("");
+    setImpOpen(false); setImpText(""); setImpDays(null); setRecon(null); setImpErr("");
+  };
+  const computeReconcile = () => {
+    const norm = (v) => (v || "").trim().toLowerCase();
+    const nt = (t) => norm(t).replace(/\s+/g, "");
+    const sched = event.schedule || [];
+    const usedDays = new Set();
+    const days = [];
+    let cA = 0, cC = 0, cR = 0;
+    (impDays || []).forEach((aDay) => {
+      let eDay = null;
+      if (aDay.date) eDay = sched.find((d) => !usedDays.has(d.id) && d.date && d.date === aDay.date);
+      if (!eDay) eDay = sched.find((d) => !usedDays.has(d.id) && norm(d.label) === norm(aDay.label));
+      if (!eDay) {
+        const items = (aDay.items || []).map((it) => ({ time: it.time, activity: it.activity }));
+        days.push({ label: aDay.label, date: aDay.date, isNew: true, eDayId: null, added: items, changed: [], removed: [], unchanged: 0 });
+        cA += items.length;
+        return;
+      }
+      usedDays.add(eDay.id);
+      const eItems = eDay.items.slice();
+      const eUsed = new Set();
+      const added = [], changed = [];
+      let unchanged = 0;
+      const rest = [];
+      (aDay.items || []).forEach((aIt) => {
+        const m = eItems.find((e) => !eUsed.has(e.id) && nt(e.time) && nt(e.time) === nt(aIt.time));
+        if (m) { eUsed.add(m.id); if (norm(m.activity) !== norm(aIt.activity)) { changed.push({ eItemId: m.id, oldTime: m.time, oldActivity: m.activity, time: aIt.time, activity: aIt.activity }); cC++; } else unchanged++; }
+        else rest.push(aIt);
+      });
+      rest.forEach((aIt) => {
+        const m = eItems.find((e) => !eUsed.has(e.id) && norm(e.activity) && norm(e.activity) === norm(aIt.activity));
+        if (m) { eUsed.add(m.id); if (norm(m.time) !== norm(aIt.time)) { changed.push({ eItemId: m.id, oldTime: m.time, oldActivity: m.activity, time: aIt.time, activity: aIt.activity }); cC++; } else unchanged++; }
+        else { added.push({ time: aIt.time, activity: aIt.activity }); cA++; }
+      });
+      const removed = eItems.filter((e) => !eUsed.has(e.id)).map((e) => ({ eItemId: e.id, time: e.time, activity: e.activity }));
+      cR += removed.length;
+      days.push({ label: eDay.label, date: eDay.date, isNew: false, eDayId: eDay.id, added, changed, removed, unchanged });
+    });
+    const droppedDays = sched.filter((d) => !usedDays.has(d.id)).map((d) => ({ eDayId: d.id, label: d.label }));
+    return { days, droppedDays, counts: { added: cA, changed: cC, removed: cR } };
+  };
+  const startReconcile = () => {
+    const r = computeReconcile();
+    let kc = 0;
+    const sel = new Set();
+    r.days.forEach((rd) => {
+      rd.added.forEach((a) => { a.k = "k" + kc++; sel.add(a.k); });
+      rd.changed.forEach((ch) => { ch.k = "k" + kc++; sel.add(ch.k); });
+      rd.removed.forEach((rm) => { rm.k = "k" + kc++; });
+    });
+    r.droppedDays.forEach((dd) => { dd.k = "k" + kc++; });
+    setRecon(r);
+    setReconSel(sel);
+  };
+  const toggleSel = (k) => setReconSel((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const reconKeys = (type) => {
+    if (!recon) return [];
+    const ks = [];
+    recon.days.forEach((rd) => { (type === "add" ? rd.added : type === "chg" ? rd.changed : rd.removed).forEach((x) => ks.push(x.k)); });
+    if (type === "rem") recon.droppedDays.forEach((dd) => ks.push(dd.k));
+    return ks;
+  };
+  const allSel = (type) => { const ks = reconKeys(type); return ks.length > 0 && ks.every((k) => reconSel.has(k)); };
+  const setCat = (type, on) => { const ks = reconKeys(type); setReconSel((prev) => { const n = new Set(prev); ks.forEach((k) => (on ? n.add(k) : n.delete(k))); return n; }); };
+  const applyReconcile = () => {
+    if (!recon) return;
+    update((ev) => {
+      recon.days.forEach((rd) => {
+        if (rd.isNew) {
+          const items = rd.added.filter((a) => reconSel.has(a.k));
+          if (items.length) ev.schedule.push({ id: uid(), label: rd.label || "Schedule", date: rd.date || "", items: items.map((it) => ({ id: uid(), time: it.time || "", activity: it.activity || "" })) });
+          return;
+        }
+        const eDay = ev.schedule.find((d) => d.id === rd.eDayId);
+        if (!eDay) return;
+        rd.changed.forEach((ch) => { if (reconSel.has(ch.k)) { const it = eDay.items.find((x) => x.id === ch.eItemId); if (it) { it.time = ch.time; it.activity = ch.activity; } } });
+        rd.added.forEach((a) => { if (reconSel.has(a.k)) eDay.items.push({ id: uid(), time: a.time || "", activity: a.activity || "" }); });
+        rd.removed.forEach((r) => { if (reconSel.has(r.k)) { const ix = eDay.items.findIndex((x) => x.id === r.eItemId); if (ix >= 0) eDay.items.splice(ix, 1); } });
+      });
+      recon.droppedDays.forEach((dd) => { if (reconSel.has(dd.k)) { const ix = ev.schedule.findIndex((d) => d.id === dd.eDayId); if (ix >= 0) ev.schedule.splice(ix, 1); } });
+    });
+    setImpOpen(false); setImpText(""); setImpDays(null); setRecon(null); setImpErr("");
   };
   return (
     <div className="stack">
@@ -2153,13 +2260,16 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
 
       <div className="tab-lead">
         <p>Daily run of show. Add a day for each date, then list call times and activities.</p>
-        {canEdit && (
-          <div style={{ display: "flex", gap: 8 }}>
-            <button className="ts-batchbtn" onClick={() => { setImpOpen((o) => !o); setImpDays(null); setImpErr(""); }}>Import agenda</button>
-            <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
-            <AddBtn onClick={addDay}>Day</AddBtn>
-          </div>
-        )}
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className={"ts-batchbtn" + (hideDone ? " on" : "")} onClick={toggleHideDone}>{hideDone ? "Show completed" : "Hide completed"}</button>
+          {canEdit && (
+            <>
+              <button className="ts-batchbtn" onClick={() => { setImpOpen((o) => !o); setImpDays(null); setRecon(null); setImpErr(""); }}>Import agenda</button>
+              <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
+              <AddBtn onClick={addDay}>Day</AddBtn>
+            </>
+          )}
+        </div>
       </div>
 
       {impOpen && (
@@ -2170,10 +2280,10 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
             <button className="ts-batchbtn" onClick={parseAgendaText} disabled={impBusy || !impText.trim()}>{impBusy ? "Reading…" : "Read pasted text"}</button>
             <button className="wd-btn" onClick={() => impFileRef.current && impFileRef.current.click()} disabled={impBusy}>Upload PDF</button>
             <input ref={impFileRef} type="file" accept=".pdf,application/pdf" style={{ display: "none" }} onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ""; parseAgendaPdf(f); }} />
-            <button className="ts-batch-cancel" onClick={() => { setImpOpen(false); setImpDays(null); setImpErr(""); }}>Close</button>
+            <button className="ts-batch-cancel" onClick={() => { setImpOpen(false); setImpDays(null); setRecon(null); setImpErr(""); }}>Close</button>
           </div>
           {impErr && <p className="sv-note warn">{impErr}</p>}
-          {impDays && (
+          {impDays && !recon && (
             <div className="imp-preview">
               <div className="imp-preview-h">Found {impDays.length} day{impDays.length === 1 ? "" : "s"} · {impDays.reduce((n, d) => n + (d.items ? d.items.length : 0), 0)} lines — review, then add or replace</div>
               {impDays.map((d, di) => (
@@ -2186,7 +2296,41 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
               ))}
               <div className="ts-batch-actions">
                 <button className="wd-btn" onClick={() => applyImport("append")}>Add to schedule</button>
+                {event.schedule.length > 0 && <button className="wd-btn" onClick={startReconcile}>Reconcile with current</button>}
                 <button className="ts-batch-apply" onClick={() => applyImport("replace")}>Replace schedule</button>
+              </div>
+            </div>
+          )}
+          {recon && (
+            <div className="imp-preview">
+              <div className="imp-preview-h">Reconcile — {recon.counts.added} new · {recon.counts.changed} changed · {recon.counts.removed} dropped — keeps your call times</div>
+              {recon.days.map((rd, di) => ((rd.isNew || rd.added.length || rd.changed.length || rd.removed.length) ? (
+                <div className="imp-day" key={di}>
+                  <div className="imp-day-h">{rd.label}{rd.date ? " · " + rd.date : ""}{rd.isNew ? " (new day)" : ""}</div>
+                  {rd.changed.map((ch) => (
+                    <label className="imp-item recon-chg recon-row" key={ch.k}><input type="checkbox" checked={reconSel.has(ch.k)} onChange={() => toggleSel(ch.k)} /><span className="imp-item-time">{ch.time || "—"}</span><span>{ch.activity} <em className="recon-was">was: {ch.oldTime && ch.oldTime !== ch.time ? ch.oldTime + " · " : ""}{ch.oldActivity}</em></span></label>
+                  ))}
+                  {rd.added.map((a) => (
+                    <label className="imp-item recon-add recon-row" key={a.k}><input type="checkbox" checked={reconSel.has(a.k)} onChange={() => toggleSel(a.k)} /><span className="imp-item-time">{a.time || "—"}</span><span>+ {a.activity}</span></label>
+                  ))}
+                  {rd.removed.map((r) => (
+                    <label className="imp-item recon-rem recon-row" key={r.k}><input type="checkbox" checked={reconSel.has(r.k)} onChange={() => toggleSel(r.k)} /><span className="imp-item-time">{r.time || "—"}</span><span>− {r.activity}</span></label>
+                  ))}
+                </div>
+              ) : null))}
+              {recon.droppedDays.length > 0 && (
+                <div className="imp-day"><div className="imp-day-h">Days not in new agenda</div>{recon.droppedDays.map((dd) => (<label className="imp-item recon-rem recon-row" key={dd.k}><input type="checkbox" checked={reconSel.has(dd.k)} onChange={() => toggleSel(dd.k)} /><span className="imp-item-time" /><span>− {dd.label} (whole day)</span></label>))}</div>
+              )}
+              {recon.counts.added === 0 && recon.counts.changed === 0 && recon.counts.removed === 0 && <div className="imp-item">No differences — your schedule already matches this agenda.</div>}
+              <div className="recon-toggles">
+                <span className="recon-toglabel">Select all:</span>
+                <label><input type="checkbox" checked={allSel("add")} onChange={(e) => setCat("add", e.target.checked)} /> new ({recon.counts.added})</label>
+                <label><input type="checkbox" checked={allSel("chg")} onChange={(e) => setCat("chg", e.target.checked)} /> changes ({recon.counts.changed})</label>
+                <label><input type="checkbox" checked={allSel("rem")} onChange={(e) => setCat("rem", e.target.checked)} /> dropped ({recon.counts.removed + recon.droppedDays.length})</label>
+              </div>
+              <div className="ts-batch-actions">
+                <button className="wd-btn" onClick={() => setRecon(null)}>Back</button>
+                <button className="ts-batch-apply" onClick={applyReconcile} disabled={reconSel.size === 0}>Apply {reconSel.size} selected</button>
               </div>
             </div>
           )}
@@ -2294,26 +2438,34 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                   <div className="daycall-empty">Add crew in the Brief tab to set their call times.</div>
                 ))}
             </div>
-            <div className="rows">
-              {day.items.map((it, ii) => (
-                <div className="row sched-grid" key={it.id}>
-                  <input
-                    className="time-in-text"
-                    value={it.time}
-                    placeholder="Time"
-                    onChange={(e) => update((ev) => (dref(ev).items[ii].time = e.target.value))}
-                    onBlur={() => update((ev) => (dref(ev).items = tidySchedDay(dref(ev).items)))}
-                  />
-                  <input
-                    value={it.activity}
-                    placeholder="Activity"
-                    onChange={(e) => update((ev) => (dref(ev).items[ii].activity = e.target.value))}
-                  />
-                  <RemoveBtn onClick={() => update((ev) => dref(ev).items.splice(ii, 1))} />
-                </div>
-              ))}
+            <div className="sched-scroll">
+              <div className="rowhead sched-grid" style={{ paddingLeft: 12 }}><span>✓</span><span>Color</span><span>Start</span><span>End</span><span>Dur</span><span>Room</span><span>Task</span><span>Notes</span><span /></div>
+              <div className="rows">
+                {day.items.map((it, ii) => {
+                  if (hideDone && it.done) return null;
+                  const scol = schedColor(it.color);
+                  return (
+                    <div className={"row sched-grid" + (it.done ? " sched-done" : "")} key={it.id} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 8 }}>
+                      <input type="checkbox" className="sched-done-ck" checked={!!it.done} title="Mark done" onChange={(e) => update((ev) => (dref(ev).items[ii].done = e.target.checked))} />
+                      <select className="sched-color" value={it.color || ""} style={{ color: it.color ? "#fff" : "var(--ink)", background: it.color ? scol.bar : "var(--panel2)", borderColor: it.color ? scol.bar : "var(--line)" }} onChange={(e) => update((ev) => (dref(ev).items[ii].color = e.target.value))}>
+                        {SCHED_COLORS.map((col) => (
+                          <option key={col.key} value={col.key} style={{ color: "#111", background: "#fff" }}>{col.label}</option>
+                        ))}
+                      </select>
+                      <input className="time-in-text" value={it.time} placeholder="Start" onChange={(e) => update((ev) => (dref(ev).items[ii].time = e.target.value))} onBlur={() => update((ev) => (dref(ev).items = tidySchedDay(dref(ev).items)))} />
+                      <input className="time-in-text" value={it.end || ""} placeholder="End" onChange={(e) => update((ev) => (dref(ev).items[ii].end = e.target.value))} onBlur={(e) => update((ev) => (dref(ev).items[ii].end = fmtSchedTime(e.target.value)))} />
+                      <span className="sched-dur">{schedDur(it.time, it.end)}</span>
+                      <input value={it.room || ""} placeholder="Room" onChange={(e) => update((ev) => (dref(ev).items[ii].room = e.target.value))} />
+                      <input value={it.activity} placeholder="Task" onChange={(e) => update((ev) => (dref(ev).items[ii].activity = e.target.value))} />
+                      <input value={it.notes || ""} placeholder="Notes" onChange={(e) => update((ev) => (dref(ev).items[ii].notes = e.target.value))} />
+                      <RemoveBtn onClick={() => update((ev) => dref(ev).items.splice(ii, 1))} />
+                    </div>
+                  );
+                })}
+              </div>
             </div>
-            <AddBtn onClick={() => update((ev) => dref(ev).items.push({ id: uid(), time: "", activity: "" }))}>
+            {hideDone && day.items.some((it) => it.done) && <div className="sched-hidden-note">{day.items.filter((it) => it.done).length} completed hidden</div>}
+            <AddBtn onClick={() => update((ev) => dref(ev).items.push({ id: uid(), time: "", end: "", activity: "", room: "", notes: "", color: "", done: false }))}>
               Line
             </AddBtn>
           </Panel>
@@ -2326,15 +2478,21 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
             <DayCallStrip event={event} dayId={day.id} />
             <div className="sched-ro">
               {day.items.length ? (
-                day.items.map((it) => (
-                  <div className="sched-ro-row" key={it.id}>
-                    <span className="sched-ro-time">{it.time || "—"}</span>
-                    <span className="sched-ro-act">{it.activity || ""}</span>
-                  </div>
-                ))
+                day.items.map((it) => {
+                  if (hideDone && it.done) return null;
+                  const scol = schedColor(it.color);
+                  const dur = schedDur(it.time, it.end);
+                  return (
+                    <div className={"sched-ro-row" + (it.done ? " sched-done" : "")} key={it.id} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 10 }}>
+                      <span className="sched-ro-time">{it.time || "—"}{it.end ? " – " + it.end : ""}{dur ? " (" + dur + ")" : ""}</span>
+                      <span className="sched-ro-act">{it.room ? <b className="sched-ro-room">{it.room}: </b> : null}{it.activity || ""}{it.notes ? <em className="sched-ro-notes"> — {it.notes}</em> : null}</span>
+                    </div>
+                  );
+                })
               ) : (
                 <Empty>No lines yet.</Empty>
               )}
+              {hideDone && day.items.some((it) => it.done) && <div className="sched-hidden-note">{day.items.filter((it) => it.done).length} completed hidden</div>}
             </div>
           </Panel>
         );
@@ -6059,7 +6217,20 @@ const CSS = `
 .cb .movebtn:hover:not(:disabled){color:var(--amber); background:var(--panel2);}
 .cb .movebtn:disabled{opacity:.28; cursor:default;}
 .cb .link-grid{grid-template-columns:1fr 1.6fr 28px;}
-.cb .sched-grid{grid-template-columns:110px 1fr 28px;}
+.cb .sched-grid{grid-template-columns:34px 96px 76px 76px 58px 104px minmax(150px,1.3fr) minmax(110px,.9fr) 28px; min-width:764px;}
+.cb .sched-done-ck{width:16px; height:16px; align-self:center; accent-color:var(--green); cursor:pointer;}
+.cb .row.sched-done{opacity:.48;}
+.cb .row.sched-done input:not([type="checkbox"]), .cb .row.sched-done .sched-dur{text-decoration:line-through;}
+.cb .sched-ro-row.sched-done{opacity:.48;}
+.cb .sched-ro-row.sched-done .sched-ro-time, .cb .sched-ro-row.sched-done .sched-ro-act{text-decoration:line-through;}
+.cb .sched-hidden-note{font-size:12px; color:var(--faint); font-style:italic; padding:6px 2px 2px;}
+.cb .ts-batchbtn.on{background:var(--amber); color:#101218; border-color:var(--amber);}
+.cb .sched-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch; margin-bottom:10px;}
+.cb .sched-color{font-size:12px; padding:6px 6px; border-radius:6px; border:1px solid var(--line); font-weight:600; cursor:pointer;}
+.cb .sched-dur{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; align-self:center; text-align:center;}
+.cb .row.sched-grid{padding:5px 6px; border-radius:0 6px 6px 0;}
+.cb .sched-ro-room{color:var(--amber); font-weight:700; font-style:normal;}
+.cb .sched-ro-notes{color:var(--faint); font-size:12.5px;}
 .cb .stay-grid{grid-template-columns:1.1fr 130px 130px .8fr 1.2fr 28px;}
 .cb .flight-grid{grid-template-columns:1.1fr 130px 1fr .8fr 100px 100px .8fr 1fr 28px; min-width:900px;}
 .cb .meal-grid{grid-template-columns:140px 100px 1.2fr 1.2fr 28px;}
@@ -6213,6 +6384,16 @@ const CSS = `
 .cb .imp-day-h{font-weight:700; font-size:13px; color:var(--amber); margin-bottom:6px;}
 .cb .imp-item{display:flex; gap:12px; padding:3px 0; font-size:13px; line-height:1.4;}
 .cb .imp-item-time{flex:0 0 84px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap;}
+.cb .imp-item.recon-add{color:var(--green);}
+.cb .imp-item.recon-chg{color:var(--amber);}
+.cb .imp-item.recon-rem{color:var(--danger);}
+.cb .recon-was{color:var(--faint); font-style:italic; font-size:12px;}
+.cb .recon-toggles{display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 4px; padding-top:12px; border-top:1px solid var(--line);}
+.cb .recon-toggles label{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink); cursor:pointer;}
+.cb .recon-toggles input{width:16px; height:16px; accent-color:var(--amber);}
+.cb .recon-toglabel{font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700;}
+.cb .recon-row{cursor:pointer;}
+.cb .recon-row input[type="checkbox"]{width:15px; height:15px; flex:0 0 auto; align-self:center; accent-color:var(--amber); cursor:pointer;}
 .cb .daycall-edit{margin:10px 0 4px;}
 .cb .daycall-toggle{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:7px; padding:6px 12px; font-size:12.5px; cursor:pointer;}
 .cb .daycall-toggle:hover{color:var(--ink); border-color:var(--dim);}
