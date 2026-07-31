@@ -808,6 +808,9 @@ function Callboard({ auth, onLogout }) {
   const canEditTabs = isShowAdmin || isEditor;                 // may edit tab content
   const levelLabel = isSuperAdmin ? "Admin · all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
   const [showAccessOpen, setShowAccessOpen] = useState(false);
+  const [pnlDashOpen, setPnlDashOpen] = useState(false);
+  const [pnlDashBusy, setPnlDashBusy] = useState(false);
+  const [pnlDashRows, setPnlDashRows] = useState([]);
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
   const [events, setEvents] = useState([]); // summaries
@@ -959,6 +962,18 @@ function Callboard({ auth, onLogout }) {
     }
   }
 
+  async function openPnlDashboard() {
+    setPnlDashOpen(true); setPnlDashBusy(true); setPnlDashRows([]);
+    const rows = [];
+    for (const ev of events) {
+      try {
+        const full = normalize(await getEvent(ev.id));
+        rows.push({ id: ev.id, name: full.name || ev.name || "Untitled", client: full.client || "", startDate: full.startDate || "", ...computePnl(full) });
+      } catch (e) {}
+    }
+    rows.sort((a, b) => (b.startDate || "").localeCompare(a.startDate || ""));
+    setPnlDashRows(rows); setPnlDashBusy(false);
+  }
   async function duplicateEvent() {
     if (!event) return;
     const e = clone(event);
@@ -1085,6 +1100,7 @@ function Callboard({ auth, onLogout }) {
               <button className="btn ghost" onClick={newDemoEvent} title="Create a fully populated fictional event for demos">Demo</button>
               <button className="btn ghost" onClick={duplicateEvent}>Duplicate</button>
               <button className="btn ghost" onClick={() => setShowAccessOpen(true)}>Show access</button>
+              {isSuperAdmin && <button className="btn ghost" onClick={openPnlDashboard}>P&amp;L Dashboard</button>}
               <button className="btn danger ghost" onClick={deleteEvent}>Delete</button>
             </div>
           </>
@@ -1159,6 +1175,55 @@ function Callboard({ auth, onLogout }) {
             {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
           </main>
         </>
+      )}
+
+      {pnlDashOpen && (
+        <div className="pnl-dash-overlay" onClick={() => setPnlDashOpen(false)}>
+          <div className="pnl-dash" onClick={(e) => e.stopPropagation()}>
+            <div className="pnl-dash-head">
+              <h2>P&amp;L — All Shows</h2>
+              <button className="pnl-dash-x" onClick={() => setPnlDashOpen(false)}>✕</button>
+            </div>
+            {pnlDashBusy ? (
+              <div className="pnl-dash-loading">Loading all shows…</div>
+            ) : (
+              (() => {
+                const rows = pnlDashRows;
+                const t = rows.reduce((a, r) => { a.revenue += r.revenue; a.cost += r.cost; a.netAct += r.netAct; a.unpaid += r.unpaid; return a; }, { revenue: 0, cost: 0, netAct: 0, unpaid: 0 });
+                const marg = (rev, net) => (rev > 0 ? Math.round((net / rev) * 100) + "%" : "–");
+                return (
+                  <div className="pnl-dash-body">
+                    <div className="pnl-dash-cards">
+                      <div className="pnl-dc"><span>Total revenue</span><b>{pnlMoney(t.revenue)}</b></div>
+                      <div className="pnl-dc"><span>Total cost</span><b>{pnlMoney(t.cost)}</b></div>
+                      <div className="pnl-dc"><span>Net profit</span><b className={t.netAct < 0 ? "neg" : "pos"}>{pnlMoney(t.netAct)}</b></div>
+                      <div className="pnl-dc"><span>Margin</span><b>{marg(t.revenue, t.netAct)}</b></div>
+                      <div className="pnl-dc"><span>Outstanding</span><b className={t.unpaid > 0 ? "amber" : ""}>{pnlMoney(t.unpaid)}</b></div>
+                    </div>
+                    <div className="pnl-dash-scroll">
+                      <table className="pnl-dash-table">
+                        <thead><tr><th>Show</th><th>Revenue</th><th>Cost</th><th>Net</th><th>Margin</th><th>Outstanding</th></tr></thead>
+                        <tbody>
+                          {rows.map((r) => (
+                            <tr key={r.id}>
+                              <td className="pnl-dash-name">{r.name}{r.startDate ? <em> · {prettyDate(r.startDate)}</em> : null}</td>
+                              <td>{pnlMoney(r.revenue)}</td>
+                              <td>{pnlMoney(r.cost)}</td>
+                              <td className={r.netAct < 0 ? "neg" : "pos"}>{pnlMoney(r.netAct)}</td>
+                              <td>{marg(r.revenue, r.netAct)}</td>
+                              <td className={r.unpaid > 0 ? "amber" : ""}>{r.unpaid > 0 ? pnlMoney(r.unpaid) : "–"}</td>
+                            </tr>
+                          ))}
+                          {!rows.length && <tr><td colSpan={6} className="pnl-dash-empty">No shows found.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+          </div>
+        </div>
       )}
 
       {showAccessOpen && (
@@ -5182,6 +5247,51 @@ const pnlNum = (v) => {
   return m ? (parseFloat(m[0]) || 0) : 0;
 };
 const pnlMoney = (n) => (n < 0 ? "−$" : "$") + Math.abs(Math.round(n)).toLocaleString();
+// Standalone P&L totals for one event (mirrors the Costing tab), for the global dashboard.
+function computePnl(c) {
+  c = c || {};
+  const crewRows = (c.crew || []).filter((cm) => cm.name && cm.name.trim());
+  const crewCost = c.crewCost || {};
+  const time = c.time || {};
+  const tdays = time.days || [];
+  const entries = time.entries || {};
+  const tentry = (cid, did) => (entries[cid] && entries[cid][did]) || { in: "", out: "" };
+  const perDiemRate = pnlNum(c.perDiemRate);
+  const crewHours = (cid) => tdays.reduce((acc, d) => {
+    const h = hoursBetween(tentry(cid, d.id).in, tentry(cid, d.id).out);
+    const b = otBreakdown(h);
+    acc.total += b.reg + b.ot + b.dt; acc.ot += b.ot; acc.dt += b.dt; if (h > 0) acc.days += 1;
+    return acc;
+  }, { total: 0, ot: 0, dt: 0, days: 0 });
+  const crewActual = (cid) => {
+    const cc = crewCost[cid] || {}; const rate = pnlNum(cc.rate); if (!rate) return 0;
+    const h = crewHours(cid);
+    if ((cc.rateType || "hourly") === "day") return rate * h.days;
+    return rate * (h.total + 0.5 * h.ot + h.dt);
+  };
+  const crewTotalActual = (cid) => (crewActual(cid) || 0) + crewHours(cid).days * perDiemRate + pnlNum((crewCost[cid] || {}).travel);
+  const crewActualUsed = (cid) => { const inv = pnlNum((crewCost[cid] || {}).invoice); return inv > 0 ? inv : crewTotalActual(cid); };
+  const sum = (arr, k) => (arr || []).reduce((s, r) => s + pnlNum(r[k]), 0);
+  const owed = (act, est) => (act > 0 ? act : est);
+  const vmap = {};
+  const cv = (it) => { const raw = (it.rentedFrom || "").trim(); if (raw) vmap[raw.toLowerCase()] = raw; };
+  ((c.pull && c.pull.cases) || []).forEach((cs) => (cs.items || []).forEach(cv));
+  ((c.pull && c.pull.loose) || []).forEach(cv);
+  const vendorNames = Object.values(vmap);
+  const vendorCost = c.vendorCost || {};
+  const laborExtra = c.laborExtra || [], vendorExtra = c.vendorExtra || [], misc = c.misc || [];
+  const laborEst = crewRows.reduce((s, cm) => s + pnlNum((crewCost[cm.id] || {}).est), 0) + sum(laborExtra, "est");
+  const laborAct = crewRows.reduce((s, cm) => s + crewActualUsed(cm.id), 0) + sum(laborExtra, "act");
+  const vendEst = vendorNames.reduce((s, v) => s + pnlNum((vendorCost[v] || {}).est), 0) + sum(vendorExtra, "est");
+  const vendAct = vendorNames.reduce((s, v) => s + pnlNum((vendorCost[v] || {}).act), 0) + sum(vendorExtra, "act");
+  const miscEst = sum(misc, "est"), miscAct = sum(misc, "act");
+  const billEst = pnlNum(c.billableEst), billAct = pnlNum(c.billableAct);
+  const revenue = billAct || billEst;
+  const cost = laborAct + vendAct + miscAct;
+  const unpaidLabor = crewRows.reduce((sm, cm) => { const cc = crewCost[cm.id] || {}; return sm + (cc.paid ? 0 : crewActualUsed(cm.id)); }, 0) + laborExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
+  const unpaidVendor = vendorNames.reduce((sm, v) => { const vc = vendorCost[v] || {}; return sm + (vc.paid ? 0 : owed(pnlNum(vc.act), pnlNum(vc.est))); }, 0) + vendorExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
+  return { revenue, cost, billEst, netEst: billEst - laborEst - vendEst - miscEst, netAct: billAct - cost, unpaid: unpaidLabor + unpaidVendor };
+}
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
 
 const PNL_VIEWS = [
@@ -6989,6 +7099,26 @@ const CSS = `
 .cb .tile:focus-visible{outline:3px solid #fff; outline-offset:2px;}
 .cb .board-back{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; margin-bottom:14px;}
 .cb .board-back:hover{color:var(--ink); border-color:var(--dim);}
+.cb .pnl-dash-overlay{position:fixed; inset:0; background:rgba(0,0,0,.6); display:flex; align-items:flex-start; justify-content:center; padding:24px 12px; z-index:200; overflow:auto;}
+.cb .pnl-dash{background:var(--panel); border:1px solid var(--line); border-radius:16px; width:100%; max-width:860px; padding:20px; margin:auto;}
+.cb .pnl-dash-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;}
+.cb .pnl-dash-head h2{font-size:18px; font-weight:800;}
+.cb .pnl-dash-x{background:transparent; border:0; color:var(--dim); font-size:18px; cursor:pointer;}
+.cb .pnl-dash-loading{padding:40px; text-align:center; color:var(--dim);}
+.cb .pnl-dash-cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-bottom:18px;}
+.cb .pnl-dc{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:11px 13px; display:flex; flex-direction:column; gap:3px;}
+.cb .pnl-dc span{font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700;}
+.cb .pnl-dc b{font-size:18px; font-variant-numeric:tabular-nums;}
+.cb .pnl-dc b.neg{color:#f87171;} .cb .pnl-dc b.pos{color:var(--green);} .cb .pnl-dc b.amber{color:var(--amber);}
+.cb .pnl-dash-scroll{overflow-x:auto;}
+.cb .pnl-dash-table{width:100%; border-collapse:collapse; font-size:13px; min-width:640px;}
+.cb .pnl-dash-table th{text-align:right; font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; padding:6px 10px; border-bottom:1px solid var(--line);}
+.cb .pnl-dash-table th:first-child{text-align:left;}
+.cb .pnl-dash-table td{text-align:right; padding:9px 10px; border-bottom:1px solid var(--line); font-variant-numeric:tabular-nums;}
+.cb .pnl-dash-name{text-align:left !important; font-weight:600;}
+.cb .pnl-dash-name em{color:var(--dim); font-weight:400; font-style:normal; font-size:12px;}
+.cb .pnl-dash-table td.neg{color:#f87171;} .cb .pnl-dash-table td.pos{color:var(--green);} .cb .pnl-dash-table td.amber{color:var(--amber);}
+.cb .pnl-dash-empty{text-align:center !important; color:var(--dim); padding:24px;}
 .cb .tile-ico{color:#1A130B; opacity:.9; margin-bottom:8px; display:block;}
 .cb .tile-label{font-family:'Oswald'; font-weight:600; letter-spacing:.02em; font-size:22px; line-height:1.05; color:#140E06;}
 .cb .tile-desc{font-size:12.5px; font-weight:500; color:rgba(20,14,6,.72);}
