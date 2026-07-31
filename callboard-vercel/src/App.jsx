@@ -292,6 +292,7 @@ function normalize(e) {
   if (typeof e.rundownUnlocked !== "boolean") e.rundownUnlocked = false;
   if (!Array.isArray(e.rundown.shares)) e.rundown.shares = [];
   if (!Array.isArray(e.todos)) e.todos = [];
+  if (!Array.isArray(e.floorplans)) e.floorplans = [];
   if (typeof e.todosUnlocked !== "boolean") e.todosUnlocked = false;
   e.callTimes = e.callTimes || {};
   e.surveys = e.surveys || [];
@@ -1149,6 +1150,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "diagrams" && <LockWrapper canEdit={canEditTabs || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
+            {tab === "floorplans" && <LockWrapper canEdit={canEditTabs || !!event.floorplansUnlocked} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "records" && <LockWrapper canEdit={canEditTabs || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
             {tab === "hours" && canEditTabs && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
@@ -1180,24 +1182,25 @@ function Callboard({ auth, onLogout }) {
    HOME BOARD — colored tiles that open each section
    ============================================================ */
 const SECTIONS = [
-  { key: "mycall", label: "My Call Sheet", desc: "Your call time, hotel & travel", color: "#00B4D8" },
-  { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A" },
-  { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC" },
-  { key: "rundown", label: "Run of Show", desc: "Live rundown & show clock", color: "#E8683D" },
-  { key: "todos", label: "To-Do", desc: "Tasks & assignments", color: "#E9C46A" },
-  { key: "documents", label: "Show Documents", desc: "Show flows & agendas", color: "#4EA8DE" },
-  { key: "itinerary", label: "Itinerary", desc: "Hotels & flights", color: "#46C5B8" },
-  { key: "notes", label: "Meals & Notes", desc: "Catering, pre-con notes", color: "#F0895C" },
-  { key: "video", label: "Video I/O", desc: "Video patch sheets", color: "#D97CC0" },
-  { key: "audio", label: "Audio I/O", desc: "Audio patch sheets", color: "#9C9AA6" },
-  { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63" },
-  { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3" },
-  { key: "records", label: "Records", desc: "Post-show & incidents", color: "#D9B857" },
-  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true },
-  { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true },
-  { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true },
-  { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true },
+  { key: "mycall", label: "My Call Sheet", desc: "Your call time, hotel & travel", color: "#00B4D8", group: "" },
+  { key: "brief", label: "Brief", desc: "Venue, contacts, crew", color: "#F3B24A", group: "" },
+  { key: "schedule", label: "Schedule", desc: "Daily run of show", color: "#7E93EC", group: "Show Documents" },
+  { key: "rundown", label: "Run of Show", desc: "Live rundown & show clock", color: "#E8683D", group: "Show Documents" },
+  { key: "todos", label: "To-Do", desc: "Tasks & assignments", color: "#E9C46A", group: "Show Documents" },
+  { key: "itinerary", label: "Itinerary", desc: "Hotels & flights", color: "#46C5B8", group: "Show Documents" },
+  { key: "notes", label: "Meals & Notes", desc: "Catering, pre-con notes", color: "#F0895C", group: "Show Documents" },
+  { key: "floorplans", label: "Floorplans", desc: "Room floorplans & layouts", color: "#5FA8D3", group: "Show Documents" },
+  { key: "documents", label: "Documents", desc: "Show flows & agendas", color: "#4EA8DE", group: "Show Documents" },
+  { key: "video", label: "Video I/O", desc: "Video patch sheets", color: "#D97CC0", group: "Tech Documents" },
+  { key: "audio", label: "Audio I/O", desc: "Audio patch sheets", color: "#9C9AA6", group: "Tech Documents" },
+  { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63", group: "Tech Documents" },
+  { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3", group: "Tech Documents" },
+  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true, group: "Admin" },
+  { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
+  { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
+  { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true, group: "Admin" },
 ];
+const GROUP_ORDER = ["Show Documents", "Tech Documents", "Admin"];
 const SECTION_LABEL = SECTIONS.reduce((m, s) => ((m[s.key] = s.label), m), {});
 
 function TileIcon({ name }) {
@@ -1229,6 +1232,8 @@ function TileIcon({ name }) {
       return (<svg {...p}><rect x="5" y="3" width="14" height="18" rx="2" /><path d="M9 8h6M9 12h6M9 16h4" /></svg>);
     case "hours":
       return (<svg {...p}><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg>);
+    case "floorplans":
+      return (<svg {...p}><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M3 9h18M9 3v18M14 9v12" /></svg>);
     default:
       return null;
   }
@@ -1244,6 +1249,7 @@ function tileStat(key, event) {
     case "video": return `${event.video.blocks.length} device${event.video.blocks.length === 1 ? "" : "s"}`;
     case "audio": return `${event.audio.blocks.length} device${event.audio.blocks.length === 1 ? "" : "s"}`;
     case "diagrams": return `${event.diagrams.length} file${event.diagrams.length === 1 ? "" : "s"}`;
+    case "floorplans": return `${(event.floorplans || []).length} file${(event.floorplans || []).length === 1 ? "" : "s"}`;
     case "pull": {
       const all = [...(event.pull?.cases || []).flatMap((c) => c.items), ...(event.pull?.loose || [])];
       const items = all.length;
@@ -1274,14 +1280,14 @@ const TAB_LOCKS = [
   { label: "Schedule",       key: "scheduleUnlocked" },
   { label: "Run of Show",    key: "rundownUnlocked" },
   { label: "To-Do",          key: "todosUnlocked" },
-  { label: "Show Documents", key: "documentsUnlocked" },
+  { label: "Documents",      key: "documentsUnlocked" },
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
   { label: "Itinerary",      key: "itineraryUnlocked" },
   { label: "Hours",          key: "hoursUnlocked" },
   { label: "Pull List",      key: "gearEditUnlocked" },
   { label: "Diagrams",       key: "diagramsUnlocked" },
-  { label: "Records",        key: "recordsUnlocked" },
+  { label: "Floorplans",     key: "floorplansUnlocked" },
 ];
 
 /* LockWrapper — wraps a tab's content with a lock notice + CSS disable when locked */
@@ -1320,9 +1326,8 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
         <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
       </header>
 
-      <div className="board-label">Sections</div>
       <div className="tilegrid">
-        {SECTIONS.filter((s) => (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
+        {SECTIONS.filter((s) => !s.group && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
           <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
             <span className="tile-ico"><TileIcon name={s.key} /></span>
             <span className="tile-label">{s.label}</span>
@@ -1331,6 +1336,25 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
           </button>
         ))}
       </div>
+      {GROUP_ORDER.map((grp) => {
+        const secs = SECTIONS.filter((s) => s.group === grp && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit));
+        if (!secs.length) return null;
+        return (
+          <div className="tilegroup" key={grp}>
+            <div className="board-label">{grp}</div>
+            <div className="tilegrid">
+              {secs.map((s) => (
+                <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
+                  <span className="tile-ico"><TileIcon name={s.key} /></span>
+                  <span className="tile-label">{s.label}</span>
+                  <span className="tile-desc">{s.desc}</span>
+                  <span className="tile-stat">{tileStat(s.key, event)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        );
+      })}
 
       {isAdmin && (
         <div className="tab-access-panel">
@@ -1746,7 +1770,7 @@ function MyCallTab({ event, showId, update }) {
             <div className="mc-card-h">Venue</div>
             {venue.name && <div className="mc-card-main">{venue.name}</div>}
             {venue.address && <div className="mc-card-sub">{venue.address}</div>}
-            {venue.mapLink && <a className="mc-link" href={venue.mapLink} target="_blank" rel="noreferrer">Open in Maps →</a>}
+            {venue.mapLink && <div className="mc-card-sub">Room: {venue.mapLink}</div>}
           </div>
         )}
 
@@ -2032,8 +2056,8 @@ function BriefTab({ event, update, isAdmin }) {
           <Field label="Venue address">
             <input value={event.venue.address} onChange={(e) => update((ev) => (ev.venue.address = e.target.value))} placeholder="Street, city, state" />
           </Field>
-          <Field label="Map link">
-            <input value={event.venue.mapLink} onChange={(e) => update((ev) => (ev.venue.mapLink = e.target.value))} placeholder="https://…" />
+          <Field label="Room">
+            <input value={event.venue.mapLink} onChange={(e) => update((ev) => (ev.venue.mapLink = e.target.value))} placeholder="Ballroom A / room #" />
           </Field>
         </div>
       </Panel>
@@ -2169,14 +2193,14 @@ function BriefTab({ event, update, isAdmin }) {
 
       <div className="grid2 top">
         <Panel
-          title="Wardrobe"
+          title="Show Notes"
           action={null}
         >
           <textarea
             className="area"
             rows={5}
             value={event.wardrobe}
-            placeholder="Dress code, logos, what to bring…"
+            placeholder="Show notes, reminders, anything the crew should know…"
             onChange={(e) => update((ev) => (ev.wardrobe = e.target.value))}
           />
         </Panel>
@@ -2901,6 +2925,28 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
     update((ev) =>
       ev.schedule.push({ id: uid(), label: "New day", date: ev.startDate, items: [{ id: uid(), time: "", activity: "" }] })
     );
+  const fillDaysFromDates = () => {
+    const sd = event.startDate;
+    if (!sd) return;
+    const start = new Date(sd + "T00:00:00");
+    const end = new Date((event.endDate || sd) + "T00:00:00");
+    if (isNaN(start.getTime()) || isNaN(end.getTime()) || end < start) return;
+    const wd = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    update((ev) => {
+      const existing = new Set((ev.schedule || []).map((d) => d.date).filter(Boolean));
+      const cur = new Date(start);
+      let guard = 0;
+      while (cur <= end && guard < 400) {
+        const iso = cur.getFullYear() + "-" + String(cur.getMonth() + 1).padStart(2, "0") + "-" + String(cur.getDate()).padStart(2, "0");
+        if (!existing.has(iso)) {
+          ev.schedule.push({ id: uid(), label: wd[cur.getDay()], date: iso, items: [] });
+          existing.add(iso);
+        }
+        cur.setDate(cur.getDate() + 1);
+        guard++;
+      }
+    });
+  };
   const [callOpen, setCallOpen] = useState(false);
   const [callTime, setCallTime] = useState("");
   const [callDays, setCallDays] = useState(() => new Set());
@@ -3086,6 +3132,7 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
             <>
               <button className="ts-batchbtn" onClick={() => { setImpOpen((o) => !o); setImpDays(null); setRecon(null); setImpErr(""); }}>Import agenda</button>
               <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
+              <button className="ts-batchbtn" onClick={fillDaysFromDates} disabled={!event.startDate} title="Create a day for each date between the show's start and end dates (from the Brief)">Fill show days</button>
               <AddBtn onClick={addDay}>Day</AddBtn>
             </>
           )}
@@ -4272,6 +4319,37 @@ function LinkPreview({ url, defaultOpen = false }) {
   );
 }
 
+function FloorplansTab({ event, update }) {
+  const addLink = () => update((ev) => ev.floorplans.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>Link your room floorplans & layouts. Host the file (Google Drive, Dropbox, Vectorworks Cloud…), set sharing to “anyone with the link,” and paste it here so the whole crew can open it.</p>
+        <AddBtn onClick={addLink}>Floorplan link</AddBtn>
+      </div>
+      <Panel title="Floorplans">
+        <div className="rows">
+          <div className="rowhead diagramlink-grid"><span>Name</span><span>Link</span><span>Caption</span><span /></div>
+          {event.floorplans.map((d, i) => (
+            <div className="linkrow" key={d.id}>
+              <div className="row diagramlink-grid">
+                <input value={d.name} placeholder="Floorplan name" onChange={(e) => update((ev) => (ev.floorplans[i].name = e.target.value))} />
+                <input value={d.url || ""} placeholder="https://…" onChange={(e) => update((ev) => { ev.floorplans[i].url = e.target.value; ev.floorplans[i].kind = "link"; })} />
+                <input value={d.caption} placeholder="Caption (optional)" onChange={(e) => update((ev) => (ev.floorplans[i].caption = e.target.value))} />
+                <div className="diagram-open">
+                  {d.url ? (<a href={d.url} target="_blank" rel="noreferrer">Open ↗</a>) : (<span className="dim">—</span>)}
+                  <RemoveBtn onClick={() => update((ev) => ev.floorplans.splice(i, 1))} />
+                </div>
+              </div>
+              <LinkPreview url={d.url} />
+            </div>
+          ))}
+          {!event.floorplans.length && <Empty>No floorplans yet. Add a link to a hosted room layout.</Empty>}
+        </div>
+      </Panel>
+    </div>
+  );
+}
 function DiagramsTab({ event, update }) {
   const addLink = () =>
     update((ev) => ev.diagrams.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
@@ -5653,7 +5731,7 @@ function briefText(e) {
     L.push("");
   }
   if (e.wardrobe) {
-    L.push("WARDROBE");
+    L.push("SHOW NOTES");
     L.push(e.wardrobe);
   }
   return L.join("\n");
@@ -6880,6 +6958,7 @@ const CSS = `
 .cb .tile:hover{transform:translateY(-4px); box-shadow:0 12px 26px rgba(0,0,0,.42);}
 .cb .tile:active{transform:translateY(-1px);}
 .cb .tile:focus-visible{outline:3px solid #fff; outline-offset:2px;}
+.cb .tilegroup{margin-bottom:10px;}
 .cb .tile-ico{color:#1A130B; opacity:.9; margin-bottom:8px; display:block;}
 .cb .tile-label{font-family:'Oswald'; font-weight:600; letter-spacing:.02em; font-size:22px; line-height:1.05; color:#140E06;}
 .cb .tile-desc{font-size:12.5px; font-weight:500; color:rgba(20,14,6,.72);}
