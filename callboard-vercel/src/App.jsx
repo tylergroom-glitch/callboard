@@ -1201,6 +1201,7 @@ const SECTIONS = [
   { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true, group: "Admin" },
 ];
 const GROUP_ORDER = ["Show Documents", "Tech Documents", "Admin"];
+const GROUP_META = { "Show Documents": "#5A7FE0", "Tech Documents": "#C77DA0", "Admin": "#3FA37B" };
 const SECTION_LABEL = SECTIONS.reduce((m, s) => ((m[s.key] = s.label), m), {});
 
 function TileIcon({ name }) {
@@ -1234,6 +1235,8 @@ function TileIcon({ name }) {
       return (<svg {...p}><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg>);
     case "floorplans":
       return (<svg {...p}><rect x="3" y="3" width="18" height="18" rx="1" /><path d="M3 9h18M9 3v18M14 9v12" /></svg>);
+    case "folder":
+      return (<svg {...p}><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /></svg>);
     default:
       return null;
   }
@@ -1305,6 +1308,7 @@ function LockWrapper({ canEdit, label, children }) {
 }
 
 function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin, canEdit }) {
+  const [homeGroup, setHomeGroup] = useState(null);
   return (
     <div className="home">
       <header className="hero">
@@ -1326,35 +1330,45 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
         <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
       </header>
 
-      <div className="tilegrid">
-        {SECTIONS.filter((s) => !s.group && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
-          <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
-            <span className="tile-ico"><TileIcon name={s.key} /></span>
-            <span className="tile-label">{s.label}</span>
-            <span className="tile-desc">{s.desc}</span>
-            <span className="tile-stat">{tileStat(s.key, event)}</span>
-          </button>
-        ))}
-      </div>
-      {GROUP_ORDER.map((grp) => {
-        const secs = SECTIONS.filter((s) => s.group === grp && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit));
-        if (!secs.length) return null;
-        return (
-          <div className="tilegroup" key={grp}>
-            <div className="board-label">{grp}</div>
-            <div className="tilegrid">
-              {secs.map((s) => (
-                <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
-                  <span className="tile-ico"><TileIcon name={s.key} /></span>
-                  <span className="tile-label">{s.label}</span>
-                  <span className="tile-desc">{s.desc}</span>
-                  <span className="tile-stat">{tileStat(s.key, event)}</span>
-                </button>
-              ))}
-            </div>
+      {homeGroup ? (
+        <>
+          <button className="board-back" onClick={() => setHomeGroup(null)}>← All sections</button>
+          <div className="board-label">{homeGroup}</div>
+          <div className="tilegrid">
+            {SECTIONS.filter((s) => s.group === homeGroup && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
+              <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
+                <span className="tile-ico"><TileIcon name={s.key} /></span>
+                <span className="tile-label">{s.label}</span>
+                <span className="tile-desc">{s.desc}</span>
+                <span className="tile-stat">{tileStat(s.key, event)}</span>
+              </button>
+            ))}
           </div>
-        );
-      })}
+        </>
+      ) : (
+        <div className="tilegrid">
+          {SECTIONS.filter((s) => !s.group && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit)).map((s) => (
+            <button key={s.key} className="tile" style={{ background: s.color }} onClick={() => go(s.key)}>
+              <span className="tile-ico"><TileIcon name={s.key} /></span>
+              <span className="tile-label">{s.label}</span>
+              <span className="tile-desc">{s.desc}</span>
+              <span className="tile-stat">{tileStat(s.key, event)}</span>
+            </button>
+          ))}
+          {GROUP_ORDER.map((grp) => {
+            const secs = SECTIONS.filter((s) => s.group === grp && (!s.adminOnly || isAdmin) && (!s.superOnly || isSuperAdmin) && (!s.editorOnly || canEdit));
+            if (!secs.length) return null;
+            return (
+              <button key={grp} className="tile" style={{ background: GROUP_META[grp] || "#4EA8DE" }} onClick={() => setHomeGroup(grp)}>
+                <span className="tile-ico"><TileIcon name="folder" /></span>
+                <span className="tile-label">{grp}</span>
+                <span className="tile-desc">{secs.length} section{secs.length === 1 ? "" : "s"}</span>
+                <span className="tile-stat">Open →</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {isAdmin && (
         <div className="tab-access-panel">
@@ -6958,7 +6972,8 @@ const CSS = `
 .cb .tile:hover{transform:translateY(-4px); box-shadow:0 12px 26px rgba(0,0,0,.42);}
 .cb .tile:active{transform:translateY(-1px);}
 .cb .tile:focus-visible{outline:3px solid #fff; outline-offset:2px;}
-.cb .tilegroup{margin-bottom:10px;}
+.cb .board-back{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; margin-bottom:14px;}
+.cb .board-back:hover{color:var(--ink); border-color:var(--dim);}
 .cb .tile-ico{color:#1A130B; opacity:.9; margin-bottom:8px; display:block;}
 .cb .tile-label{font-family:'Oswald'; font-weight:600; letter-spacing:.02em; font-size:22px; line-height:1.05; color:#140E06;}
 .cb .tile-desc{font-size:12.5px; font-weight:500; color:rgba(20,14,6,.72);}
