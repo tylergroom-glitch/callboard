@@ -2272,6 +2272,19 @@ const schedDur = (start, end) => {
   const h = Math.floor(d / 60), m = d % 60;
   return (h ? h + "h" : "") + (h && m ? " " : "") + (m ? m + "m" : "");
 };
+// Duration for a schedule item when copying into a rundown: prefer the gap to the
+// next line's start (so start times line up), else fall back to end-minus-start.
+function schedItemDur(items, i) {
+  const it = items[i];
+  const a = schedMinutes(it.time);
+  const nxt = items[i + 1];
+  if (a != null && nxt && schedMinutes(nxt.time) != null) {
+    let d = schedMinutes(nxt.time) - a;
+    if (d < 0) d += 1440;
+    if (d > 0) return String(d);
+  }
+  return schedDur(it.time, it.end);
+}
 
 function schedMinutes(raw) {
   if (raw == null) return null;
@@ -2503,11 +2516,12 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     let firstStart = "", needRoom = false;
     (event.schedule || []).forEach((day) => {
       out.push({ id: uid(), kind: "section", title: (day.label || "Day") + (day.date ? " · " + prettyDate(day.date) : ""), color: "" });
-      (day.items || []).forEach((it) => {
+      const ditems = day.items || [];
+      ditems.forEach((it, di2) => {
         if (!firstStart && it.time) firstStart = it.time;
         const cells = { seg: it.activity || "", notes: it.notes || "" };
         if (it.room) { cells.room = it.room; needRoom = true; }
-        out.push({ id: uid(), kind: "item", dur: schedDur(it.time, it.end), color: it.color || "", done: !!it.done, cells });
+        out.push({ id: uid(), kind: "item", dur: schedItemDur(ditems, di2), color: it.color || "", done: !!it.done, cells });
       });
     });
     return { rows: out, firstStart, needRoom };
@@ -2565,10 +2579,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     const out = [];
     let needRoom = false;
     out.push({ id: uid(), kind: "section", title: (day.label || "Day") + (day.date ? " · " + prettyDate(day.date) : ""), color: "" });
-    (day.items || []).forEach((it) => {
+    const ditems = day.items || [];
+    ditems.forEach((it, di2) => {
       const cells = { seg: it.activity || "", notes: it.notes || "" };
       if (it.room) { cells.room = it.room; needRoom = true; }
-      out.push({ id: uid(), kind: "item", dur: schedDur(it.time, it.end), color: it.color || "", done: !!it.done, cells });
+      out.push({ id: uid(), kind: "item", dur: schedItemDur(ditems, di2), color: it.color || "", done: !!it.done, cells });
     });
     applyRows({ rows: out, firstStart: (day.items && day.items[0] && day.items[0].time) || "", needRoom }, "append");
   };
