@@ -280,13 +280,16 @@ function normalize(e) {
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
   if (!e.rundown.run) e.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
   if (!(Array.isArray(e.rundown.columns) && e.rundown.columns.length)) e.rundown.columns = [
-    { id: "num", type: "num", label: "#" },
+    { id: "num", type: "num", label: "Cue #" },
     { id: "start", type: "start", label: "Start" },
-    { id: "dur", type: "dur", label: "Dur" },
-    { id: "seg", type: "text", label: "Segment" },
+    { id: "dur", type: "dur", label: "Duration" },
     { id: "end", type: "end", label: "End" },
-    { id: "resp", type: "text", label: "Responsible" },
-    { id: "notes", type: "text", label: "Notes/Equipment" },
+    { id: "seg", type: "text", label: "Segment Name" },
+    { id: "screen", type: "text", label: "Screen" },
+    { id: "audio", type: "text", label: "Audio" },
+    { id: "speaker", type: "text", label: "Speaker" },
+    { id: "assets", type: "link", label: "Assets" },
+    { id: "notes", type: "text", label: "Notes" },
   ];
   e.rundown.rows.forEach((r) => { if (r.kind === "item" && !r.cells) r.cells = { seg: r.name || "", resp: r.responsible || "", notes: r.notes || "" }; });
   if (typeof e.rundownUnlocked !== "boolean") e.rundownUnlocked = false;
@@ -400,36 +403,38 @@ function demoEvent() {
       cc("tan", "4:00 PM", "8:00 PM", "Hall C", "Strike & load-out", ""),
     ] },
   ];
-  const ri = (dur, seg, resp, vid, notes, color, done) => ({ id: uid(), kind: "item", dur, color: color || "", done: !!done, cells: { seg, resp: resp || "", vid: vid || "", notes: notes || "" } });
+  const ri = (dur, seg, screen, audio, speaker, notes, color, done) => ({ id: uid(), kind: "item", dur, color: color || "", done: !!done, cells: { seg, screen: screen || "", audio: audio || "", speaker: speaker || "", notes: notes || "" } });
   const rundown = {
     start: "9:00 AM", date: "2026-09-15",
     columns: [
-      { id: "num", type: "num", label: "#" },
-      { id: "start", type: "start", label: "Start" },
-      { id: "dur", type: "dur", label: "Dur" },
-      { id: "seg", type: "text", label: "Segment" },
-      { id: "end", type: "end", label: "End" },
-      { id: "resp", type: "text", label: "Responsible" },
-      { id: "vid", type: "text", label: "Video Notes" },
-      { id: "notes", type: "text", label: "Notes/Equipment" },
+  { id: "num", type: "num", label: "Cue #" },
+  { id: "start", type: "start", label: "Start" },
+  { id: "dur", type: "dur", label: "Duration" },
+  { id: "end", type: "end", label: "End" },
+  { id: "seg", type: "text", label: "Segment Name" },
+  { id: "screen", type: "text", label: "Screen" },
+  { id: "audio", type: "text", label: "Audio" },
+  { id: "speaker", type: "text", label: "Speaker" },
+  { id: "assets", type: "link", label: "Assets" },
+  { id: "notes", type: "text", label: "Notes" },
     ],
     rows: [
       { id: uid(), kind: "section", title: "Pre-Show", color: "gray" },
-      ri("15m", "Walk-in loop & music", "Casey (V1)", "Loop reel 01, hold on logo", "House music bed", "", true),
-      ri("5m", "Doors close / house to half", "Morgan (PM)", "", "Stage manager cue", "", true),
+      ri("15m", "Walk-in loop & music", "Holding slide on screens", "House music bed", "", "", "", true),
+      ri("5m", "Doors close / house to half", "Holding slide", "Stinger ready", "Morgan Avery", "Stage manager cue", "", true),
       { id: uid(), kind: "section", title: "General Session", color: "blue" },
-      ri("10m", "Opening video", "Casey (V1)", "Roll OPEN_v3, 1080p", "Audio stem 2", "blue"),
-      ri("20m", "CEO Keynote", "Sam (A1)", "Center screen IMAG", "Lav mic 1 + handheld", "blue"),
-      ri("15m", "Product Demo", "Drew (Cam)", "Live demo cam + screen capture", "Confidence monitor on", "blue"),
-      ri("10m", "Q&A", "Morgan (PM)", "Two-box: host + audience", "Runner mics x2", "blue"),
+      ri("10m", "Opening video", "Roll OPEN_v3, 1080p", "Audio stem 2", "", "", "blue"),
+      ri("20m", "CEO Keynote", "Center screen IMAG", "Lav mic 1 + handheld", "Sam Rivera", "", "blue"),
+      ri("15m", "Product Demo", "Live demo cam + screen capture", "Confidence monitor on", "Casey Nguyen", "", "blue"),
+      ri("10m", "Q&A", "Two-box: host + audience", "Runner mics x2", "Morgan Avery", "", "blue"),
       { id: uid(), kind: "section", title: "Close", color: "green" },
-      ri("5m", "Closing remarks & CTA", "Sam (A1)", "Lower-third: event hashtag", "", "green"),
-      ri("5m", "Walk-out video", "Casey (V1)", "Roll CLOSE_v2", "House music up", "green"),
+      ri("5m", "Closing remarks & CTA", "Lower-third: event hashtag", "Walk-out music", "Sam Rivera", "", "green"),
+      ri("5m", "Walk-out video", "Roll CLOSE_v2", "House music up", "", "", "green"),
     ],
     run: { on: false, showStart: 0, segIdx: 0, segStart: 0 },
     shares: [
-      { id: "share-video", name: "Video Dept", cols: ["num", "start", "dur", "seg", "end", "vid"], editCols: ["vid"] },
-      { id: "share-audio", name: "Audio Dept", cols: ["num", "start", "dur", "seg", "end", "notes"], editCols: ["notes"] },
+      { id: "share-video", name: "Video Dept", cols: ["num", "start", "dur", "end", "seg", "screen"], editCols: ["screen"] },
+      { id: "share-audio", name: "Audio Dept", cols: ["num", "start", "dur", "end", "seg", "audio"], editCols: ["audio"] },
     ],
   };
   const pi = (drawer, item, qty, source, rentedFrom, notes) => ({ id: uid(), drawer: drawer || "", item, qty, source: source || "TCG", rentedFrom: rentedFrom || "", notes: notes || "", out: false, in: false });
@@ -811,6 +816,7 @@ function Callboard({ auth, onLogout }) {
   const [pnlDashOpen, setPnlDashOpen] = useState(false);
   const [pnlDashBusy, setPnlDashBusy] = useState(false);
   const [pnlDashRows, setPnlDashRows] = useState([]);
+  const [pnlBasis, setPnlBasis] = useState("est");
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
   const [events, setEvents] = useState([]); // summaries
@@ -1184,20 +1190,29 @@ function Callboard({ auth, onLogout }) {
               <h2>P&amp;L — All Shows</h2>
               <button className="pnl-dash-x" onClick={() => setPnlDashOpen(false)}>✕</button>
             </div>
+            {!pnlDashBusy && (
+              <div className="pnl-dash-basis">
+                <button className={"pnl-basis-chip" + (pnlBasis === "est" ? " on" : "")} onClick={() => setPnlBasis("est")}>Estimated</button>
+                <button className={"pnl-basis-chip" + (pnlBasis === "act" ? " on" : "")} onClick={() => setPnlBasis("act")}>Actual</button>
+              </div>
+            )}
             {pnlDashBusy ? (
               <div className="pnl-dash-loading">Loading all shows…</div>
             ) : (
               (() => {
                 const rows = pnlDashRows;
-                const t = rows.reduce((a, r) => { a.revenue += r.revenue; a.cost += r.cost; a.netAct += r.netAct; a.unpaid += r.unpaid; return a; }, { revenue: 0, cost: 0, netAct: 0, unpaid: 0 });
-                const marg = (rev, net) => (rev > 0 ? Math.round((net / rev) * 100) + "%" : "–");
+                const rev = (r) => (pnlBasis === "act" ? r.revAct : r.revEst);
+                const cost = (r) => (pnlBasis === "act" ? r.costAct : r.costEst);
+                const net = (r) => (pnlBasis === "act" ? r.netAct : r.netEst);
+                const t = rows.reduce((a, r) => { a.rev += rev(r); a.cost += cost(r); a.net += net(r); a.unpaid += r.unpaid; return a; }, { rev: 0, cost: 0, net: 0, unpaid: 0 });
+                const marg = (rv, nt) => (rv > 0 ? Math.round((nt / rv) * 100) + "%" : "–");
                 return (
                   <div className="pnl-dash-body">
                     <div className="pnl-dash-cards">
-                      <div className="pnl-dc"><span>Total revenue</span><b>{pnlMoney(t.revenue)}</b></div>
+                      <div className="pnl-dc"><span>Total revenue</span><b>{pnlMoney(t.rev)}</b></div>
                       <div className="pnl-dc"><span>Total cost</span><b>{pnlMoney(t.cost)}</b></div>
-                      <div className="pnl-dc"><span>Net profit</span><b className={t.netAct < 0 ? "neg" : "pos"}>{pnlMoney(t.netAct)}</b></div>
-                      <div className="pnl-dc"><span>Margin</span><b>{marg(t.revenue, t.netAct)}</b></div>
+                      <div className="pnl-dc"><span>Net profit</span><b className={t.net < 0 ? "neg" : "pos"}>{pnlMoney(t.net)}</b></div>
+                      <div className="pnl-dc"><span>Margin</span><b>{marg(t.rev, t.net)}</b></div>
                       <div className="pnl-dc"><span>Outstanding</span><b className={t.unpaid > 0 ? "amber" : ""}>{pnlMoney(t.unpaid)}</b></div>
                     </div>
                     <div className="pnl-dash-scroll">
@@ -1207,10 +1222,10 @@ function Callboard({ auth, onLogout }) {
                           {rows.map((r) => (
                             <tr key={r.id}>
                               <td className="pnl-dash-name">{r.name}{r.startDate ? <em> · {prettyDate(r.startDate)}</em> : null}</td>
-                              <td>{pnlMoney(r.revenue)}</td>
-                              <td>{pnlMoney(r.cost)}</td>
-                              <td className={r.netAct < 0 ? "neg" : "pos"}>{pnlMoney(r.netAct)}</td>
-                              <td>{marg(r.revenue, r.netAct)}</td>
+                              <td>{pnlMoney(rev(r))}</td>
+                              <td>{pnlMoney(cost(r))}</td>
+                              <td className={net(r) < 0 ? "neg" : "pos"}>{pnlMoney(net(r))}</td>
+                              <td>{marg(rev(r), net(r))}</td>
                               <td className={r.unpaid > 0 ? "amber" : ""}>{r.unpaid > 0 ? pnlMoney(r.unpaid) : "–"}</td>
                             </tr>
                           ))}
@@ -2472,13 +2487,16 @@ function fmtLate(sec) {
 const RD_W = { num: 40, start: 84, dur: 64, end: 84, text: 160 };
 const RD_WCSS = { num: "40px", start: "84px", dur: "64px", end: "84px", text: "minmax(150px,1fr)" };
 const RD_DEFAULT_COLS = [
-  { id: "num", type: "num", label: "#" },
+  { id: "num", type: "num", label: "Cue #" },
   { id: "start", type: "start", label: "Start" },
-  { id: "dur", type: "dur", label: "Dur" },
-  { id: "seg", type: "text", label: "Segment" },
+  { id: "dur", type: "dur", label: "Duration" },
   { id: "end", type: "end", label: "End" },
-  { id: "resp", type: "text", label: "Responsible" },
-  { id: "notes", type: "text", label: "Notes/Equipment" },
+  { id: "seg", type: "text", label: "Segment Name" },
+  { id: "screen", type: "text", label: "Screen" },
+  { id: "audio", type: "text", label: "Audio" },
+  { id: "speaker", type: "text", label: "Speaker" },
+  { id: "assets", type: "link", label: "Assets" },
+  { id: "notes", type: "text", label: "Notes" },
 ];
 function RundownTab({ event, update, isAdmin, editor, showId }) {
   const unlocked = !!event.rundownUnlocked;
@@ -2686,6 +2704,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (c.type === "start") return <span className="rd-time" key={c.id}>{pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
     if (c.type === "end") return <span className="rd-time" key={c.id}>{pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder="30m" onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
+    if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
     return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
   };
@@ -2816,13 +2835,15 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             <div className="rd-colrow" key={c.id}>
               <label className="rd-colvis" title={c.hidden ? "Hidden" : "Visible"}><input type="checkbox" checked={!c.hidden} onChange={() => toggleCol(c.id)} /></label>
               <input className="rd-collabel" value={c.label} onChange={(e) => setCol(c.id, "label", e.target.value)} />
-              <span className="rd-coltype">{c.type === "text" ? "text" : "auto"}</span>
+              {c.type === "text" || c.type === "link" ? (
+                <select className="rd-coltypesel" value={c.type} onChange={(e) => setCol(c.id, "type", e.target.value)}><option value="text">Text</option><option value="link">Link</option></select>
+              ) : <span className="rd-coltype">auto</span>}
               <button className="rd-move" onClick={() => moveCol(c.id, -1)}>▲</button>
               <button className="rd-move" onClick={() => moveCol(c.id, 1)}>▼</button>
               {c.type === "text" ? <RemoveBtn onClick={() => removeCol(c.id)} /> : <span className="rd-collock" title="Built-in column (can hide/rename/reorder, not delete)">🔒</span>}
             </div>
           ))}
-          <div className="rd-addrow"><button className="ts-batchbtn" onClick={addCol}>+ Add column</button></div>
+          <div className="rd-addrow"><button className="ts-batchbtn" onClick={addCol}>+ Add column</button><button className="ts-batchbtn" onClick={() => mut((r) => { r.columns = RD_DEFAULT_COLS.map((cc) => ({ ...cc })); })}>Reset to default columns</button></div>
         </div>
       )}
 
@@ -5290,7 +5311,7 @@ function computePnl(c) {
   const cost = laborAct + vendAct + miscAct;
   const unpaidLabor = crewRows.reduce((sm, cm) => { const cc = crewCost[cm.id] || {}; return sm + (cc.paid ? 0 : crewActualUsed(cm.id)); }, 0) + laborExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
   const unpaidVendor = vendorNames.reduce((sm, v) => { const vc = vendorCost[v] || {}; return sm + (vc.paid ? 0 : owed(pnlNum(vc.act), pnlNum(vc.est))); }, 0) + vendorExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
-  return { revenue, cost, billEst, netEst: billEst - laborEst - vendEst - miscEst, netAct: billAct - cost, unpaid: unpaidLabor + unpaidVendor };
+  return { revEst: billEst, revAct: billAct, costEst: laborEst + vendEst + miscEst, costAct: cost, netEst: billEst - laborEst - vendEst - miscEst, netAct: billAct - cost, unpaid: unpaidLabor + unpaidVendor };
 }
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
 
@@ -7103,6 +7124,9 @@ const CSS = `
 .cb .pnl-dash{background:var(--panel); border:1px solid var(--line); border-radius:16px; width:100%; max-width:860px; padding:20px; margin:auto;}
 .cb .pnl-dash-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;}
 .cb .pnl-dash-head h2{font-size:18px; font-weight:800;}
+.cb .pnl-dash-basis{display:inline-flex; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px; margin-bottom:16px;}
+.cb .pnl-basis-chip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 16px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .pnl-basis-chip.on{background:var(--amber); color:#101218;}
 .cb .pnl-dash-x{background:transparent; border:0; color:var(--dim); font-size:18px; cursor:pointer;}
 .cb .pnl-dash-loading{padding:40px; text-align:center; color:var(--dim);}
 .cb .pnl-dash-cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:10px; margin-bottom:18px;}
@@ -7326,6 +7350,8 @@ const CSS = `
 .cb .rd-collabel{flex:1; max-width:320px; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px;}
 .cb .rd-coltype{font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint); width:40px;}
 .cb .rd-collock{opacity:.6; font-size:13px; width:24px; text-align:center;}
+.cb .rd-asset-link{color:var(--accent); text-decoration:none; font-weight:600;}
+.cb .rd-coltypesel{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:4px;}
 .cb .rd-sharehint{color:var(--dim); font-size:13px; padding:4px 0 8px;}
 .cb .rd-daylist{display:flex; flex-direction:column; gap:8px; margin:6px 0 14px; border-top:1px solid var(--line); padding-top:12px;}
 .cb .rd-dayrow{display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink);}
