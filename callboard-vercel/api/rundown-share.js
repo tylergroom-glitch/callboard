@@ -160,6 +160,7 @@ function render(){
       else if(c.type==="end")cell="<span class='rtime'>"+(r.pEnd==null?"\u2014":fmtTOD(r.pEnd))+"</span>";
       else{var cv=c.type==="dur"?(r.dur||""):(r.cells&&r.cells[c.id]?r.cells[c.id]:"");
         if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";
+        else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8;font-weight:600'>Open ↗</a>";
         else cell="<span>"+esc(cv)+"</span>";}
       out+="<div>"+cell+"</div>";
     });
