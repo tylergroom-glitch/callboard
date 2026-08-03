@@ -287,7 +287,7 @@ function normalize(e) {
     { id: "seg", type: "text", label: "Segment Name" },
     { id: "screen", type: "text", label: "Screen" },
     { id: "audio", type: "text", label: "Audio" },
-    { id: "speaker", type: "text", label: "Speaker" },
+    { id: "speaker", type: "text", label: "Speaker" }, { id: "photo", type: "image", label: "Speaker Photo" },
     { id: "assets", type: "link", label: "Assets" },
     { id: "notes", type: "text", label: "Notes" },
   ];
@@ -414,7 +414,7 @@ function demoEvent() {
   { id: "seg", type: "text", label: "Segment Name" },
   { id: "screen", type: "text", label: "Screen" },
   { id: "audio", type: "text", label: "Audio" },
-  { id: "speaker", type: "text", label: "Speaker" },
+  { id: "speaker", type: "text", label: "Speaker" }, { id: "photo", type: "image", label: "Speaker Photo" },
   { id: "assets", type: "link", label: "Assets" },
   { id: "notes", type: "text", label: "Notes" },
     ],
@@ -1160,7 +1160,7 @@ function Callboard({ auth, onLogout }) {
               🖨️ Print / PDF
             </button>
           </div>
-          <main className="content" data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
+          <main className={"content" + (tab === "rundown" ? " content-wide" : "")} data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
             {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
@@ -2494,7 +2494,7 @@ const RD_DEFAULT_COLS = [
   { id: "seg", type: "text", label: "Segment Name" },
   { id: "screen", type: "text", label: "Screen" },
   { id: "audio", type: "text", label: "Audio" },
-  { id: "speaker", type: "text", label: "Speaker" },
+  { id: "speaker", type: "text", label: "Speaker" }, { id: "photo", type: "image", label: "Speaker Photo" },
   { id: "assets", type: "link", label: "Assets" },
   { id: "notes", type: "text", label: "Notes" },
 ];
@@ -2539,6 +2539,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   });
   const totalDur = off;
   const schedEndMin = base == null ? null : base + totalDur;
+  const subLabel = {};
+  (function () { let n2 = 0, si = 0; rows.forEach((r) => { if (r.kind === "item") { n2 = items.indexOf(r) + 1; si = 0; } else if (r.kind === "sub") { subLabel[r.id] = n2 + String.fromCharCode(97 + (si % 26)); si++; } }); })();
 
   const segItem = run.on ? items[run.segIdx] : null;
   const segName = segItem ? ((segItem.cells && (segItem.cells.seg || Object.values(segItem.cells).find((x) => x && String(x).trim()))) || "Segment " + (run.segIdx + 1)) : "";
@@ -2568,8 +2570,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return "minmax(120px,1fr)";
   };
   const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" ? 92 : c.type === "dur" ? 72 : 120);
-  const gridT = visCols.map(colW).join(" ") + (canEdit ? " 214px" : "");
-  const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 214 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
+  const gridT = visCols.map(colW).join(" ") + (canEdit ? " 244px" : "");
+  const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 244 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
 
   const mut = (fn) => update((ev) => {
     if (!ev.rundown) ev.rundown = { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS.map((c) => ({ ...c })), run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
@@ -2602,6 +2604,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const removeRow = (id) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); if (i >= 0) r.rows.splice(i, 1); });
   const moveRow = (id, dir) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= r.rows.length) return; const [x] = r.rows.splice(i, 1); r.rows.splice(j, 0, x); });
   const insertItem = (refId, where) => mut((r) => { const i = r.rows.findIndex((z) => z.id === refId); if (i < 0) return; const at = where === "above" ? i : i + 1; r.rows.splice(at, 0, { id: uid(), kind: "item", dur: "5m", color: "", done: false, cells: {} }); });
+  const addSub = (parentId) => mut((r) => { const i = r.rows.findIndex((z) => z.id === parentId); if (i < 0) return; let jx = i + 1; while (jx < r.rows.length && r.rows[jx].kind === "sub") jx++; r.rows.splice(jx, 0, { id: uid(), kind: "sub", dur: "", cells: {} }); });
   const setCol = (id, k, v) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c[k] = v; });
   const toggleCol = (id) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c.hidden = !c.hidden; });
   const addCol = () => mut((r) => r.columns.push({ id: uid(), type: "text", label: "New column" }));
@@ -2733,11 +2736,14 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
-  const renderCell = (r, c, pl, num) => {
-    if (c.type === "num") return <span className="rd-num" key={c.id}>{num}</span>;
-    if (c.type === "start") return <span className="rd-time" key={c.id}>{pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
-    if (c.type === "end") return <span className="rd-time" key={c.id}>{pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
-    if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder="30m" onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
+  const renderCell = (r, c, pl, num, isSub, subLbl) => {
+    if (c.type === "num") return <span className={"rd-num" + (isSub ? " rd-subnum" : "")} key={c.id}>{isSub ? subLbl : num}</span>;
+    if (c.type === "start") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
+    if (c.type === "end") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
+    if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder={isSub ? "len" : "30m"} onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
+    if (c.type === "image") { const iv = r.cells ? r.cells[c.id] || "" : "";
+      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
+      return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
     if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
     return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
@@ -2777,6 +2783,12 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             <div className="rd-countbox">
               <span className="rd-count-label">On air: {segName}</span>
               <span className={"rd-count" + (remaining < 0 ? " over" : "")}>{fmtClock(remaining)}</span>
+            </div>
+          )}
+          {run.on && (
+            <div className="rd-ou">
+              <span>Over / Under</span>
+              <b className={Math.abs(totalLate) < 30 ? "ontime" : totalLate > 0 ? "over" : "under"}>{Math.abs(totalLate) < 30 ? "On time" : (totalLate > 0 ? "+" : "−") + fmtClock(Math.abs(totalLate))}</b>
             </div>
           )}
           <div className="rd-tod"><span>Time of day</span><b>{todClock(now)}</b></div>
@@ -2873,8 +2885,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             <div className="rd-colrow" key={c.id}>
               <label className="rd-colvis" title={c.hidden ? "Hidden" : "Visible"}><input type="checkbox" checked={!c.hidden} onChange={() => toggleCol(c.id)} /></label>
               <input className="rd-collabel" value={c.label} onChange={(e) => setCol(c.id, "label", e.target.value)} />
-              {c.type === "text" || c.type === "link" ? (
-                <select className="rd-coltypesel" value={c.type} onChange={(e) => setCol(c.id, "type", e.target.value)}><option value="text">Text</option><option value="link">Link</option></select>
+              {c.type === "text" || c.type === "link" || c.type === "image" ? (
+                <select className="rd-coltypesel" value={c.type} onChange={(e) => setCol(c.id, "type", e.target.value)}><option value="text">Text</option><option value="link">Link</option><option value="image">Image</option></select>
               ) : <span className="rd-coltype">auto</span>}
               <button className="rd-move" onClick={() => moveCol(c.id, -1)}>▲</button>
               <button className="rd-move" onClick={() => moveCol(c.id, 1)}>▼</button>
@@ -2937,6 +2949,20 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                 </div>
               );
             }
+            if (r.kind === "sub") {
+              return (
+                <div className="row rd-grid rd-sub" key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, width: "100%", paddingLeft: 8 }}>
+                  {visCols.map((c) => renderCell(r, c, {}, 0, true, subLabel[r.id]))}
+                  {canEdit && (
+                    <div className="rd-rowctrl">
+                      <button className="rd-move" title="Move up" onClick={() => moveRow(r.id, -1)}>▲</button>
+                      <button className="rd-move" title="Move down" onClick={() => moveRow(r.id, 1)}>▼</button>
+                      <RemoveBtn onClick={() => removeRow(r.id)} />
+                    </div>
+                  )}
+                </div>
+              );
+            }
             const pl = planned[r.id] || {};
             const scol = schedColor(r.color);
             const isLive = run.on && segItem && segItem.id === r.id;
@@ -2950,6 +2976,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                     <select value={r.color || ""} onChange={(e) => setRow(r.id, "color", e.target.value)}>{SCHED_COLORS.map((cc) => <option key={cc.key} value={cc.key}>{cc.label}</option>)}</select>
                     <button className="rd-move rd-ins" title="Insert segment above" onClick={() => insertItem(r.id, "above")}>↑+</button>
                     <button className="rd-move rd-ins" title="Insert segment below" onClick={() => insertItem(r.id, "below")}>↓+</button>
+                    <button className="rd-move rd-subadd" title="Add sub-cue (20a, 20b…)" onClick={() => addSub(r.id)}>a+</button>
                     <button className="rd-move" title="Move up" onClick={() => moveRow(r.id, -1)}>▲</button>
                     <button className="rd-move" title="Move down" onClick={() => moveRow(r.id, 1)}>▼</button>
                     <RemoveBtn onClick={() => removeRow(r.id)} />
@@ -7121,6 +7148,7 @@ const CSS = `
 
 /* content */
 .cb .content{max-width:1080px; margin:0 auto; padding:22px 20px;}
+.cb .content.content-wide{max-width:none; padding-left:24px; padding-right:24px;}
 .cb .stack{display:flex; flex-direction:column; gap:18px;}
 .cb .tab-lead{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; color:var(--dim); font-size:13.5px;}
 .cb .tab-lead p{margin:0;}
@@ -7363,6 +7391,12 @@ const CSS = `
 .cb .rd-count{font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--green); line-height:1.1;}
 .cb .rd-count.over{color:#f87171;}
 .cb .rd-tod, .cb .rd-ends{display:flex; flex-direction:column; gap:1px;}
+.cb .rd-ou{display:flex; flex-direction:column; gap:1px;}
+.cb .rd-ou span{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700;}
+.cb .rd-ou b{font-size:20px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1.1;}
+.cb .rd-ou b.ontime{color:var(--green);}
+.cb .rd-ou b.over{color:#f87171;}
+.cb .rd-ou b.under{color:var(--accent);}
 .cb .rd-tod span, .cb .rd-ends span{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700;}
 .cb .rd-tod b, .cb .rd-ends b{font-size:17px; font-variant-numeric:tabular-nums;}
 .cb .rd-ends em{font-size:12px; font-style:normal; font-weight:700; color:var(--dim);}
@@ -7388,6 +7422,8 @@ const CSS = `
 .cb .rd-move:hover{color:var(--ink); border-color:var(--dim);}
 .cb .rd-ins{color:var(--green); font-weight:700; font-size:11px;}
 .cb .rd-ins:hover{border-color:var(--green);}
+.cb .rd-subadd{color:var(--accent); font-weight:700; font-size:11px;}
+.cb .rd-subadd:hover{border-color:var(--accent);}
 .cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
 .cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .cb .rd-resize{position:absolute; top:-5px; right:-4px; width:10px; height:calc(100% + 10px); cursor:col-resize; touch-action:none; z-index:2;}
@@ -7402,6 +7438,13 @@ const CSS = `
 .cb .rd-collock{opacity:.6; font-size:13px; width:24px; text-align:center;}
 .cb .rd-asset-link{color:var(--accent); text-decoration:none; font-weight:600;}
 .cb .rd-coltypesel{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:4px;}
+.cb .rd-thumb{width:34px; height:34px; object-fit:cover; border-radius:6px; border:1px solid var(--line); display:block;}
+.cb .rd-imgcell{display:flex; align-items:center; gap:6px; min-width:0;}
+.cb .rd-imgcell input{min-width:0;}
+.cb .rd-imgview a{color:var(--accent); font-weight:600; text-decoration:none;}
+.cb .rd-sub{opacity:.92;}
+.cb .rd-sub input{background:transparent;}
+.cb .rd-subnum{color:var(--accent); font-weight:700; font-size:12px; padding-left:14px;}
 .cb .rd-sharehint{color:var(--dim); font-size:13px; padding:4px 0 8px;}
 .cb .rd-daylist{display:flex; flex-direction:column; gap:8px; margin:6px 0 14px; border-top:1px solid var(--line); padding-top:12px;}
 .cb .rd-dayrow{display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink);}
