@@ -2511,6 +2511,9 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const [resz, setResz] = useState(null);
   const reszRef = useRef(null);
   const lastW = useRef(0);
+  const [rowResz, setRowResz] = useState(null);
+  const rowReszRef = useRef(null);
+  const lastRowH = useRef(0);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
@@ -2598,6 +2601,22 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     document.addEventListener("pointerup", onUp);
     return () => { document.removeEventListener("pointermove", onMove); document.removeEventListener("pointerup", onUp); };
   }, [resz && resz.id]);
+  const startRowResize = (e, r) => {
+    e.preventDefault(); e.stopPropagation();
+    const rowEl = e.currentTarget.parentElement;
+    const startH = rowEl ? rowEl.getBoundingClientRect().height : 60;
+    rowReszRef.current = { id: r.id, startY: e.clientY, startH: Math.round(startH) };
+    lastRowH.current = Math.round(startH);
+    setRowResz({ id: r.id, h: Math.round(startH) });
+  };
+  useEffect(() => {
+    if (!rowResz) return;
+    const onMove = (e) => { const rr = rowReszRef.current; if (!rr) return; const hh = Math.max(34, Math.round(rr.startH + (e.clientY - rr.startY))); lastRowH.current = hh; setRowResz({ id: rr.id, h: hh }); };
+    const onUp = () => { const rr = rowReszRef.current; if (rr) { const id = rr.id, hh = lastRowH.current; mut((rd) => { const x = rd.rows.find((z) => z.id === id); if (x) x.h = hh; }); } rowReszRef.current = null; setRowResz(null); };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => { document.removeEventListener("pointermove", onMove); document.removeEventListener("pointerup", onUp); };
+  }, [rowResz && rowResz.id]);
   const setRow = (id, k, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x[k] = v; });
   const setCell = (id, colId, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) { if (!x.cells) x.cells = {}; x.cells[colId] = v; } });
   const setMeta = (k, v) => mut((r) => { r[k] = v; });
@@ -2740,14 +2759,14 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
-  const renderCell = (r, c, pl, num, isSub, subLbl) => {
+  const renderCell = (r, c, pl, num, isSub, subLbl, thumb) => {
     if (c.type === "num") return <span className={"rd-num" + (isSub ? " rd-subnum" : "")} key={c.id}>{isSub ? subLbl : num}</span>;
     if (c.type === "start") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
     if (c.type === "end") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder={isSub ? "len" : "30m"} onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
     if (c.type === "image") { const iv = r.cells ? r.cells[c.id] || "" : "";
-      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumbSize, height: thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
-      return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" style={{ width: thumbSize, height: thumbSize }} alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
+      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
+      return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
     if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
     return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
@@ -2955,9 +2974,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
               );
             }
             if (r.kind === "sub") {
+              const rh = rowResz && rowResz.id === r.id ? rowResz.h : (r.h || rowH);
+              const rowThumb = Math.max(24, rh - 14);
               return (
-                <div className="row rd-grid rd-sub" key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, width: "100%", paddingLeft: 8, minHeight: rowH }}>
-                  {visCols.map((c) => renderCell(r, c, {}, 0, true, subLabel[r.id]))}
+                <div className="row rd-grid rd-sub" key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, width: "100%", paddingLeft: 8, minHeight: rh }}>
+                  {visCols.map((c) => renderCell(r, c, {}, 0, true, subLabel[r.id], rowThumb))}
                   {canEdit && (
                     <div className="rd-rowctrl">
                       <button className="rd-move rd-conv" title="Convert to a full segment" onClick={() => toItem(r.id)}>seg</button>
@@ -2966,6 +2987,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                       <RemoveBtn onClick={() => removeRow(r.id)} />
                     </div>
                   )}
+                  {canEdit && <span className="rd-rowresize" onPointerDown={(e) => startRowResize(e, r)} />}
                 </div>
               );
             }
@@ -2973,9 +2995,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             const scol = schedColor(r.color);
             const isLive = run.on && segItem && segItem.id === r.id;
             const num = items.indexOf(r) + 1;
+            const rh = rowResz && rowResz.id === r.id ? rowResz.h : (r.h || rowH);
+            const rowThumb = Math.max(24, rh - 14);
             return (
-              <div className={"row rd-grid" + (isLive ? " rd-live" : "") + (r.done ? " sched-done" : "")} key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, borderLeft: "4px solid " + scol.bar, background: isLive ? "rgba(34,197,94,.12)" : scol.bg, paddingLeft: 8, minHeight: rowH }}>
-                {visCols.map((c) => renderCell(r, c, pl, num))}
+              <div className={"row rd-grid" + (isLive ? " rd-live" : "") + (r.done ? " sched-done" : "")} key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, borderLeft: "4px solid " + scol.bar, background: isLive ? "rgba(34,197,94,.12)" : scol.bg, paddingLeft: 8, minHeight: rh }}>
+                {visCols.map((c) => renderCell(r, c, pl, num, undefined, undefined, rowThumb))}
                 {canEdit && (
                   <div className="rd-rowctrl">
                     <input type="checkbox" className="sched-done-ck" checked={!!r.done} title="Mark done" onChange={() => toggleDone(r.id)} />
@@ -2989,6 +3013,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                     <RemoveBtn onClick={() => removeRow(r.id)} />
                   </div>
                 )}
+                {canEdit && <span className="rd-rowresize" onPointerDown={(e) => startRowResize(e, r)} />}
               </div>
             );
           })}
@@ -7413,10 +7438,12 @@ const CSS = `
 .cb .rd-config label{font-size:12px; color:var(--dim); display:flex; gap:8px; align-items:center;}
 .cb .rd-config input{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px; font-variant-numeric:tabular-nums;}
 .cb .rd-total{font-size:12px; color:var(--dim);}
-.cb .rd-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
+.cb .rd-scroll{overflow:auto; max-height:calc(100vh - 240px); min-height:300px; -webkit-overflow-scrolling:touch;}
 .cb .rd-grid{display:grid; grid-template-columns:38px 84px 64px minmax(180px,1.4fr) 84px 140px minmax(140px,1fr) 148px; gap:8px; align-items:center; min-width:944px;}
-.cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px;}
-.cb .rowhead.rd-grid{padding:0 6px 5px 12px;}
+.cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px; position:relative;}
+.cb .rd-rowresize{position:absolute; left:0; right:0; bottom:-3px; height:8px; cursor:row-resize; touch-action:none; z-index:2;}
+.cb .rd-rowresize:hover{background:rgba(0,180,216,.35);}
+.cb .rowhead.rd-grid{padding:8px 6px 8px 12px; position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line);}
 .cb .rd-section{min-width:944px; display:flex; align-items:center; gap:10px; padding:8px 12px; margin:14px 0 6px; border-radius:0 6px 6px 0;}
 .cb .rd-section-title{background:transparent; border:0; color:var(--ink); font-weight:800; font-size:14px; flex:1; letter-spacing:.02em;}
 .cb .rd-live{outline:2px solid var(--green); outline-offset:-2px;}
