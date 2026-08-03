@@ -3001,6 +3001,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
       {rows.length === 0 ? (
         <Panel title="Run of Show"><Empty>{canEdit ? "No rundown yet. Add a section and segments to build your running order." : "No rundown posted yet."}</Empty></Panel>
       ) : (
+        <>
         <div className="rd-zoombar"><span className="rd-zoomhint">Pinch or Ctrl/⌘-scroll to zoom</span><div className="rd-zoomctl"><button onClick={() => applyZoom(zoom - 0.1)} title="Zoom out">−</button><button className="rd-zoompct" onClick={() => applyZoom(1)} title="Reset to 100%">{Math.round(zoom * 100)}%</button><button onClick={() => applyZoom(zoom + 0.1)} title="Zoom in">+</button></div></div>
         <div className="rd-scroll" ref={scrollRef}>
           <div className="rd-zoom" style={{ zoom }}>
@@ -3071,6 +3072,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           })}
           </div>
         </div>
+        </>
       )}
 
       {canEdit && (
