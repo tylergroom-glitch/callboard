@@ -2570,8 +2570,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return "minmax(120px,1fr)";
   };
   const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" ? 92 : c.type === "dur" ? 72 : 120);
-  const gridT = visCols.map(colW).join(" ") + (canEdit ? " 244px" : "");
-  const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 244 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
+  const gridT = visCols.map(colW).join(" ") + (canEdit ? " 284px" : "");
+  const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 284 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
 
   const mut = (fn) => update((ev) => {
     if (!ev.rundown) ev.rundown = { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS.map((c) => ({ ...c })), run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
@@ -2605,6 +2605,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const moveRow = (id, dir) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= r.rows.length) return; const [x] = r.rows.splice(i, 1); r.rows.splice(j, 0, x); });
   const insertItem = (refId, where) => mut((r) => { const i = r.rows.findIndex((z) => z.id === refId); if (i < 0) return; const at = where === "above" ? i : i + 1; r.rows.splice(at, 0, { id: uid(), kind: "item", dur: "5m", color: "", done: false, cells: {} }); });
   const addSub = (parentId) => mut((r) => { const i = r.rows.findIndex((z) => z.id === parentId); if (i < 0) return; let jx = i + 1; while (jx < r.rows.length && r.rows[jx].kind === "sub") jx++; r.rows.splice(jx, 0, { id: uid(), kind: "sub", dur: "", cells: {} }); });
+  const toSub = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x && x.kind === "item") x.kind = "sub"; });
+  const toItem = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x && x.kind === "sub") { x.kind = "item"; if (!x.dur) x.dur = "5m"; if (!x.cells) x.cells = {}; } });
   const setCol = (id, k, v) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c[k] = v; });
   const toggleCol = (id) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c.hidden = !c.hidden; });
   const addCol = () => mut((r) => r.columns.push({ id: uid(), type: "text", label: "New column" }));
@@ -2955,6 +2957,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                   {visCols.map((c) => renderCell(r, c, {}, 0, true, subLabel[r.id]))}
                   {canEdit && (
                     <div className="rd-rowctrl">
+                      <button className="rd-move rd-conv" title="Convert to a full segment" onClick={() => toItem(r.id)}>seg</button>
                       <button className="rd-move" title="Move up" onClick={() => moveRow(r.id, -1)}>▲</button>
                       <button className="rd-move" title="Move down" onClick={() => moveRow(r.id, 1)}>▼</button>
                       <RemoveBtn onClick={() => removeRow(r.id)} />
@@ -2977,6 +2980,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                     <button className="rd-move rd-ins" title="Insert segment above" onClick={() => insertItem(r.id, "above")}>↑+</button>
                     <button className="rd-move rd-ins" title="Insert segment below" onClick={() => insertItem(r.id, "below")}>↓+</button>
                     <button className="rd-move rd-subadd" title="Add sub-cue (20a, 20b…)" onClick={() => addSub(r.id)}>a+</button>
+                    <button className="rd-move rd-conv" title="Convert to a sub-cue of the segment above" onClick={() => toSub(r.id)}>sub</button>
                     <button className="rd-move" title="Move up" onClick={() => moveRow(r.id, -1)}>▲</button>
                     <button className="rd-move" title="Move down" onClick={() => moveRow(r.id, 1)}>▼</button>
                     <RemoveBtn onClick={() => removeRow(r.id)} />
@@ -7408,7 +7412,7 @@ const CSS = `
 .cb .rd-total{font-size:12px; color:var(--dim);}
 .cb .rd-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
 .cb .rd-grid{display:grid; grid-template-columns:38px 84px 64px minmax(180px,1.4fr) 84px 140px minmax(140px,1fr) 148px; gap:8px; align-items:center; min-width:944px;}
-.cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px;}
+.cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px;}
 .cb .rowhead.rd-grid{padding:0 6px 5px 12px;}
 .cb .rd-section{min-width:944px; display:flex; align-items:center; gap:10px; padding:8px 12px; margin:14px 0 6px; border-radius:0 6px 6px 0;}
 .cb .rd-section-title{background:transparent; border:0; color:var(--ink); font-weight:800; font-size:14px; flex:1; letter-spacing:.02em;}
@@ -7424,6 +7428,8 @@ const CSS = `
 .cb .rd-ins:hover{border-color:var(--green);}
 .cb .rd-subadd{color:var(--accent); font-weight:700; font-size:11px;}
 .cb .rd-subadd:hover{border-color:var(--accent);}
+.cb .rd-conv{color:var(--amber); font-weight:700; font-size:10px; width:auto; padding:0 6px;}
+.cb .rd-conv:hover{border-color:var(--amber);}
 .cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
 .cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .cb .rd-resize{position:absolute; top:-5px; right:-4px; width:10px; height:calc(100% + 10px); cursor:col-resize; touch-action:none; z-index:2;}
@@ -7438,7 +7444,7 @@ const CSS = `
 .cb .rd-collock{opacity:.6; font-size:13px; width:24px; text-align:center;}
 .cb .rd-asset-link{color:var(--accent); text-decoration:none; font-weight:600;}
 .cb .rd-coltypesel{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:4px;}
-.cb .rd-thumb{width:34px; height:34px; object-fit:cover; border-radius:6px; border:1px solid var(--line); display:block;}
+.cb .rd-thumb{width:52px; height:52px; object-fit:cover; border-radius:6px; border:1px solid var(--line); display:block;}
 .cb .rd-imgcell{display:flex; align-items:center; gap:6px; min-width:0;}
 .cb .rd-imgcell input{min-width:0;}
 .cb .rd-imgview a{color:var(--accent); font-weight:600; text-decoration:none;}
