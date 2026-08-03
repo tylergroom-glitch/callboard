@@ -2503,7 +2503,6 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const canEdit = isAdmin || editor || unlocked;
   const rd = event.rundown || { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS, run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   const rows = rd.rows || [];
-  const run = (!canEdit && liveRun) ? liveRun : (rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 });
   const columns = rd.columns && rd.columns.length ? rd.columns : RD_DEFAULT_COLS;
   const visCols = columns.filter((c) => !c.hidden);
   const printCols = columns.filter((c) => c.type !== "image");
@@ -2518,6 +2517,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const [liveRun, setLiveRun] = useState(null);
   const liveRunRef = useRef(null);
   const lastCommit = useRef(0);
+  const [optRun, setOptRun] = useState(null);
+  const run = (Date.now() - lastCommit.current < 6000 && optRun) ? optRun : (liveRun || rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 });
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
@@ -2533,7 +2534,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return () => clearInterval(t);
   }, []);
   useEffect(() => {
-    if (!showId || canEdit) return;
+    if (!showId) return;
     let alive = true, timer = null;
     const poll = async () => {
       try {
@@ -2548,7 +2549,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     };
     poll();
     return () => { alive = false; if (timer) clearTimeout(timer); };
-  }, [showId, canEdit]);
+  }, [showId]);
 
   const base = schedMinutes(rd.start);
   const items = rows.filter((r) => r.kind === "item");
@@ -2773,10 +2774,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return days;
   };
   const copyToSchedule = (mode) => { const days = rundownToSchedule(); if (!days.length) return; update((ev) => { ev.schedule = mode === "replace" ? days : (ev.schedule || []).concat(days); }); setToSchedOpen(false); };
-  const startShow = () => mut((r) => { r.run = { on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() }; });
-  const endShow = () => mut((r) => { r.run.on = false; });
-  const nextSeg = () => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); if (r.run.segIdx < its.length - 1) { r.run.segIdx++; r.run.segStart = Date.now(); } else { r.run.on = false; } });
-  const prevSeg = () => mut((r) => { if (r.run.segIdx > 0) { r.run.segIdx--; r.run.segStart = Date.now(); } });
+  const commitRun = (nr) => { lastCommit.current = Date.now(); setOptRun(nr); mut((r) => { r.run = nr; }); };
+  const startShow = () => commitRun({ on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() });
+  const endShow = () => commitRun({ ...run, on: false });
+  const nextSeg = () => { if (run.segIdx < items.length - 1) commitRun({ ...run, segIdx: run.segIdx + 1, segStart: Date.now() }); else commitRun({ ...run, on: false }); };
+  const prevSeg = () => { if (run.segIdx > 0) commitRun({ ...run, segIdx: run.segIdx - 1, segStart: Date.now() }); };
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
