@@ -2616,14 +2616,18 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const segName = segItem ? ((segItem.cells && (segItem.cells.seg || Object.values(segItem.cells).find((x) => x && String(x).trim()))) || "Segment " + (run.segIdx + 1)) : "";
   let remaining = 0, totalLate = 0;
   if (run.on && segItem) {
-    const segDurSec = parseDur(segItem.dur) * 60;
-    const elapsed = (now - run.segStart) / 1000;
-    remaining = segDurSec - elapsed;
+    const segDurMin = parseDur(segItem.dur);
+    const nd = new Date(now);
+    const nowMin = nd.getHours() * 60 + nd.getMinutes() + nd.getSeconds() / 60;
+    const segTs = new Date(run.segStart);
+    const actualStartMin = segItem.actualStart != null ? segItem.actualStart : (segTs.getHours() * 60 + segTs.getMinutes() + segTs.getSeconds() / 60);
+    const elapsedMin = nowMin - actualStartMin;
+    remaining = (segDurMin - elapsedMin) * 60;
     let plannedOff = 0;
     for (let i = 0; i < run.segIdx; i++) plannedOff += parseDur(items[i].dur);
-    const actualOff = (run.segStart - run.showStart) / 1000;
-    const overage = Math.max(0, elapsed - segDurSec);
-    totalLate = (actualOff - plannedOff * 60) + overage;
+    const plannedStartMin = base == null ? null : base + plannedOff;
+    const overageMin = Math.max(0, elapsedMin - segDurMin);
+    totalLate = plannedStartMin == null ? overageMin * 60 : ((actualStartMin - plannedStartMin) + overageMin) * 60;
   }
   const rdTotalSec = items.reduce((sm, it) => sm + parseDur(it.dur) * 60, 0);
   const rdElapsed = run.on ? (now - run.showStart) / 1000 : 0;
