@@ -2553,6 +2553,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     const overage = Math.max(0, elapsed - segDurSec);
     totalLate = (actualOff - plannedOff * 60) + overage;
   }
+  const rdTotalSec = items.reduce((sm, it) => sm + parseDur(it.dur) * 60, 0);
+  const rdElapsed = run.on ? (now - run.showStart) / 1000 : 0;
+  const rdFrac = run.on && rdTotalSec > 0 ? Math.min(1, Math.max(0, rdElapsed / rdTotalSec)) : 0;
+  const rdOver = run.on && rdElapsed > rdTotalSec;
+  const rdColor = rdOver ? "#EF4444" : rdFrac > 0.85 ? "#F59E0B" : "#00B4D8";
 
   const colW = (c) => {
     if (resz && resz.id === c.id) return resz.w + "px";
@@ -2778,6 +2783,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           <div className="rd-ends"><span>Rundown ends</span><b>{schedEndMin == null ? "—" : fmtTOD(schedEndMin + (run.on ? totalLate / 60 : 0))}</b>{run.on && <em className={totalLate > 30 ? "late" : totalLate < -30 ? "early" : ""}>{fmtLate(totalLate)}</em>}</div>
         </div>
       </div>
+
+      {run.on && (
+        <div className="rd-progress"><div className="rd-progress-fill" style={{ width: (rdFrac * 100) + "%", background: rdColor }} /></div>
+      )}
 
       {canEdit && (
         <div className="rd-config">
@@ -7340,6 +7349,8 @@ const CSS = `
 .cb .sched-ro-row.sched-done .sched-ro-time, .cb .sched-ro-row.sched-done .sched-ro-act{text-decoration:line-through;}
 .cb .sched-hidden-note{font-size:12px; color:var(--faint); font-style:italic; padding:6px 2px 2px;}
 .cb .rd-clockbar{display:flex; flex-wrap:wrap; gap:16px 24px; justify-content:space-between; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px;}
+.cb .rd-progress{height:8px; background:var(--panel2); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin:-2px 0 14px;}
+.cb .rd-progress-fill{height:100%; border-radius:6px; transition:width .4s linear, background .3s;}
 .cb .rd-clock-left{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
 .cb .rd-clock-right{display:flex; gap:22px; align-items:center; flex-wrap:wrap;}
 .cb .rd-start{border:0; border-radius:8px; padding:11px 20px; font-family:'Inter'; font-weight:700; font-size:14px; cursor:pointer; background:var(--green); color:#08120a;}
