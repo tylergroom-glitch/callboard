@@ -2572,6 +2572,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" ? 92 : c.type === "dur" ? 72 : 120);
   const gridT = visCols.map(colW).join(" ") + (canEdit ? " 284px" : "");
   const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 284 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
+  const rowH = rd.rowH || 60;
+  const thumbSize = Math.max(24, rowH - 14);
 
   const mut = (fn) => update((ev) => {
     if (!ev.rundown) ev.rundown = { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS.map((c) => ({ ...c })), run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
@@ -2744,8 +2746,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (c.type === "end") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder={isSub ? "len" : "30m"} onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
     if (c.type === "image") { const iv = r.cells ? r.cells[c.id] || "" : "";
-      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
-      return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
+      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumbSize, height: thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
+      return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" style={{ width: thumbSize, height: thumbSize }} alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
     if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
     return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
@@ -2807,6 +2809,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           <label>Show start <input value={rd.start || ""} placeholder="10:00 AM" onChange={(e) => setMeta("start", e.target.value)} onBlur={(e) => setMeta("start", fmtSchedTime(e.target.value))} /></label>
           <label>Date <input type="date" value={rd.date || ""} onChange={(e) => setMeta("date", e.target.value)} /></label>
           <span className="rd-total">Total runtime: {Math.floor(totalDur / 60)}h {totalDur % 60}m · {items.length} segment{items.length === 1 ? "" : "s"}</span>
+          <label className="rd-rowh">Row height <input type="range" min="40" max="160" value={rowH} onChange={(e) => setMeta("rowH", Number(e.target.value))} /></label>
           <button className={"ts-batchbtn" + (colMgr ? " on" : "")} onClick={() => setColMgr((v) => !v)}>Edit columns</button>
           {isAdmin && <button className={"ts-batchbtn" + (shareOpen ? " on" : "")} onClick={() => setShareOpen((v) => !v)}>Share links</button>}
           <button className={"ts-batchbtn" + (copyOpen ? " on" : "")} onClick={() => { setCopyOpen((v) => !v); setImpOpen(false); }}>Copy from Schedule</button>
@@ -2953,7 +2956,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             }
             if (r.kind === "sub") {
               return (
-                <div className="row rd-grid rd-sub" key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, width: "100%", paddingLeft: 8 }}>
+                <div className="row rd-grid rd-sub" key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, width: "100%", paddingLeft: 8, minHeight: rowH }}>
                   {visCols.map((c) => renderCell(r, c, {}, 0, true, subLabel[r.id]))}
                   {canEdit && (
                     <div className="rd-rowctrl">
@@ -2971,7 +2974,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             const isLive = run.on && segItem && segItem.id === r.id;
             const num = items.indexOf(r) + 1;
             return (
-              <div className={"row rd-grid" + (isLive ? " rd-live" : "") + (r.done ? " sched-done" : "")} key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, borderLeft: "4px solid " + scol.bar, background: isLive ? "rgba(34,197,94,.12)" : scol.bg, paddingLeft: 8 }}>
+              <div className={"row rd-grid" + (isLive ? " rd-live" : "") + (r.done ? " sched-done" : "")} key={r.id} style={{ gridTemplateColumns: gridT, minWidth: minW, borderLeft: "4px solid " + scol.bar, background: isLive ? "rgba(34,197,94,.12)" : scol.bg, paddingLeft: 8, minHeight: rowH }}>
                 {visCols.map((c) => renderCell(r, c, pl, num))}
                 {canEdit && (
                   <div className="rd-rowctrl">
@@ -7430,6 +7433,8 @@ const CSS = `
 .cb .rd-subadd:hover{border-color:var(--accent);}
 .cb .rd-conv{color:var(--amber); font-weight:700; font-size:10px; width:auto; padding:0 6px;}
 .cb .rd-conv:hover{border-color:var(--amber);}
+.cb .rd-rowh{display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim);}
+.cb .rd-rowh input[type="range"]{width:110px; accent-color:var(--accent); cursor:pointer;}
 .cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
 .cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .cb .rd-resize{position:absolute; top:-5px; right:-4px; width:10px; height:calc(100% + 10px); cursor:col-resize; touch-action:none; z-index:2;}
