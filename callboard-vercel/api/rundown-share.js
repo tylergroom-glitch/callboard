@@ -125,12 +125,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .foot{color:#6b7280;font-size:12px;margin-top:14px;text-align:center}
 .prog{height:8px;background:#1c2230;border:1px solid #2b3345;border-radius:6px;overflow:hidden;margin-bottom:14px}
 .progfill{height:100%;border-radius:6px;transition:width .4s linear,background .3s}
+#ou{font-size:19px;font-weight:800}#ou.ontime{color:#22c55e}#ou.over{color:#f87171}#ou.under{color:#00B4D8}
 </style></head>
 <body>
 <div class="top">
   <div class="ttl">${shareName}<small>${showName}</small></div>
   <div class="clk">
     <div class="cbox" id="cbox" style="display:none"><span class="cseg" id="cseg"></span><span class="ccount" id="ccount"></span></div>
+    <div class="fld" id="oubox" style="display:none"><span>Over / Under</span><b id="ou"></b></div>
     <div class="fld"><span>Time of day</span><b id="tod">—</b></div>
     <div class="fld"><span>Rundown ends</span><b id="ends">—</b><em id="late"></em></div>
   </div>
@@ -197,10 +199,11 @@ function clock(){
     var poff=0;for(var i=0;i<run.segIdx;i++)poff+=its[i].durSec;
     var aoff=(run.segStart-run.showStart)/1000;var over=Math.max(0,el-seg.durSec);var late=(aoff-poff)+over;
     cbox.style.display="";document.getElementById("cseg").textContent="On air: "+segName(seg);
+    var oubox=document.getElementById("oubox"),ouv=document.getElementById("ou");oubox.style.display="";var oa=Math.abs(late);ouv.textContent=oa<30?"On time":(late>0?"+":"\u2212")+fmtClock(oa);ouv.className=oa<30?"ontime":(late>0?"over":"under");
     var cc=document.getElementById("ccount");cc.textContent=fmtClock(rem);cc.className="ccount"+(rem<0?" over":"");
     endEl.textContent=schedEnd==null?"\u2014":fmtTOD(schedEnd+late/60);
     lateEl.textContent=fmtLate(late);lateEl.className=(late>30?"lt":late<-30?"er":"");
-  }else{cbox.style.display="none";endEl.textContent=schedEnd==null?"\u2014":fmtTOD(schedEnd);lateEl.textContent="";}
+  }else{cbox.style.display="none";var oub=document.getElementById("oubox");if(oub)oub.style.display="none";endEl.textContent=schedEnd==null?"\u2014":fmtTOD(schedEnd);lateEl.textContent="";}
   var prog=document.getElementById("prog"),pf=document.getElementById("progfill");
   if(run.on){var tot=0;its.forEach(function(x){tot+=x.durSec;});var elp=(now-run.showStart)/1000;var frac=tot>0?Math.min(1,Math.max(0,elp/tot)):0;var ov=elp>tot;prog.style.display="";pf.style.width=(frac*100)+"%";pf.style.background=ov?"#EF4444":(frac>0.85?"#F59E0B":"#00B4D8");}else{prog.style.display="none";}
 }
