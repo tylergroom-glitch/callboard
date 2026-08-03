@@ -2519,6 +2519,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const lastCommit = useRef(0);
   const [optRun, setOptRun] = useState(null);
   const run = (Date.now() - lastCommit.current < 6000 && optRun) ? optRun : (liveRun || rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 });
+  const [zoom, setZoom] = useState(() => { try { return Number(localStorage.getItem("cb_rd_zoom")) || 1; } catch (e) { return 1; } });
+  const scrollRef = useRef(null);
+  const zoomRef = useRef(1);
+  zoomRef.current = zoom;
+  const applyZoom = (z) => { const nz = Math.min(2, Math.max(0.5, Math.round(z * 20) / 20)); setZoom(nz); try { localStorage.setItem("cb_rd_zoom", String(nz)); } catch (e) {} };
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
@@ -2550,6 +2555,21 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     poll();
     return () => { alive = false; if (timer) clearTimeout(timer); };
   }, [showId]);
+  useEffect(() => {
+    const el = scrollRef.current; if (!el) return;
+    const set = (z) => { const nz = Math.min(2, Math.max(0.5, Math.round(z * 20) / 20)); zoomRef.current = nz; setZoom(nz); try { localStorage.setItem("cb_rd_zoom", String(nz)); } catch (e) {} };
+    const onWheel = (e) => { if (e.ctrlKey || e.metaKey) { e.preventDefault(); set(zoomRef.current - e.deltaY * 0.003); } };
+    let pinch = 0;
+    const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+    const onTS = (e) => { if (e.touches.length === 2) pinch = dist(e.touches); };
+    const onTM = (e) => { if (e.touches.length === 2 && pinch) { e.preventDefault(); const d = dist(e.touches); set(zoomRef.current * (d / pinch)); pinch = d; } };
+    const onTE = () => { pinch = 0; };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    el.addEventListener("touchstart", onTS, { passive: false });
+    el.addEventListener("touchmove", onTM, { passive: false });
+    el.addEventListener("touchend", onTE);
+    return () => { el.removeEventListener("wheel", onWheel); el.removeEventListener("touchstart", onTS); el.removeEventListener("touchmove", onTM); el.removeEventListener("touchend", onTE); };
+  }, []);
 
   const base = schedMinutes(rd.start);
   const items = rows.filter((r) => r.kind === "item");
@@ -2981,7 +3001,9 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
       {rows.length === 0 ? (
         <Panel title="Run of Show"><Empty>{canEdit ? "No rundown yet. Add a section and segments to build your running order." : "No rundown posted yet."}</Empty></Panel>
       ) : (
-        <div className="rd-scroll">
+        <div className="rd-zoombar"><span className="rd-zoomhint">Pinch or Ctrl/⌘-scroll to zoom</span><div className="rd-zoomctl"><button onClick={() => applyZoom(zoom - 0.1)} title="Zoom out">−</button><button className="rd-zoompct" onClick={() => applyZoom(1)} title="Reset to 100%">{Math.round(zoom * 100)}%</button><button onClick={() => applyZoom(zoom + 0.1)} title="Zoom in">+</button></div></div>
+        <div className="rd-scroll" ref={scrollRef}>
+          <div className="rd-zoom" style={{ zoom }}>
           <div className="rowhead rd-grid" style={{ gridTemplateColumns: gridT, minWidth: minW, paddingLeft: 12 }}>
             {visCols.map((c) => <span key={c.id} className="rd-th">{c.label}{canEdit && <span className="rd-resize" onPointerDown={(e) => startResize(e, c)} />}</span>)}
             {canEdit && <span />}
@@ -3047,6 +3069,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
               </div>
             );
           })}
+          </div>
         </div>
       )}
 
@@ -7497,6 +7520,12 @@ const CSS = `
 .cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px; position:relative;}
 .cb .rd-rowresize{position:absolute; left:0; right:0; bottom:-3px; height:8px; cursor:row-resize; touch-action:none; z-index:2;}
 .cb .rd-rowresize:hover{background:rgba(0,180,216,.35);}
+.cb .rd-zoombar{display:flex; align-items:center; justify-content:flex-end; gap:12px; margin-bottom:6px;}
+.cb .rd-zoomhint{font-size:11px; color:var(--dim);}
+.cb .rd-zoomctl{display:inline-flex; align-items:center; gap:2px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:2px;}
+.cb .rd-zoomctl button{background:transparent; border:0; color:var(--ink); font-size:15px; font-weight:700; width:30px; height:26px; cursor:pointer; border-radius:6px; font-family:inherit;}
+.cb .rd-zoomctl button:hover{background:var(--line);}
+.cb .rd-zoompct{font-size:12px !important; width:48px !important; font-weight:600 !important; color:var(--dim) !important;}
 .cb .rowhead.rd-grid{padding:8px 6px 8px 12px; position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--line);}
 .cb .rd-section{min-width:944px; display:flex; align-items:center; gap:10px; padding:8px 12px; margin:14px 0 6px; border-radius:0 6px 6px 0;}
 .cb .rd-section-title{background:transparent; border:0; color:var(--ink); font-weight:800; font-size:14px; flex:1; letter-spacing:.02em;}
