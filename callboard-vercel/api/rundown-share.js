@@ -65,9 +65,11 @@ function buildData(show, rd, share) {
   allCols.forEach((c) => { colById[c.id] = c; });
   const cols = (share.cols || []).map((id) => colById[id]).filter(Boolean).map((c) => ({ id: c.id, type: c.type, label: c.label, editable: editSet.has(c.id), w: (share.colW || {})[c.id] || 0 }));
   const base = schedMinutes(rd.start);
-  let off = 0;
+  let off = 0, itemNo = 0, subI = 0;
   const rows = (rd.rows || []).map((r) => {
     if (r.kind === "section") return { id: r.id, kind: "section", title: r.title || "", color: r.color || "" };
+    if (r.kind === "sub") { const lbl = itemNo + String.fromCharCode(97 + (subI % 26)); subI++; const sc = {}; if (r.cells) Object.keys(r.cells).forEach((k) => { if (visIds.has(k)) sc[k] = r.cells[k]; }); return { id: r.id, kind: "sub", label: lbl, dur: r.dur || "", cells: sc }; }
+    itemNo++; subI = 0;
     const dmin = parseDur(r.dur);
     const pStart = base == null ? null : base + off;
     const pEnd = base == null ? null : base + off + dmin;
@@ -125,6 +127,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .foot{color:#6b7280;font-size:12px;margin-top:14px;text-align:center}
 .prog{height:8px;background:#1c2230;border:1px solid #2b3345;border-radius:6px;overflow:hidden;margin-bottom:14px}
 .progfill{height:100%;border-radius:6px;transition:width .4s linear,background .3s}
+.rsub{opacity:.9}.rsubnum{color:#00B4D8;font-weight:700;font-size:12px;padding-left:14px}.rsub span{font-size:12px}
 #ou{font-size:19px;font-weight:800}#ou.ontime{color:#22c55e}#ou.over{color:#f87171}#ou.under{color:#00B4D8}
 </style></head>
 <body>
@@ -165,6 +168,7 @@ function render(){
   var its=items();var out="";
   DATA.rows.forEach(function(r){
     if(r.kind==="section"){out+="<div class='rsec' style='min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+bgc(r.color)+"'>"+esc(r.title)+"</div>";return;}
+    if(r.kind==="sub"){out+="<div class='rrow rsub' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-width:"+MW+"px'>";DATA.columns.forEach(function(c){var cell;if(c.type==="num")cell="<span class='rnum rsubnum'>"+esc(r.label||"")+"</span>";else if(c.type==="start"||c.type==="end")cell="<span></span>";else if(c.type==="dur")cell="<span class='rtime'>"+esc(r.dur||"")+"</span>";else{var cv=(r.cells&&r.cells[c.id])?r.cells[c.id]:"";if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank'><img src='"+esc(cv)+"' style='width:28px;height:28px;object-fit:cover;border-radius:5px' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' style='color:#00B4D8'>Open ↗</a>";else if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";else cell="<span>"+esc(cv)+"</span>";}out+="<div>"+cell+"</div>";});out+="</div>";return;}
     var live=DATA.run&&DATA.run.on&&its[DATA.run.segIdx]&&its[DATA.run.segIdx].id===r.id;
     var num=its.indexOf(r)+1;
     out+="<div class='rrow"+(live?" rlive":"")+(r.done?" rdone":"")+"' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+(live?"rgba(34,197,94,.12)":bgc(r.color))+"'>";
@@ -175,6 +179,7 @@ function render(){
       else if(c.type==="end")cell="<span class='rtime'>"+(r.pEnd==null?"\u2014":fmtTOD(r.pEnd))+"</span>";
       else{var cv=c.type==="dur"?(r.dur||""):(r.cells&&r.cells[c.id]?r.cells[c.id]:"");
         if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";
+        else if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8'><img src='"+esc(cv)+"' style='width:34px;height:34px;object-fit:cover;border-radius:6px;border:1px solid #2b3345' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";
         else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8;font-weight:600'>Open ↗</a>";
         else cell="<span>"+esc(cv)+"</span>";}
       out+="<div>"+cell+"</div>";
@@ -282,7 +287,7 @@ export default async function handler(req, res) {
     try {
       const fresh = await loadShow(p.id);
       const frd = (fresh.data && fresh.data.rundown) || {};
-      const row = (frd.rows || []).find((r) => r.id === rowId && r.kind === "item");
+      const row = (frd.rows || []).find((r) => r.id === rowId && (r.kind === "item" || r.kind === "sub"));
       if (!row) return j(res, 404, { error: "Row not found" });
       if (colId === "dur") row.dur = value;
       else { if (!row.cells) row.cells = {}; row.cells[colId] = value; }
