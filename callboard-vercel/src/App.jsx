@@ -279,6 +279,10 @@ function normalize(e) {
   e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
   if (!e.rundown.run) e.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
+  if (!Array.isArray(e.rundown.days) || !e.rundown.days.length) {
+    e.rundown.days = [{ id: uid(), label: "Day 1", start: e.rundown.start || "", date: e.rundown.date || "", rows: e.rundown.rows, run: e.rundown.run }];
+  }
+  if (!e.rundown.activeDay || !e.rundown.days.some((d) => d.id === e.rundown.activeDay)) e.rundown.activeDay = e.rundown.days[0].id;
   if (!(Array.isArray(e.rundown.columns) && e.rundown.columns.length)) e.rundown.columns = [
     { id: "num", type: "num", label: "Cue #" },
     { id: "start", type: "start", label: "Start" },
@@ -2518,6 +2522,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const liveRunRef = useRef(null);
   const lastCommit = useRef(0);
   const [optRun, setOptRun] = useState(null);
+  const [editAS, setEditAS] = useState(null);
   const run = (Date.now() - lastCommit.current < 6000 && optRun) ? optRun : (liveRun || rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 });
   const [zoom, setZoom] = useState(() => { try { return Number(localStorage.getItem("cb_rd_zoom")) || 1; } catch (e) { return 1; } });
   const scrollRef = useRef(null);
@@ -2682,6 +2687,16 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const setRow = (id, k, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x[k] = v; });
   const setCell = (id, colId, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) { if (!x.cells) x.cells = {}; x.cells[colId] = v; } });
   const setMeta = (k, v) => mut((r) => { r[k] = v; });
+  const switchDay = (targetId) => mut((r) => {
+    if (targetId === r.activeDay) return;
+    const cur = (r.days || []).find((d) => d.id === r.activeDay);
+    if (cur) { cur.rows = r.rows; cur.start = r.start; cur.date = r.date; cur.run = r.run; }
+    const tgt = (r.days || []).find((d) => d.id === targetId);
+    if (tgt) { r.rows = tgt.rows || []; r.start = tgt.start || ""; r.date = tgt.date || ""; r.run = tgt.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 }; r.activeDay = targetId; }
+  });
+  const addDay = () => mut((r) => { const id = uid(); (r.days = r.days || []).push({ id, label: "Day " + (r.days.length + 1), start: r.start || "9:00 AM", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } }); });
+  const renameDay = () => { const cur = (rd.days || []).find((d) => d.id === rd.activeDay); const name = window.prompt("Day name", cur ? cur.label : "Day"); if (name != null && name.trim()) mut((r) => { const d = (r.days || []).find((x) => x.id === r.activeDay); if (d) d.label = name.trim(); }); };
+  const deleteDay = () => { if ((rd.days || []).length <= 1) return; if (!window.confirm("Delete this day and everything in it?")) return; mut((r) => { const idx = (r.days || []).findIndex((d) => d.id === r.activeDay); if (idx < 0) return; r.days.splice(idx, 1); const tgt = r.days[Math.max(0, idx - 1)]; if (tgt) { r.rows = tgt.rows || []; r.start = tgt.start || ""; r.date = tgt.date || ""; r.run = tgt.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 }; r.activeDay = tgt.id; } }); };
   const addItem = () => mut((r) => r.rows.push({ id: uid(), kind: "item", dur: "30m", color: "", done: false, cells: {} }));
   const addSection = () => mut((r) => r.rows.push({ id: uid(), kind: "section", title: "New section", color: "blue" }));
   const removeRow = (id) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); if (i >= 0) r.rows.splice(i, 1); });
@@ -2821,12 +2836,13 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const endShow = () => commitRun({ ...run, on: false });
   const nextSeg = () => { if (run.segIdx < items.length - 1) commitRun({ ...run, segIdx: run.segIdx + 1, segStart: Date.now() }, (r) => stampActual(r, run.segIdx + 1)); else commitRun({ ...run, on: false }); };
   const prevSeg = () => { if (run.segIdx > 0) commitRun({ ...run, segIdx: run.segIdx - 1, segStart: Date.now() }); };
+  const commitActual = (id, val) => { setEditAS(null); const v = (val || "").trim(); mut((r) => { const it = r.rows.find((z) => z.id === id); if (!it) return; if (!v) { delete it.actualStart; return; } const m = schedMinutes(v); if (m != null) it.actualStart = m; }); };
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
   const renderCell = (r, c, pl, num, isSub, subLbl, thumb) => {
     if (c.type === "num") return <span className={"rd-num" + (isSub ? " rd-subnum" : "")} key={c.id}>{isSub ? subLbl : num}</span>;
-    if (c.type === "start") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.start == null ? "—" : fmtTOD(pl.start); const fv = forecast[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span><span className={r.actualStart != null ? "rd-actual" : "rd-fc"}>{fmtTOD(fv)}</span></span>; }
+    if (c.type === "start") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.start == null ? "—" : fmtTOD(pl.start); const fv = forecast[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; const isAct = r.actualStart != null; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span>{canEdit && isAct && editAS === r.id ? <input className="rd-asedit" autoFocus defaultValue={fmtTOD(fv)} onBlur={(e) => commitActual(r.id, e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); else if (e.key === "Escape") setEditAS(null); }} /> : <span className={isAct ? "rd-actual rd-aseditable" : "rd-fc"} onClick={canEdit && isAct ? () => setEditAS(r.id) : undefined} title={canEdit && isAct ? "Click to correct the take time" : ""}>{fmtTOD(fv)}</span>}</span>; }
     if (c.type === "forecast") { if (isSub) return <span className="rd-time" key={c.id} />; const fv = forecast[r.id]; const isAct = r.actualStart != null; return <span className={"rd-time " + (isAct ? "rd-actual" : "rd-fc")} key={c.id} title={isAct ? "Actual take time" : "Forecast"}>{fv != null ? fmtTOD(fv) : pl.start == null ? "—" : fmtTOD(pl.start)}</span>; }
     if (c.type === "forecastEnd") { if (isSub) return <span className="rd-time" key={c.id} />; const fv = forecastEnd[r.id]; const isAct = !!fcEndActual[r.id]; return <span className={"rd-time " + (isAct ? "rd-actual" : "rd-fc")} key={c.id} title={isAct ? "Actual end" : "Forecast end"}>{fv != null ? fmtTOD(fv) : pl.end == null ? "—" : fmtTOD(pl.end)}</span>; }
     if (c.type === "end") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.end == null ? "—" : fmtTOD(pl.end); const fv = forecastEnd[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span><span className={fcEndActual[r.id] ? "rd-actual" : "rd-fc"}>{fmtTOD(fv)}</span></span>; }
@@ -2903,6 +2919,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
 
       {canEdit && (
         <div className="rd-config">
+          <label className="rd-dayselect">Day <select value={rd.activeDay || ""} onChange={(e) => switchDay(e.target.value)}>{(rd.days || []).map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}</select></label>
+          <button className="ts-batchbtn" onClick={addDay}>+ Day</button>
+          <button className="ts-batchbtn" onClick={renameDay}>Rename day</button>
+          {(rd.days || []).length > 1 && <button className="ts-batchbtn" onClick={deleteDay}>Delete day</button>}
           <label>Show start <input value={rd.start || ""} placeholder="10:00 AM" onChange={(e) => setMeta("start", e.target.value)} onBlur={(e) => setMeta("start", fmtSchedTime(e.target.value))} /></label>
           <label>Date <input type="date" value={rd.date || ""} onChange={(e) => setMeta("date", e.target.value)} /></label>
           <span className="rd-total">Total runtime: {Math.floor(totalDur / 60)}h {totalDur % 60}m · {items.length} segment{items.length === 1 ? "" : "s"}</span>
@@ -7568,6 +7588,8 @@ const CSS = `
 .cb .rd-2val .rd-sched{font-size:11px; color:var(--dim); font-weight:400;}
 .cb .rd-2val .rd-actual{font-size:13px; color:var(--green); font-weight:700;}
 .cb .rd-2val .rd-fc{font-size:13px; color:var(--accent); font-weight:600;}
+.cb .rd-aseditable{cursor:pointer; border-bottom:1px dotted var(--green);}
+.cb .rd-asedit{width:76px; font-size:13px; padding:1px 4px; background:var(--panel2); border:1px solid var(--green); border-radius:4px; color:var(--ink); font-family:inherit;}
 .cb .rd-dur{font-variant-numeric:tabular-nums;}
 .cb .rd-rowctrl{display:flex; gap:4px; align-items:center;}
 .cb .rd-rowctrl select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:5px 3px; max-width:64px;}
@@ -7580,6 +7602,8 @@ const CSS = `
 .cb .rd-conv{color:var(--amber); font-weight:700; font-size:10px; width:auto; padding:0 6px;}
 .cb .rd-conv:hover{border-color:var(--amber);}
 .cb .rd-rowh{display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim);}
+.cb .rd-dayselect{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim);}
+.cb .rd-dayselect select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:6px 8px; font-family:inherit; font-size:13px; font-weight:600;}
 .cb .rd-rowh input[type="range"]{width:110px; accent-color:var(--accent); cursor:pointer;}
 .cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
 .cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
