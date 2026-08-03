@@ -2584,6 +2584,26 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   });
   const totalDur = off;
   const schedEndMin = base == null ? null : base + totalDur;
+  const forecast = {};
+  if (run.on && items.length) {
+    const curIdx = Math.min(run.segIdx, items.length - 1);
+    items.forEach((it) => { if (it.actualStart != null) forecast[it.id] = it.actualStart; });
+    const curItem = items[curIdx];
+    if (curItem) {
+      const nd = new Date(now);
+      const nowM = nd.getHours() * 60 + nd.getMinutes();
+      const curActual = curItem.actualStart != null ? curItem.actualStart : nowM;
+      let acc = Math.max(curActual + parseDur(curItem.dur), nowM);
+      for (let j = curIdx + 1; j < items.length; j++) { forecast[items[j].id] = acc; acc += parseDur(items[j].dur); }
+    }
+  }
+  const forecastEnd = {}, fcEndActual = {};
+  items.forEach((it, j) => {
+    if (forecast[it.id] == null) return;
+    const nxt = items[j + 1];
+    if (nxt && forecast[nxt.id] != null) { forecastEnd[it.id] = forecast[nxt.id]; fcEndActual[it.id] = nxt.actualStart != null; }
+    else { forecastEnd[it.id] = forecast[it.id] + parseDur(it.dur); fcEndActual[it.id] = false; }
+  });
   const subLabel = {};
   (function () { let n2 = 0, si = 0; rows.forEach((r) => { if (r.kind === "item") { n2 = items.indexOf(r) + 1; si = 0; } else if (r.kind === "sub") { subLabel[r.id] = n2 + String.fromCharCode(97 + (si % 26)); si++; } }); })();
 
@@ -2610,11 +2630,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (resz && resz.id === c.id) return resz.w + "px";
     if (c.w) return c.w + "px";
     if (c.type === "num") return "48px";
-    if (c.type === "start" || c.type === "end") return "92px";
+    if (c.type === "start" || c.type === "end" || c.type === "forecast" || c.type === "forecastEnd") return "92px";
     if (c.type === "dur") return "72px";
     return "minmax(120px,1fr)";
   };
-  const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" ? 92 : c.type === "dur" ? 72 : 120);
+  const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" || c.type === "forecast" || c.type === "forecastEnd" ? 92 : c.type === "dur" ? 72 : 120);
   const gridT = visCols.map(colW).join(" ") + (canEdit ? " 284px" : "");
   const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 284 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
   const rowH = rd.rowH || 60;
@@ -2794,18 +2814,22 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return days;
   };
   const copyToSchedule = (mode) => { const days = rundownToSchedule(); if (!days.length) return; update((ev) => { ev.schedule = mode === "replace" ? days : (ev.schedule || []).concat(days); }); setToSchedOpen(false); };
-  const commitRun = (nr) => { lastCommit.current = Date.now(); setOptRun(nr); mut((r) => { r.run = nr; }); };
-  const startShow = () => commitRun({ on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() });
+  const nowMins = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes(); };
+  const stampActual = (r, idx) => { const its = r.rows.filter((z) => z.kind === "item"); if (its[idx]) its[idx].actualStart = nowMins(); };
+  const commitRun = (nr, extra) => { lastCommit.current = Date.now(); setOptRun(nr); mut((r) => { r.run = nr; if (extra) extra(r); }); };
+  const startShow = () => commitRun({ on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() }, (r) => { r.rows.forEach((z) => { if (z.kind === "item") delete z.actualStart; }); stampActual(r, 0); });
   const endShow = () => commitRun({ ...run, on: false });
-  const nextSeg = () => { if (run.segIdx < items.length - 1) commitRun({ ...run, segIdx: run.segIdx + 1, segStart: Date.now() }); else commitRun({ ...run, on: false }); };
+  const nextSeg = () => { if (run.segIdx < items.length - 1) commitRun({ ...run, segIdx: run.segIdx + 1, segStart: Date.now() }, (r) => stampActual(r, run.segIdx + 1)); else commitRun({ ...run, on: false }); };
   const prevSeg = () => { if (run.segIdx > 0) commitRun({ ...run, segIdx: run.segIdx - 1, segStart: Date.now() }); };
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
   const renderCell = (r, c, pl, num, isSub, subLbl, thumb) => {
     if (c.type === "num") return <span className={"rd-num" + (isSub ? " rd-subnum" : "")} key={c.id}>{isSub ? subLbl : num}</span>;
-    if (c.type === "start") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
-    if (c.type === "end") return <span className="rd-time" key={c.id}>{isSub ? "" : pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
+    if (c.type === "start") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.start == null ? "—" : fmtTOD(pl.start); const fv = forecast[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span><span className={r.actualStart != null ? "rd-actual" : "rd-fc"}>{fmtTOD(fv)}</span></span>; }
+    if (c.type === "forecast") { if (isSub) return <span className="rd-time" key={c.id} />; const fv = forecast[r.id]; const isAct = r.actualStart != null; return <span className={"rd-time " + (isAct ? "rd-actual" : "rd-fc")} key={c.id} title={isAct ? "Actual take time" : "Forecast"}>{fv != null ? fmtTOD(fv) : pl.start == null ? "—" : fmtTOD(pl.start)}</span>; }
+    if (c.type === "forecastEnd") { if (isSub) return <span className="rd-time" key={c.id} />; const fv = forecastEnd[r.id]; const isAct = !!fcEndActual[r.id]; return <span className={"rd-time " + (isAct ? "rd-actual" : "rd-fc")} key={c.id} title={isAct ? "Actual end" : "Forecast end"}>{fv != null ? fmtTOD(fv) : pl.end == null ? "—" : fmtTOD(pl.end)}</span>; }
+    if (c.type === "end") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.end == null ? "—" : fmtTOD(pl.end); const fv = forecastEnd[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span><span className={fcEndActual[r.id] ? "rd-actual" : "rd-fc"}>{fmtTOD(fv)}</span></span>; }
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder={isSub ? "len" : "30m"} onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
     if (c.type === "image") { const iv = r.cells ? r.cells[c.id] || "" : "";
       if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
@@ -2816,8 +2840,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   };
   const printVal = (r, c, numOrLbl, pl) => {
     if (c.type === "num") return numOrLbl;
-    if (c.type === "start") return pl && pl.start != null ? fmtTOD(pl.start) : "";
-    if (c.type === "end") return pl && pl.end != null ? fmtTOD(pl.end) : "";
+    if (c.type === "start") return forecast[r.id] != null ? fmtTOD(forecast[r.id]) : (pl && pl.start != null ? fmtTOD(pl.start) : "");
+    if (c.type === "forecast") return forecast[r.id] != null ? fmtTOD(forecast[r.id]) : (pl && pl.start != null ? fmtTOD(pl.start) : "");
+    if (c.type === "forecastEnd") return forecastEnd[r.id] != null ? fmtTOD(forecastEnd[r.id]) : (pl && pl.end != null ? fmtTOD(pl.end) : "");
+    if (c.type === "end") return forecastEnd[r.id] != null ? fmtTOD(forecastEnd[r.id]) : (pl && pl.end != null ? fmtTOD(pl.end) : "");
     if (c.type === "dur") return r.dur || "";
     return r.cells ? r.cells[c.id] || "" : "";
   };
@@ -2848,6 +2874,8 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
               <button className="rd-ctrl" onClick={nextSeg} disabled={!canEdit}>Next ▶</button>
               <button className="rd-ctrl" onClick={() => nudge(-1)} disabled={!canEdit}>−1m</button>
               <button className="rd-ctrl" onClick={() => nudge(1)} disabled={!canEdit}>+1m</button>
+              <button className="rd-ctrl" onClick={() => nudge(-5)} disabled={!canEdit}>−5m</button>
+              <button className="rd-ctrl" onClick={() => nudge(5)} disabled={!canEdit}>+5m</button>
             </>
           )}
         </div>
@@ -7516,7 +7544,7 @@ const CSS = `
 .cb .rd-config label{font-size:12px; color:var(--dim); display:flex; gap:8px; align-items:center;}
 .cb .rd-config input{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px; font-variant-numeric:tabular-nums;}
 .cb .rd-total{font-size:12px; color:var(--dim);}
-.cb .rd-scroll{overflow:auto; max-height:calc(100vh - 240px); min-height:300px; -webkit-overflow-scrolling:touch;}
+.cb .rd-scroll{overflow:auto; max-height:calc(100vh - 240px); min-height:300px; -webkit-overflow-scrolling:touch; touch-action:pan-x pan-y;}
 .cb .rd-print{display:none;}
 .cb .rd-grid{display:grid; grid-template-columns:38px 84px 64px minmax(180px,1.4fr) 84px 140px minmax(140px,1fr) 148px; gap:8px; align-items:center; min-width:944px;}
 .cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px; position:relative;}
@@ -7534,6 +7562,12 @@ const CSS = `
 .cb .rd-live{outline:2px solid var(--green); outline-offset:-2px;}
 .cb .rd-num{color:var(--dim); font-weight:700; text-align:center; display:flex; align-items:center; justify-content:center;}
 .cb .rd-time{font-variant-numeric:tabular-nums; font-size:13px; color:var(--dim);}
+.cb .rd-time.rd-actual{color:var(--green); font-weight:700;}
+.cb .rd-time.rd-fc{color:var(--accent);}
+.cb .rd-2val{display:flex; flex-direction:column; line-height:1.15; gap:1px;}
+.cb .rd-2val .rd-sched{font-size:11px; color:var(--dim); font-weight:400;}
+.cb .rd-2val .rd-actual{font-size:13px; color:var(--green); font-weight:700;}
+.cb .rd-2val .rd-fc{font-size:13px; color:var(--accent); font-weight:600;}
 .cb .rd-dur{font-variant-numeric:tabular-nums;}
 .cb .rd-rowctrl{display:flex; gap:4px; align-items:center;}
 .cb .rd-rowctrl select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:5px 3px; max-width:64px;}
@@ -7754,6 +7788,10 @@ const CSS = `
 .cb .sv-a{font-size:13.5px; line-height:1.55; margin-top:3px; white-space:pre-wrap; color:var(--ink);}
 
 @media (max-width:640px){
+  .cb .rd-zoomhint{display:none;}
+  .cb .rd-zoombar{justify-content:flex-end; margin-bottom:8px;}
+  .cb .rd-zoomctl button{width:40px; height:36px; font-size:19px;}
+  .cb .rd-zoompct{width:52px !important; font-size:13px !important;}
   .cb .mc-cards{grid-template-columns:1fr;}
   .cb .mc-item-time{flex-basis:64px;}
 }
