@@ -80,7 +80,7 @@ function buildData(show, rd, share) {
   });
   return {
     showName: show.name, shareName: share.name || "Rundown", start: rd.start || "",
-    columns: cols, rows: rows, run: rd.run || { on: false }, schedEndMin: base == null ? null : base + off,
+    columns: cols, rows: rows, run: rd.run || { on: false }, schedEndMin: base == null ? null : base + off, rowH: rd.rowH || 60,
   };
 }
 
@@ -162,16 +162,16 @@ function items(){return DATA.rows.filter(function(r){return r.kind==="item";});}
 function segName(seg){if(!seg)return "";if(seg.cells){for(var k in seg.cells){if(seg.cells[k]&&String(seg.cells[k]).trim())return seg.cells[k];}}return "Segment";}
 function render(){
   if(!DATA)return;
-  var T=tmpl();var MW=minw();
+  var T=tmpl();var MW=minw();var RH=(DATA.rowH||60);var TH=Math.max(24,RH-14);
   var head="<div class='rhead' style='display:grid;grid-template-columns:"+T+";gap:8px;min-width:"+MW+"px'>";
   DATA.columns.forEach(function(c){head+="<div class='rth'><span class='rthlabel'>"+esc(c.label)+"</span><span class='rthbtns'><button class='rmv' data-col='"+c.id+"' data-dir='left' title='Move left'>◀</button><button class='rmv' data-col='"+c.id+"' data-dir='right' title='Move right'>▶</button></span><span class='rrsz' data-col='"+c.id+"'></span></div>";});head+="</div>";
   var its=items();var out="";
   DATA.rows.forEach(function(r){
     if(r.kind==="section"){out+="<div class='rsec' style='min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+bgc(r.color)+"'>"+esc(r.title)+"</div>";return;}
-    if(r.kind==="sub"){out+="<div class='rrow rsub' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-width:"+MW+"px'>";DATA.columns.forEach(function(c){var cell;if(c.type==="num")cell="<span class='rnum rsubnum'>"+esc(r.label||"")+"</span>";else if(c.type==="start"||c.type==="end")cell="<span></span>";else if(c.type==="dur")cell="<span class='rtime'>"+esc(r.dur||"")+"</span>";else{var cv=(r.cells&&r.cells[c.id])?r.cells[c.id]:"";if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank'><img src='"+esc(cv)+"' style='width:40px;height:40px;object-fit:cover;border-radius:5px' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' style='color:#00B4D8'>Open ↗</a>";else if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";else cell="<span>"+esc(cv)+"</span>";}out+="<div>"+cell+"</div>";});out+="</div>";return;}
+    if(r.kind==="sub"){out+="<div class='rrow rsub' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-height:"+RH+"px;min-width:"+MW+"px'>";DATA.columns.forEach(function(c){var cell;if(c.type==="num")cell="<span class='rnum rsubnum'>"+esc(r.label||"")+"</span>";else if(c.type==="start"||c.type==="end")cell="<span></span>";else if(c.type==="dur")cell="<span class='rtime'>"+esc(r.dur||"")+"</span>";else{var cv=(r.cells&&r.cells[c.id])?r.cells[c.id]:"";if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank'><img src='"+esc(cv)+"' style='width:"+Math.round(TH*0.82)+"px;height:"+Math.round(TH*0.82)+"px;object-fit:cover;border-radius:5px' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' style='color:#00B4D8'>Open ↗</a>";else if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";else cell="<span>"+esc(cv)+"</span>";}out+="<div>"+cell+"</div>";});out+="</div>";return;}
     var live=DATA.run&&DATA.run.on&&its[DATA.run.segIdx]&&its[DATA.run.segIdx].id===r.id;
     var num=its.indexOf(r)+1;
-    out+="<div class='rrow"+(live?" rlive":"")+(r.done?" rdone":"")+"' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+(live?"rgba(34,197,94,.12)":bgc(r.color))+"'>";
+    out+="<div class='rrow"+(live?" rlive":"")+(r.done?" rdone":"")+"' style='display:grid;grid-template-columns:"+T+";gap:8px;align-items:center;min-height:"+RH+"px;min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+(live?"rgba(34,197,94,.12)":bgc(r.color))+"'>";
     DATA.columns.forEach(function(c){
       var cell;
       if(c.type==="num")cell="<span class='rnum'>"+num+"</span>";
@@ -179,7 +179,7 @@ function render(){
       else if(c.type==="end")cell="<span class='rtime'>"+(r.pEnd==null?"\u2014":fmtTOD(r.pEnd))+"</span>";
       else{var cv=c.type==="dur"?(r.dur||""):(r.cells&&r.cells[c.id]?r.cells[c.id]:"");
         if(c.editable)cell="<input class='rin' data-row='"+r.id+"' data-col='"+c.id+"' value='"+esc(cv)+"'>";
-        else if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8'><img src='"+esc(cv)+"' style='width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid #2b3345' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";
+        else if(c.type==="image"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8'><img src='"+esc(cv)+"' style='width:"+TH+"px;height:"+TH+"px;object-fit:cover;border-radius:6px;border:1px solid #2b3345' onerror='this.parentNode.textContent=&quot;Open ↗&quot;'></a>";
         else if(c.type==="link"&&cv)cell="<a href='"+esc(cv)+"' target='_blank' rel='noreferrer' style='color:#00B4D8;font-weight:600'>Open ↗</a>";
         else cell="<span>"+esc(cv)+"</span>";}
       out+="<div>"+cell+"</div>";
