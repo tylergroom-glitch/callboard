@@ -2508,6 +2508,9 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const visCols = columns.filter((c) => !c.hidden);
   const [now, setNow] = useState(Date.now());
   const [colMgr, setColMgr] = useState(false);
+  const [resz, setResz] = useState(null);
+  const reszRef = useRef(null);
+  const lastW = useRef(0);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
@@ -2551,8 +2554,17 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     totalLate = (actualOff - plannedOff * 60) + overage;
   }
 
-  const gridT = visCols.map((c) => RD_WCSS[c.type] || "minmax(150px,1fr)").join(" ") + (canEdit ? " 150px" : "");
-  const minW = visCols.reduce((sm, c) => sm + (RD_W[c.type] || 160), 0) + (canEdit ? 150 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
+  const colW = (c) => {
+    if (resz && resz.id === c.id) return resz.w + "px";
+    if (c.w) return c.w + "px";
+    if (c.type === "num") return "48px";
+    if (c.type === "start" || c.type === "end") return "92px";
+    if (c.type === "dur") return "72px";
+    return "minmax(120px,1fr)";
+  };
+  const colMin = (c) => ((resz && resz.id === c.id ? resz.w : c.w)) || (c.type === "num" ? 48 : c.type === "start" || c.type === "end" ? 92 : c.type === "dur" ? 72 : 120);
+  const gridT = visCols.map(colW).join(" ") + (canEdit ? " 214px" : "");
+  const minW = visCols.reduce((sm, c) => sm + colMin(c), 0) + (canEdit ? 214 : 0) + 8 * (visCols.length + (canEdit ? 1 : 0));
 
   const mut = (fn) => update((ev) => {
     if (!ev.rundown) ev.rundown = { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS.map((c) => ({ ...c })), run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
@@ -2561,6 +2573,22 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (!ev.rundown.run) ev.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
     fn(ev.rundown);
   });
+  const startResize = (e, c) => {
+    e.preventDefault(); e.stopPropagation();
+    const th = e.currentTarget.parentElement;
+    const startW = th ? th.getBoundingClientRect().width : 120;
+    reszRef.current = { id: c.id, startX: e.clientX, startW: Math.round(startW) };
+    lastW.current = Math.round(startW);
+    setResz({ id: c.id, w: Math.round(startW) });
+  };
+  useEffect(() => {
+    if (!resz) return;
+    const onMove = (e) => { const r = reszRef.current; if (!r) return; const w = Math.max(60, Math.round(r.startW + (e.clientX - r.startX))); lastW.current = w; setResz({ id: r.id, w }); };
+    const onUp = () => { const r = reszRef.current; if (r) { const id = r.id, w = lastW.current; mut((rd) => { const cc = rd.columns.find((x) => x.id === id); if (cc) cc.w = w; }); } reszRef.current = null; setResz(null); };
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    return () => { document.removeEventListener("pointermove", onMove); document.removeEventListener("pointerup", onUp); };
+  }, [resz && resz.id]);
   const setRow = (id, k, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x[k] = v; });
   const setCell = (id, colId, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) { if (!x.cells) x.cells = {}; x.cells[colId] = v; } });
   const setMeta = (k, v) => mut((r) => { r[k] = v; });
@@ -2568,6 +2596,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const addSection = () => mut((r) => r.rows.push({ id: uid(), kind: "section", title: "New section", color: "blue" }));
   const removeRow = (id) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); if (i >= 0) r.rows.splice(i, 1); });
   const moveRow = (id, dir) => mut((r) => { const i = r.rows.findIndex((z) => z.id === id); const j = i + dir; if (i < 0 || j < 0 || j >= r.rows.length) return; const [x] = r.rows.splice(i, 1); r.rows.splice(j, 0, x); });
+  const insertItem = (refId, where) => mut((r) => { const i = r.rows.findIndex((z) => z.id === refId); if (i < 0) return; const at = where === "above" ? i : i + 1; r.rows.splice(at, 0, { id: uid(), kind: "item", dur: "5m", color: "", done: false, cells: {} }); });
   const setCol = (id, k, v) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c[k] = v; });
   const toggleCol = (id) => mut((r) => { const c = r.columns.find((x) => x.id === id); if (c) c.hidden = !c.hidden; });
   const addCol = () => mut((r) => r.columns.push({ id: uid(), type: "text", label: "New column" }));
@@ -2700,7 +2729,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
   const renderCell = (r, c, pl, num) => {
-    if (c.type === "num") return <span className="rd-num" key={c.id}>{canEdit ? <input type="checkbox" className="sched-done-ck" checked={!!r.done} title="Mark done" onChange={() => toggleDone(r.id)} /> : num}</span>;
+    if (c.type === "num") return <span className="rd-num" key={c.id}>{num}</span>;
     if (c.type === "start") return <span className="rd-time" key={c.id}>{pl.start == null ? "—" : fmtTOD(pl.start)}</span>;
     if (c.type === "end") return <span className="rd-time" key={c.id}>{pl.end == null ? "—" : fmtTOD(pl.end)}</span>;
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder="30m" onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
@@ -2879,7 +2908,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
       ) : (
         <div className="rd-scroll">
           <div className="rowhead rd-grid" style={{ gridTemplateColumns: gridT, minWidth: minW, paddingLeft: 12 }}>
-            {visCols.map((c) => <span key={c.id}>{c.label}</span>)}
+            {visCols.map((c) => <span key={c.id} className="rd-th">{c.label}{canEdit && <span className="rd-resize" onPointerDown={(e) => startResize(e, c)} />}</span>)}
             {canEdit && <span />}
           </div>
           {rows.map((r) => {
@@ -2908,9 +2937,12 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
                 {visCols.map((c) => renderCell(r, c, pl, num))}
                 {canEdit && (
                   <div className="rd-rowctrl">
+                    <input type="checkbox" className="sched-done-ck" checked={!!r.done} title="Mark done" onChange={() => toggleDone(r.id)} />
                     <select value={r.color || ""} onChange={(e) => setRow(r.id, "color", e.target.value)}>{SCHED_COLORS.map((cc) => <option key={cc.key} value={cc.key}>{cc.label}</option>)}</select>
-                    <button className="rd-move" onClick={() => moveRow(r.id, -1)}>▲</button>
-                    <button className="rd-move" onClick={() => moveRow(r.id, 1)}>▼</button>
+                    <button className="rd-move rd-ins" title="Insert segment above" onClick={() => insertItem(r.id, "above")}>↑+</button>
+                    <button className="rd-move rd-ins" title="Insert segment below" onClick={() => insertItem(r.id, "below")}>↓+</button>
+                    <button className="rd-move" title="Move up" onClick={() => moveRow(r.id, -1)}>▲</button>
+                    <button className="rd-move" title="Move down" onClick={() => moveRow(r.id, 1)}>▼</button>
                     <RemoveBtn onClick={() => removeRow(r.id)} />
                   </div>
                 )}
@@ -7343,6 +7375,13 @@ const CSS = `
 .cb .rd-rowctrl select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; font-size:11px; padding:5px 3px; max-width:64px;}
 .cb .rd-move{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:5px; width:24px; height:28px; cursor:pointer; font-size:10px; padding:0;}
 .cb .rd-move:hover{color:var(--ink); border-color:var(--dim);}
+.cb .rd-ins{color:var(--green); font-weight:700; font-size:11px;}
+.cb .rd-ins:hover{border-color:var(--green);}
+.cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
+.cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .rd-resize{position:absolute; top:-5px; right:-4px; width:10px; height:calc(100% + 10px); cursor:col-resize; touch-action:none; z-index:2;}
+.cb .rd-resize::after{content:''; position:absolute; top:3px; bottom:3px; right:4px; width:2px; background:transparent; border-radius:2px; transition:background .1s;}
+.cb .rd-resize:hover::after{background:var(--accent);}
 .cb .rd-addrow{display:flex; gap:8px; margin-top:14px; align-items:center;}
 .cb .rd-colrow{display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid var(--line);}
 .cb .rd-colvis{display:flex; align-items:center;}
