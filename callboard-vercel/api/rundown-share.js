@@ -61,7 +61,9 @@ function buildData(show, rd, share) {
   const visIds = new Set(share.cols || []);
   const editSet = new Set(share.editCols || []);
   const allCols = Array.isArray(rd.columns) ? rd.columns : [];
-  const cols = allCols.filter((c) => visIds.has(c.id)).map((c) => ({ id: c.id, type: c.type, label: c.label, editable: editSet.has(c.id) }));
+  const colById = {};
+  allCols.forEach((c) => { colById[c.id] = c; });
+  const cols = (share.cols || []).map((id) => colById[id]).filter(Boolean).map((c) => ({ id: c.id, type: c.type, label: c.label, editable: editSet.has(c.id), w: (share.colW || {})[c.id] || 0 }));
   const base = schedMinutes(rd.start);
   let off = 0;
   const rows = (rd.rows || []).map((r) => {
@@ -112,7 +114,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .rdone{opacity:.48;text-decoration:line-through}
 .rin{width:100%;background:#0e1420;border:1px solid #2b3345;color:#e5e7eb;border-radius:6px;padding:7px 8px;font-size:13px;font-family:inherit}
 .rin:focus{outline:none;border-color:#3b82f6}
+.rth{position:relative;display:flex;align-items:center;gap:6px;overflow:hidden}
+.rthlabel{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rthbtns{display:flex;gap:2px;opacity:0;transition:opacity .1s}
+.rth:hover .rthbtns{opacity:1}
+.rmv{background:#1c2230;border:1px solid #2b3345;color:#9ca3af;border-radius:4px;font-size:9px;line-height:1.2;padding:2px 5px;cursor:pointer}
+.rmv:hover{color:#fff;border-color:#3b82f6}
+.rrsz{position:absolute;top:-6px;right:-4px;width:10px;height:calc(100% + 12px);cursor:col-resize;touch-action:none;z-index:3;border-radius:2px}
+.rrsz:hover{background:rgba(0,180,216,.4)}
 .foot{color:#6b7280;font-size:12px;margin-top:14px;text-align:center}
+.prog{height:8px;background:#1c2230;border:1px solid #2b3345;border-radius:6px;overflow:hidden;margin-bottom:14px}
+.progfill{height:100%;border-radius:6px;transition:width .4s linear,background .3s}
 </style></head>
 <body>
 <div class="top">
@@ -123,6 +135,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     <div class="fld"><span>Rundown ends</span><b id="ends">—</b><em id="late"></em></div>
   </div>
 </div>
+<div class="prog" id="prog" style="display:none"><div class="progfill" id="progfill"></div></div>
 <div class="wrap"><div id="tbl"></div></div>
 <div class="foot">Live view · updates automatically · you can edit only the highlighted columns</div>
 <script>
@@ -137,16 +150,16 @@ function fmtTOD(min){if(min==null||isNaN(min))return "\u2014";var m=Math.round(m
 function todClock(ms){var d=new Date(ms);var h=d.getHours();var ap=h<12?"AM":"PM";var h12=h%12||12;return h12+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0")+" "+ap;}
 function fmtClock(sec){var neg=sec<0;var a=Math.abs(Math.round(sec));var m=Math.floor(a/60),ss=a%60;return (neg?"-":"")+m+":"+String(ss).padStart(2,"0");}
 function fmtLate(sec){var r=Math.round(sec);if(Math.abs(r)<30)return "on time";var a=Math.abs(r),m=Math.floor(a/60),ss=a%60;var b=(m?m+"m ":"")+ss+"s";return (r>0?"+":"\u2212")+b+(r>0?" late":" early");}
-function colW(t){return t==="num"?"40px":(t==="start"||t==="end")?"92px":t==="dur"?"70px":"minmax(140px,1fr)";}
-function tmpl(){return DATA.columns.map(function(c){return colW(c.type);}).join(" ");}
-function minw(){var s=0;DATA.columns.forEach(function(c){s+=c.type==="num"?40:(c.type==="start"||c.type==="end")?92:c.type==="dur"?70:150;});return s+8*DATA.columns.length+20;}
+function colW(c){if(c.w)return c.w+"px";return c.type==="num"?"48px":(c.type==="start"||c.type==="end")?"92px":c.type==="dur"?"72px":"minmax(120px,1fr)";}
+function tmpl(){return DATA.columns.map(function(c){return colW(c);}).join(" ");}
+function minw(){var s=0;DATA.columns.forEach(function(c){s+=c.w?c.w:(c.type==="num"?48:(c.type==="start"||c.type==="end")?92:c.type==="dur"?72:120);});return s+8*DATA.columns.length+20;}
 function items(){return DATA.rows.filter(function(r){return r.kind==="item";});}
 function segName(seg){if(!seg)return "";if(seg.cells){for(var k in seg.cells){if(seg.cells[k]&&String(seg.cells[k]).trim())return seg.cells[k];}}return "Segment";}
 function render(){
   if(!DATA)return;
   var T=tmpl();var MW=minw();
   var head="<div class='rhead' style='display:grid;grid-template-columns:"+T+";gap:8px;min-width:"+MW+"px'>";
-  DATA.columns.forEach(function(c){head+="<div>"+esc(c.label)+"</div>";});head+="</div>";
+  DATA.columns.forEach(function(c){head+="<div class='rth'><span class='rthlabel'>"+esc(c.label)+"</span><span class='rthbtns'><button class='rmv' data-col='"+c.id+"' data-dir='left' title='Move left'>◀</button><button class='rmv' data-col='"+c.id+"' data-dir='right' title='Move right'>▶</button></span><span class='rrsz' data-col='"+c.id+"'></span></div>";});head+="</div>";
   var its=items();var out="";
   DATA.rows.forEach(function(r){
     if(r.kind==="section"){out+="<div class='rsec' style='min-width:"+MW+"px;border-left:4px solid "+bar(r.color)+";background:"+bgc(r.color)+"'>"+esc(r.title)+"</div>";return;}
@@ -169,6 +182,8 @@ function render(){
   document.getElementById("tbl").innerHTML=head+out;
   var ins=document.querySelectorAll("#tbl .rin");
   ins.forEach(function(i){i.addEventListener("change",function(){save(i.getAttribute("data-row"),i.getAttribute("data-col"),i.value);});});
+  document.querySelectorAll("#tbl .rmv").forEach(function(b){b.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();layout(b.getAttribute("data-col"),b.getAttribute("data-dir"));});});
+  document.querySelectorAll("#tbl .rrsz").forEach(function(h){h.addEventListener("pointerdown",function(e){e.preventDefault();e.stopPropagation();var th=h.parentElement;var w=th.getBoundingClientRect().width;RS={col:h.getAttribute("data-col"),startX:e.clientX,startW:w,w:Math.round(w)};});});
   clock();
 }
 function clock(){
@@ -186,11 +201,20 @@ function clock(){
     endEl.textContent=schedEnd==null?"\u2014":fmtTOD(schedEnd+late/60);
     lateEl.textContent=fmtLate(late);lateEl.className=(late>30?"lt":late<-30?"er":"");
   }else{cbox.style.display="none";endEl.textContent=schedEnd==null?"\u2014":fmtTOD(schedEnd);lateEl.textContent="";}
+  var prog=document.getElementById("prog"),pf=document.getElementById("progfill");
+  if(run.on){var tot=0;its.forEach(function(x){tot+=x.durSec;});var elp=(now-run.showStart)/1000;var frac=tot>0?Math.min(1,Math.max(0,elp/tot)):0;var ov=elp>tot;prog.style.display="";pf.style.width=(frac*100)+"%";pf.style.background=ov?"#EF4444":(frac>0.85?"#F59E0B":"#00B4D8");}else{prog.style.display="none";}
 }
 function save(rowId,colId,value){fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rowId:rowId,colId:colId,value:value})}).then(function(r){return r.json();}).catch(function(){});}
 function load(){fetch(API+"&data=1").then(function(r){return r.json();}).then(function(d){DATA=d;render();}).catch(function(){});}
+var RS=null;
+function applyColW(col,w){for(var k=0;k<DATA.columns.length;k++){if(DATA.columns[k].id===col)DATA.columns[k].w=w;}var T=tmpl(),MW=minw();document.querySelectorAll("#tbl .rrow, #tbl .rhead").forEach(function(el){el.style.gridTemplateColumns=T;el.style.minWidth=MW+"px";});document.querySelectorAll("#tbl .rsec").forEach(function(el){el.style.minWidth=MW+"px";});}
+function layoutColW(col,w){fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({op:"colw",colId:col,w:w})}).catch(function(){});}
+function layout(col,dir){fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({op:"reorder",colId:col,dir:dir})}).then(function(){load();}).catch(function(){});}
+document.addEventListener("pointermove",function(e){if(!RS)return;RS.w=Math.max(50,Math.round(RS.startW+(e.clientX-RS.startX)));applyColW(RS.col,RS.w);});
+document.addEventListener("pointerup",function(){if(!RS)return;var col=RS.col,w=RS.w;RS=null;layoutColW(col,w);});
 setInterval(clock,1000);
-setInterval(function(){var a=document.activeElement;if(a&&a.classList&&a.classList.contains("rin"))return;load();},15000);
+function poll(){var a=document.activeElement;if(!(a&&a.classList&&a.classList.contains("rin")))load();setTimeout(poll,(DATA&&DATA.run&&DATA.run.on)?3000:15000);}
+setTimeout(poll,3000);
 load();
 </script>
 </body></html>`;
@@ -229,6 +253,25 @@ export default async function handler(req, res) {
     let body;
     try { const ch = []; for await (const c of req) ch.push(c); body = JSON.parse(Buffer.concat(ch).toString("utf8") || "{}"); }
     catch { return j(res, 400, { error: "Bad request" }); }
+    if (body.op === "colw" || body.op === "reorder") {
+      try {
+        const fresh = await loadShow(p.id);
+        const frd = (fresh.data && fresh.data.rundown) || {};
+        const sh = (Array.isArray(frd.shares) ? frd.shares : []).find((x) => x.id === p.share);
+        if (!sh) return j(res, 404, { error: "Share not found" });
+        if (body.op === "colw") {
+          if (!(sh.cols || []).includes(body.colId)) return j(res, 403, { error: "Not a visible column" });
+          if (!sh.colW) sh.colW = {};
+          sh.colW[body.colId] = Math.max(50, Math.min(900, Math.round(Number(body.w) || 120)));
+        } else {
+          if (!Array.isArray(sh.cols)) sh.cols = [];
+          const i = sh.cols.indexOf(body.colId), dir = body.dir === "left" ? -1 : 1, nj = i + dir;
+          if (i >= 0 && nj >= 0 && nj < sh.cols.length) { const [x] = sh.cols.splice(i, 1); sh.cols.splice(nj, 0, x); }
+        }
+        await airtable("PATCH", "/" + p.id, { fields: { Data: JSON.stringify(fresh.data), UpdatedAt: new Date().toISOString() } });
+        return j(res, 200, { ok: true });
+      } catch (e) { return j(res, 500, { error: e.message || "Server error" }); }
+    }
     const rowId = body.rowId, colId = body.colId;
     const value = String(body.value == null ? "" : body.value).slice(0, 2000);
     const editCols = Array.isArray(share.editCols) ? share.editCols : [];
