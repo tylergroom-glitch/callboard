@@ -2503,9 +2503,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const canEdit = isAdmin || editor || unlocked;
   const rd = event.rundown || { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS, run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   const rows = rd.rows || [];
-  const run = rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 };
+  const run = liveRun || rd.run || { on: false, showStart: 0, segIdx: 0, segStart: 0 };
   const columns = rd.columns && rd.columns.length ? rd.columns : RD_DEFAULT_COLS;
   const visCols = columns.filter((c) => !c.hidden);
+  const printCols = columns.filter((c) => c.type !== "image");
   const [now, setNow] = useState(Date.now());
   const [colMgr, setColMgr] = useState(false);
   const [resz, setResz] = useState(null);
@@ -2514,6 +2515,9 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const [rowResz, setRowResz] = useState(null);
   const rowReszRef = useRef(null);
   const lastRowH = useRef(0);
+  const [liveRun, setLiveRun] = useState(null);
+  const liveRunRef = useRef(null);
+  const lastCommit = useRef(0);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
@@ -2528,6 +2532,23 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, []);
+  useEffect(() => {
+    if (!showId) return;
+    let alive = true, timer = null;
+    const poll = async () => {
+      try {
+        const full = await getEvent(showId);
+        const fr = full && full.rundown && full.rundown.run;
+        if (alive && fr && Date.now() - lastCommit.current > 3500) {
+          const j = JSON.stringify(fr);
+          if (j !== liveRunRef.current) { liveRunRef.current = j; setLiveRun(fr); }
+        }
+      } catch (e) {}
+      if (alive) { let on = false; try { on = liveRunRef.current && JSON.parse(liveRunRef.current).on; } catch (e) {} timer = setTimeout(poll, on ? 3000 : 12000); }
+    };
+    poll();
+    return () => { alive = false; if (timer) clearTimeout(timer); };
+  }, [showId]);
 
   const base = schedMinutes(rd.start);
   const items = rows.filter((r) => r.kind === "item");
@@ -2752,10 +2773,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     return days;
   };
   const copyToSchedule = (mode) => { const days = rundownToSchedule(); if (!days.length) return; update((ev) => { ev.schedule = mode === "replace" ? days : (ev.schedule || []).concat(days); }); setToSchedOpen(false); };
-  const startShow = () => mut((r) => { r.run = { on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() }; });
-  const endShow = () => mut((r) => { r.run.on = false; });
-  const nextSeg = () => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); if (r.run.segIdx < its.length - 1) { r.run.segIdx++; r.run.segStart = Date.now(); } else { r.run.on = false; } });
-  const prevSeg = () => mut((r) => { if (r.run.segIdx > 0) { r.run.segIdx--; r.run.segStart = Date.now(); } });
+  const commitRun = (nr) => { lastCommit.current = Date.now(); liveRunRef.current = JSON.stringify(nr); setLiveRun(nr); mut((r) => { r.run = nr; }); };
+  const startShow = () => commitRun({ on: true, showStart: Date.now(), segIdx: 0, segStart: Date.now() });
+  const endShow = () => commitRun({ ...run, on: false });
+  const nextSeg = () => { if (run.segIdx < items.length - 1) commitRun({ ...run, segIdx: run.segIdx + 1, segStart: Date.now() }); else commitRun({ ...run, on: false }); };
+  const prevSeg = () => { if (run.segIdx > 0) commitRun({ ...run, segIdx: run.segIdx - 1, segStart: Date.now() }); };
   const nudge = (delta) => mut((r) => { const its = r.rows.filter((z) => z.kind === "item"); const it = its[r.run.segIdx]; if (!it) return; it.dur = String(Math.max(0, parseDur(it.dur) + delta)); });
   const toggleDone = (id) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x.done = !x.done; });
 
@@ -2770,6 +2792,13 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
     return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
+  };
+  const printVal = (r, c, numOrLbl, pl) => {
+    if (c.type === "num") return numOrLbl;
+    if (c.type === "start") return pl && pl.start != null ? fmtTOD(pl.start) : "";
+    if (c.type === "end") return pl && pl.end != null ? fmtTOD(pl.end) : "";
+    if (c.type === "dur") return r.dur || "";
+    return r.cells ? r.cells[c.id] || "" : "";
   };
 
   return (
@@ -3026,6 +3055,19 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           <button className="ts-batchbtn" onClick={addSection}>+ Section</button>
         </div>
       )}
+
+      <table className="rd-print">
+        <thead><tr>{printCols.map((c) => <th key={c.id}>{c.label}</th>)}</tr></thead>
+        <tbody>
+          {rows.map((r) => {
+            if (r.kind === "section") return <tr className="rd-print-sec" key={r.id}><td colSpan={printCols.length}>{r.title}</td></tr>;
+            if (r.kind === "sub") return <tr className="rd-print-sub" key={r.id}>{printCols.map((c) => <td key={c.id}>{printVal(r, c, subLabel[r.id])}</td>)}</tr>;
+            const pl = planned[r.id] || {};
+            const num = items.indexOf(r) + 1;
+            return <tr key={r.id}>{printCols.map((c) => <td key={c.id}>{printVal(r, c, num, pl)}</td>)}</tr>;
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -7297,6 +7339,16 @@ const CSS = `
   .cb .content { padding: 0 !important; }
   .cb .panel { border: 1px solid #ccc !important; background: #fff !important; break-inside: avoid; margin-bottom: 12pt; }
   .cb .panel-title { color: #111 !important; font-size: 13pt; }
+  /* Run of Show: clean spreadsheet print */
+  .cb .rd-clockbar, .cb .rd-progress, .cb .rd-config, .cb .rd-scroll, .cb .rd-addrow { display: none !important; }
+  .cb .rd-print { display: table !important; width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+  .cb .rd-print thead { display: table-header-group; }
+  .cb .rd-print tr { break-inside: avoid; }
+  .cb .rd-print th { text-align: left; font-size: 7pt; text-transform: uppercase; letter-spacing: .04em; border: 0.5pt solid #000; padding: 4pt 5pt; background: #e8e8e8 !important; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .rd-print td { border: 0.5pt solid #999; padding: 3pt 5pt; color: #000 !important; vertical-align: top; }
+  .cb .rd-print-sec td { background: #d8d8d8 !important; font-weight: 700; text-transform: uppercase; font-size: 7.5pt; letter-spacing: .05em; border: 0.5pt solid #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .cb .rd-print-sub td { color: #333 !important; }
+  .cb .rd-print-sub td:first-child { padding-left: 16pt; }
 
   /* print header — show show name + tab name at top */
   .cb .content::before {
@@ -7439,6 +7491,7 @@ const CSS = `
 .cb .rd-config input{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:7px 9px; font-size:13px; font-variant-numeric:tabular-nums;}
 .cb .rd-total{font-size:12px; color:var(--dim);}
 .cb .rd-scroll{overflow:auto; max-height:calc(100vh - 240px); min-height:300px; -webkit-overflow-scrolling:touch;}
+.cb .rd-print{display:none;}
 .cb .rd-grid{display:grid; grid-template-columns:38px 84px 64px minmax(180px,1.4fr) 84px 140px minmax(140px,1fr) 148px; gap:8px; align-items:center; min-width:944px;}
 .cb .rd-grid.row{padding:6px 6px 6px 2px; border-radius:0 6px 6px 0; margin-bottom:4px; min-height:60px; position:relative;}
 .cb .rd-rowresize{position:absolute; left:0; right:0; bottom:-3px; height:8px; cursor:row-resize; touch-action:none; z-index:2;}
