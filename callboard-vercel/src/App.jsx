@@ -2629,6 +2629,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     const overageMin = Math.max(0, elapsedMin - segDurMin);
     totalLate = plannedStartMin == null ? overageMin * 60 : ((actualStartMin - plannedStartMin) + overageMin) * 60;
   }
+  const spkCol = columns.find((c) => c.id === "speaker");
+  const photoCol = columns.find((c) => c.type === "image");
+  const onAirSpeaker = run.on && segItem && spkCol && segItem.cells ? (segItem.cells[spkCol.id] || "") : "";
+  const onAirPhoto = run.on && segItem && photoCol && segItem.cells ? (segItem.cells[photoCol.id] || "") : "";
   const rdTotalSec = items.reduce((sm, it) => sm + parseDur(it.dur) * 60, 0);
   const rdElapsed = run.on ? (now - run.showStart) / 1000 : 0;
   const rdFrac = run.on && rdTotalSec > 0 ? Math.min(1, Math.max(0, rdElapsed / rdTotalSec)) : 0;
@@ -2885,6 +2889,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
         </div>
       </div>
 
+      <div className="rd-livehead">
       <div className="rd-clockbar">
         <div className="rd-clock-left">
           <button className={"rd-start" + (run.on ? " live" : "")} onClick={run.on ? endShow : startShow} disabled={!canEdit || !items.length}>{run.on ? "■ End show" : "▶ Start show"}</button>
@@ -2894,32 +2899,37 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
               <button className="rd-ctrl" onClick={nextSeg} disabled={!canEdit}>Next ▶</button>
               <button className="rd-ctrl" onClick={() => nudge(-1)} disabled={!canEdit}>−1m</button>
               <button className="rd-ctrl" onClick={() => nudge(1)} disabled={!canEdit}>+1m</button>
-              <button className="rd-ctrl" onClick={() => nudge(-5)} disabled={!canEdit}>−5m</button>
-              <button className="rd-ctrl" onClick={() => nudge(5)} disabled={!canEdit}>+5m</button>
             </>
           )}
         </div>
-        <div className="rd-clock-right">
+        <div className="rd-clock-center">
           {run.on && segItem && (
-            <div className="rd-countbox">
-              <span className="rd-count-label">On air: {segName}</span>
-              <span className={"rd-count" + (remaining < 0 ? " over" : "")}>{fmtClock(remaining)}</span>
+            <div className="rd-onair">
+              {onAirPhoto ? <img className="rd-onair-photo" src={onAirPhoto} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : null}
+              <div className="rd-onair-txt">
+                <span className="rd-onair-label">ON AIR</span>
+                <span className="rd-onair-seg">{segName}</span>
+                {onAirSpeaker ? <span className="rd-onair-spk">{onAirSpeaker}</span> : null}
+              </div>
+              <div className="rd-onair-remain"><b className={remaining < 0 ? "over" : ""}>{fmtClock(remaining)}</b><span>left</span></div>
             </div>
           )}
+          <div className="rd-tod-big">{todClock(now)}</div>
+        </div>
+        <div className="rd-clock-right">
           {run.on && (
             <div className="rd-ou">
               <span>Over / Under</span>
               <b className={Math.abs(totalLate) < 30 ? "ontime" : totalLate > 0 ? "over" : "under"}>{Math.abs(totalLate) < 30 ? "On time" : (totalLate > 0 ? "+" : "−") + fmtClock(Math.abs(totalLate))}</b>
             </div>
           )}
-          <div className="rd-tod"><span>Time of day</span><b>{todClock(now)}</b></div>
-          <div className="rd-ends"><span>Rundown ends</span><b>{schedEndMin == null ? "—" : fmtTOD(schedEndMin + (run.on ? totalLate / 60 : 0))}</b>{run.on && <em className={totalLate > 30 ? "late" : totalLate < -30 ? "early" : ""}>{fmtLate(totalLate)}</em>}</div>
         </div>
       </div>
 
       {run.on && (
         <div className="rd-progress"><div className="rd-progress-fill" style={{ width: (rdFrac * 100) + "%", background: rdColor }} /></div>
       )}
+      </div>
 
       {canEdit && (
         <div className="rd-config">
@@ -7540,6 +7550,7 @@ const CSS = `
 .cb .sched-hidden-note{font-size:12px; color:var(--faint); font-style:italic; padding:6px 2px 2px;}
 .cb .rd-clockbar{display:flex; flex-wrap:wrap; gap:16px 24px; justify-content:space-between; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px;}
 .cb .rd-progress{height:8px; background:var(--panel2); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin:-2px 0 14px;}
+.cb .rd-livehead{position:sticky; top:0; z-index:26; background:var(--bg); padding:4px 0 2px;}
 .cb .rd-progress-fill{height:100%; border-radius:6px; transition:width .4s linear, background .3s;}
 .cb .rd-clock-left{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
 .cb .rd-clock-right{display:flex; gap:22px; align-items:center; flex-wrap:wrap;}
@@ -7553,6 +7564,18 @@ const CSS = `
 .cb .rd-count{font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--green); line-height:1.1;}
 .cb .rd-count.over{color:#f87171;}
 .cb .rd-tod, .cb .rd-ends{display:flex; flex-direction:column; gap:1px;}
+.cb .rd-clock-center{flex:1 1 auto; display:flex; align-items:center; justify-content:center; gap:22px; min-width:0;}
+.cb .rd-tod-big{font-size:38px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1;}
+.cb .rd-onair{display:flex; align-items:center; gap:12px; background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:8px 14px;}
+.cb .rd-onair-photo{width:46px; height:46px; object-fit:cover; border-radius:8px; border:1px solid var(--line); flex:0 0 auto;}
+.cb .rd-onair-txt{display:flex; flex-direction:column; gap:1px; min-width:0;}
+.cb .rd-onair-label{font-size:9px; letter-spacing:.12em; font-weight:800; color:var(--green);}
+.cb .rd-onair-seg{font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;}
+.cb .rd-onair-spk{font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;}
+.cb .rd-onair-remain{display:flex; flex-direction:column; align-items:center; margin-left:4px; flex:0 0 auto;}
+.cb .rd-onair-remain b{font-size:22px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1;}
+.cb .rd-onair-remain b.over{color:#f87171;}
+.cb .rd-onair-remain span{font-size:9px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);}
 .cb .rd-ou{display:flex; flex-direction:column; gap:1px;}
 .cb .rd-ou span{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700;}
 .cb .rd-ou b{font-size:20px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1.1;}
