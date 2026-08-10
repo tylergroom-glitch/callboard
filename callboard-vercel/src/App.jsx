@@ -13,6 +13,7 @@ import {
   setShowPasswords,
   generateSurveyLink,
   generateRundownShareLink,
+  generateRundownOutputLink,
   importAgenda,
   listTemplates,
   createTemplate,
@@ -2530,6 +2531,9 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   zoomRef.current = zoom;
   const applyZoom = (z) => { const nz = Math.min(2, Math.max(0.5, Math.round(z * 20) / 20)); setZoom(nz); try { localStorage.setItem("cb_rd_zoom", String(nz)); } catch (e) {} };
   const [shareOpen, setShareOpen] = useState(false);
+  const [outputOpen, setOutputOpen] = useState(false);
+  const [outputLink, setOutputLink] = useState("");
+  const [outputBusy, setOutputBusy] = useState(false);
   const [shareLinks, setShareLinks] = useState({});
   const [copyOpen, setCopyOpen] = useState(false);
   const [toSchedOpen, setToSchedOpen] = useState(false);
@@ -2695,6 +2699,10 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
   const setRow = (id, k, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) x[k] = v; });
   const setCell = (id, colId, v) => mut((r) => { const x = r.rows.find((z) => z.id === id); if (x) { if (!x.cells) x.cells = {}; x.cells[colId] = v; } });
   const setMeta = (k, v) => mut((r) => { r[k] = v; });
+  const output = rd.output || { fields: {}, stream: "" };
+  const setOutputField = (k, v) => mut((r) => { r.output = r.output || { fields: {}, stream: "" }; r.output.fields = r.output.fields || {}; r.output.fields[k] = v; });
+  const setOutputStream = (v) => mut((r) => { r.output = r.output || { fields: {}, stream: "" }; r.output.stream = v; });
+  const genOutput = async () => { setOutputBusy(true); try { const r = await generateRundownOutputLink(showId); setOutputLink(r.url); } catch (e) { window.alert("Couldn't generate the link. Give the show a moment to save, then try again."); } setOutputBusy(false); };
   const switchDay = (targetId) => mut((r) => {
     if (targetId === r.activeDay) return;
     const cur = (r.days || []).find((d) => d.id === r.activeDay);
@@ -2891,38 +2899,38 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
 
       <div className="rd-livehead">
       <div className="rd-clockbar">
-        <div className="rd-clock-left">
-          <button className={"rd-start" + (run.on ? " live" : "")} onClick={run.on ? endShow : startShow} disabled={!canEdit || !items.length}>{run.on ? "■ End show" : "▶ Start show"}</button>
-          {run.on && (
-            <>
-              <button className="rd-ctrl" onClick={prevSeg} disabled={!canEdit}>◀ Prev</button>
-              <button className="rd-ctrl" onClick={nextSeg} disabled={!canEdit}>Next ▶</button>
-              <button className="rd-ctrl" onClick={() => nudge(-1)} disabled={!canEdit}>−1m</button>
-              <button className="rd-ctrl" onClick={() => nudge(1)} disabled={!canEdit}>+1m</button>
-            </>
-          )}
-        </div>
-        <div className="rd-clock-center">
-          {run.on && segItem && (
-            <div className="rd-onair">
-              {onAirPhoto ? <img className="rd-onair-photo" src={onAirPhoto} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : null}
-              <div className="rd-onair-txt">
-                <span className="rd-onair-label">ON AIR</span>
-                <span className="rd-onair-seg">{segName}</span>
-                {onAirSpeaker ? <span className="rd-onair-spk">{onAirSpeaker}</span> : null}
-              </div>
-              <div className="rd-onair-remain"><b className={remaining < 0 ? "over" : ""}>{fmtClock(remaining)}</b><span>left</span></div>
+        {run.on && (
+          <div className="rd-clock-left">
+            <button className="rd-ctrl" onClick={prevSeg} disabled={!canEdit}>◀ Prev</button>
+            <button className="rd-ctrl" onClick={nextSeg} disabled={!canEdit}>Next ▶</button>
+            <button className="rd-ctrl" onClick={() => nudge(-1)} disabled={!canEdit}>−1m</button>
+            <button className="rd-ctrl" onClick={() => nudge(1)} disabled={!canEdit}>+1m</button>
+          </div>
+        )}
+        {run.on && segItem && (onAirPhoto || onAirSpeaker) && (
+          <div className="rd-speaker">
+            {onAirPhoto ? <img className="rd-speaker-photo" src={onAirPhoto} alt="" onError={(e) => { e.currentTarget.style.display = "none"; }} /> : null}
+            {onAirSpeaker ? <span className="rd-speaker-name">{onAirSpeaker}</span> : null}
+          </div>
+        )}
+        {run.on && segItem && (
+          <div className="rd-onair">
+            <div className="rd-onair-txt">
+              <span className="rd-onair-label">ON AIR</span>
+              <span className="rd-onair-seg">{segName}</span>
             </div>
-          )}
+            <div className="rd-onair-remain"><b className={remaining < 0 ? "over" : ""}>{fmtClock(remaining)}</b><span>LEFT</span></div>
+          </div>
+        )}
+        {run.on && (
+          <div className="rd-ou">
+            <span>Over / Under</span>
+            <b className={Math.abs(totalLate) < 30 ? "ontime" : totalLate > 0 ? "over" : "under"}>{Math.abs(totalLate) < 30 ? "On time" : (totalLate > 0 ? "+" : "−") + fmtClock(Math.abs(totalLate))}</b>
+          </div>
+        )}
+        <div className="rd-clock-tail">
           <div className="rd-tod-big">{todClock(now)}</div>
-        </div>
-        <div className="rd-clock-right">
-          {run.on && (
-            <div className="rd-ou">
-              <span>Over / Under</span>
-              <b className={Math.abs(totalLate) < 30 ? "ontime" : totalLate > 0 ? "over" : "under"}>{Math.abs(totalLate) < 30 ? "On time" : (totalLate > 0 ? "+" : "−") + fmtClock(Math.abs(totalLate))}</b>
-            </div>
-          )}
+          <button className={"rd-start" + (run.on ? " live" : "")} onClick={run.on ? endShow : startShow} disabled={!canEdit || !items.length}>{run.on ? "■ End show" : "▶ Start show"}</button>
         </div>
       </div>
 
@@ -2943,6 +2951,7 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
           <label className="rd-rowh">Row height <input type="range" min="40" max="160" value={rowH} onChange={(e) => setMeta("rowH", Number(e.target.value))} /></label>
           <button className={"ts-batchbtn" + (colMgr ? " on" : "")} onClick={() => setColMgr((v) => !v)}>Edit columns</button>
           {isAdmin && <button className={"ts-batchbtn" + (shareOpen ? " on" : "")} onClick={() => setShareOpen((v) => !v)}>Share links</button>}
+          {isAdmin && <button className={"ts-batchbtn" + (outputOpen ? " on" : "")} onClick={() => setOutputOpen((v) => !v)}>Output view</button>}
           <button className={"ts-batchbtn" + (copyOpen ? " on" : "")} onClick={() => { setCopyOpen((v) => !v); setImpOpen(false); }}>Copy from Schedule</button>
           <button className={"ts-batchbtn" + (impOpen ? " on" : "")} onClick={() => { setImpOpen((v) => !v); setCopyOpen(false); setImpDays(null); setImpErr(""); }}>Import agenda</button>
           <button className={"ts-batchbtn" + (toSchedOpen ? " on" : "")} onClick={() => { setToSchedOpen((v) => !v); setCopyOpen(false); setImpOpen(false); }}>Rundown → Schedule</button>
@@ -3030,6 +3039,24 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
             </div>
           ))}
           <div className="rd-addrow"><button className="ts-batchbtn" onClick={addCol}>+ Add column</button><button className="ts-batchbtn" onClick={() => mut((r) => { r.columns = RD_DEFAULT_COLS.map((cc) => ({ ...cc })); })}>Reset to default columns</button></div>
+        </div>
+      )}
+
+      {isAdmin && outputOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Output / stage-display link</div>
+          <p className="rd-sharehint">A full-screen live output for a backstage monitor or a stream overlay. Pick what to show, optionally embed a video feed, then generate a link that follows the show.</p>
+          <div className="rd-out-fields">
+            {[["session", "Session name"], ["thumb", "Thumbnail"], ["remaining", "Time remaining"], ["tod", "Time of day"], ["speaker", "Speaker name"], ["over", "Over / Under"], ["next", "Next segment"], ["progress", "Progress bar"]].map(([k, label]) => (
+              <label key={k} className="rd-out-chk"><input type="checkbox" checked={(output.fields || {})[k] !== false} onChange={(e) => setOutputField(k, e.target.checked)} /> {label}</label>
+            ))}
+          </div>
+          <label className="rd-out-stream">Stream embed URL (optional)<input value={output.stream || ""} placeholder="YouTube / Vimeo / embed URL" onChange={(e) => setOutputStream(e.target.value)} /></label>
+          <div className="rd-out-gen">
+            <button className="ts-batchbtn" onClick={genOutput} disabled={outputBusy}>{outputBusy ? "Generating…" : "Generate output link"}</button>
+            {outputLink && <a className="rd-out-link" href={outputLink} target="_blank" rel="noreferrer">{outputLink}</a>}
+            {outputLink && <button className="ts-batchbtn" onClick={() => { if (navigator.clipboard) navigator.clipboard.writeText(outputLink); }}>Copy</button>}
+          </div>
         </div>
       )}
 
@@ -3748,6 +3775,37 @@ function ItineraryTab({ event, update }) {
         }
       });
     });
+  const roomStays = () => (it.stays || []).filter((x) => (x.crewName || "").trim());
+  const splitName = (n) => { const parts = (n || "").trim().split(" ").filter(Boolean); return { first: parts[0] || "", last: parts.slice(1).join(" ") }; };
+  const nightsBetween = (a, b) => { if (!a || !b) return ""; const d = Math.round((new Date(b) - new Date(a)) / 86400000); return d > 0 ? d : ""; };
+  const roomingList = () => {
+    const esc = (x) => String(x == null ? "" : x).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;");
+    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return { first: nm.first, last: nm.last, checkIn: st.checkIn, checkOut: st.checkOut, roomType: st.roomType || "", nights: nightsBetween(st.checkIn, st.checkOut), conf: st.confirmation || "" }; });
+    rows.sort((a, b) => (a.last || "").localeCompare(b.last || "") || (a.first || "").localeCompare(b.first || ""));
+    const title = (event.name || "Show") + " — Rooming List";
+    let bodyRows = "";
+    rows.forEach((r) => { bodyRows += "<tr><td>" + esc(r.last) + "</td><td>" + esc(r.first) + "</td><td>" + esc(prettyDate(r.checkIn)) + "</td><td>" + esc(prettyDate(r.checkOut)) + "</td><td>" + esc(r.roomType) + "</td><td>" + esc(r.nights) + "</td><td>" + esc(r.conf) + "</td></tr>"; });
+    const html = "<!doctype html><html><head><meta charset='utf-8'><title>" + esc(title) + "</title><style>" +
+      "body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:32px;}h1{font-size:20px;margin:0 0 4px;}.sub{color:#555;margin:0 0 18px;font-size:13px;}" +
+      "table{border-collapse:collapse;width:100%;font-size:13px;}th,td{border:1px solid #999;padding:7px 10px;text-align:left;}" +
+      "th{background:#eee;text-transform:uppercase;font-size:11px;letter-spacing:.04em;}tr:nth-child(even) td{background:#f7f7f7;}" +
+      "@media print{body{margin:0;}.noprint{display:none;}}.noprint{margin:16px 0;}.noprint button{font-size:14px;padding:8px 16px;cursor:pointer;}" +
+      "</style></head><body><h1>" + esc(title) + "</h1><p class='sub'>" + esc(it.hotelName || "") + (it.hotelAddress ? " · " + esc(it.hotelAddress) : "") + "</p>" +
+      "<div class='noprint'><button onclick='window.print()'>Print / Save PDF</button></div>" +
+      "<table><thead><tr><th>Last Name</th><th>First Name</th><th>Check-in</th><th>Check-out</th><th>Room Type</th><th>Nights</th><th>Confirmation</th></tr></thead><tbody>" + bodyRows +
+      "</tbody></table><p class='sub' style='margin-top:14px'>" + rows.length + " room" + (rows.length === 1 ? "" : "s") + "</p></body></html>";
+    const w = window.open("", "_blank");
+    if (w) { w.document.write(html); w.document.close(); } else { window.alert("Please allow pop-ups to open the rooming list."); }
+  };
+  const roomingCsv = () => {
+    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return [nm.last, nm.first, st.checkIn || "", st.checkOut || "", st.roomType || "", st.confirmation || ""]; });
+    rows.sort((a, b) => (a[0] || "").localeCompare(b[0] || ""));
+    const all = [["Last Name", "First Name", "Check-in", "Check-out", "Room Type", "Confirmation"]].concat(rows);
+    const csv = all.map((r) => r.map((c) => '"' + String(c == null ? "" : c).split('"').join('""') + '"').join(",")).join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = (event.name || "rooming") + " - Rooming List.csv"; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   return (
     <div className="stack">
       <Panel title="Hotel">
@@ -3765,6 +3823,8 @@ function ItineraryTab({ event, update }) {
         title="Room stays"
         action={
           <div className="panel-actions">
+            <button className="ts-batchbtn" onClick={roomingList} title="Open a printable rooming list to send / save as PDF">Rooming list</button>
+            <button className="ts-batchbtn" onClick={roomingCsv} title="Download a CSV rooming list">CSV</button>
             <AddBtn onClick={addAllCrewStays}>All crew</AddBtn>
             <AddBtn
               onClick={() =>
@@ -3780,13 +3840,14 @@ function ItineraryTab({ event, update }) {
       >
         <div className="rows">
           <div className="rowhead stay-grid">
-            <span>Name</span><span>Check-in</span><span>Check-out</span><span>Conf #</span><span>Notes</span><span />
+            <span>Name</span><span>Check-in</span><span>Check-out</span><span>Room type</span><span>Conf #</span><span>Notes</span><span />
           </div>
           {it.stays.map((s, i) => (
             <div className="row stay-grid" key={s.id}>
               <CrewSelect crew={event.crew} value={s.crewName} onChange={(e) => update((ev) => (ev.itinerary.stays[i].crewName = e.target.value))} />
               <input type="date" value={s.checkIn || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkIn = e.target.value))} />
               <input type="date" value={s.checkOut || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkOut = e.target.value))} />
+              <input value={s.roomType || ""} placeholder="King / Double" onChange={(e) => update((ev) => (ev.itinerary.stays[i].roomType = e.target.value))} />
               <input value={s.confirmation} placeholder="Conf" onChange={(e) => update((ev) => (ev.itinerary.stays[i].confirmation = e.target.value))} />
               <input value={s.notes} placeholder="Notes" onChange={(e) => update((ev) => (ev.itinerary.stays[i].notes = e.target.value))} />
               <RemoveBtn onClick={() => update((ev) => ev.itinerary.stays.splice(i, 1))} />
@@ -7564,18 +7625,19 @@ const CSS = `
 .cb .rd-count{font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; color:var(--green); line-height:1.1;}
 .cb .rd-count.over{color:#f87171;}
 .cb .rd-tod, .cb .rd-ends{display:flex; flex-direction:column; gap:1px;}
-.cb .rd-clock-center{flex:1 1 auto; display:flex; align-items:center; justify-content:center; gap:22px; min-width:0;}
-.cb .rd-tod-big{font-size:38px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1;}
-.cb .rd-onair{display:flex; align-items:center; gap:12px; background:var(--panel2); border:1px solid var(--line); border-radius:12px; padding:8px 14px;}
-.cb .rd-onair-photo{width:46px; height:46px; object-fit:cover; border-radius:8px; border:1px solid var(--line); flex:0 0 auto;}
+.cb .rd-clock-tail{display:flex; align-items:center; gap:16px; margin-left:auto;}
+.cb .rd-tod-big{font-size:34px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:-.5px; line-height:1;}
+.cb .rd-speaker{display:flex; flex-direction:column; align-items:center; gap:4px; flex:0 0 auto;}
+.cb .rd-speaker-photo{width:56px; height:56px; object-fit:cover; border-radius:10px; border:1px solid var(--line);}
+.cb .rd-speaker-name{font-size:13px; font-weight:800; color:#ff5c4d; text-align:center; max-width:130px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.cb .rd-onair{display:flex; align-items:center; gap:18px; background:var(--panel2); border:1px solid var(--line); border-radius:14px; padding:8px 18px;}
 .cb .rd-onair-txt{display:flex; flex-direction:column; gap:1px; min-width:0;}
-.cb .rd-onair-label{font-size:9px; letter-spacing:.12em; font-weight:800; color:var(--green);}
-.cb .rd-onair-seg{font-size:15px; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;}
-.cb .rd-onair-spk{font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px;}
-.cb .rd-onair-remain{display:flex; flex-direction:column; align-items:center; margin-left:4px; flex:0 0 auto;}
-.cb .rd-onair-remain b{font-size:22px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1;}
+.cb .rd-onair-label{font-size:10px; letter-spacing:.14em; font-weight:800; color:var(--green);}
+.cb .rd-onair-seg{font-size:23px; font-weight:800; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:320px; line-height:1.1;}
+.cb .rd-onair-remain{display:flex; flex-direction:column; align-items:center; flex:0 0 auto; background:var(--panel); border-radius:10px; padding:4px 12px;}
+.cb .rd-onair-remain b{font-size:26px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1;}
 .cb .rd-onair-remain b.over{color:#f87171;}
-.cb .rd-onair-remain span{font-size:9px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim);}
+.cb .rd-onair-remain span{font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:var(--dim); margin-top:2px;}
 .cb .rd-ou{display:flex; flex-direction:column; gap:1px;}
 .cb .rd-ou span{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700;}
 .cb .rd-ou b{font-size:20px; font-variant-numeric:tabular-nums; font-weight:800; line-height:1.1;}
@@ -7631,6 +7693,13 @@ const CSS = `
 .cb .rd-rowh{display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim);}
 .cb .rd-dayselect{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim);}
 .cb .rd-dayselect select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:6px 8px; font-family:inherit; font-size:13px; font-weight:600;}
+.cb .rd-out-fields{display:flex; flex-wrap:wrap; gap:8px 18px; margin:10px 0;}
+.cb .rd-out-chk{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--ink); cursor:pointer;}
+.cb .rd-out-chk input{accent-color:var(--accent);}
+.cb .rd-out-stream{display:flex; flex-direction:column; gap:5px; font-size:12px; color:var(--dim); margin-bottom:12px;}
+.cb .rd-out-stream input{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13px;}
+.cb .rd-out-gen{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.cb .rd-out-link{color:var(--accent); font-size:12px; word-break:break-all; text-decoration:none;}
 .cb .rd-rowh input[type="range"]{width:110px; accent-color:var(--accent); cursor:pointer;}
 .cb .rd-rowctrl .sched-done-ck{width:16px; height:16px; flex:0 0 auto; align-self:center; accent-color:var(--green); cursor:pointer;}
 .cb .rd-th{position:relative; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -7702,7 +7771,7 @@ const CSS = `
 .cb .row.sched-grid{padding:5px 6px; border-radius:0 6px 6px 0;}
 .cb .sched-ro-room{color:var(--amber); font-weight:700; font-style:normal;}
 .cb .sched-ro-notes{color:var(--faint); font-size:12.5px;}
-.cb .stay-grid{grid-template-columns:1.1fr 130px 130px .8fr 1.2fr 28px;}
+.cb .stay-grid{grid-template-columns:1.1fr 120px 120px .9fr .8fr 1.1fr 28px;}
 .cb .flight-grid{grid-template-columns:1.1fr 130px 1fr .8fr 100px 100px .8fr 1fr 28px; min-width:900px;}
 .cb .meal-grid{grid-template-columns:140px 100px 1.2fr 1.2fr 28px;}
 .cb .note-grid{grid-template-columns:140px 1fr 28px;}
