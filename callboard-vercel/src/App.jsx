@@ -824,6 +824,7 @@ function Callboard({ auth, onLogout }) {
   const [pnlBasis, setPnlBasis] = useState("est");
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
+  const [atLanding, setAtLanding] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -848,12 +849,8 @@ function Callboard({ auth, onLogout }) {
             });
             list = [created];
           }
-          const firstId = list[0].id;
-          const first = normalize(await getEvent(firstId));
-          loadingRef.current = true;
           setEvents(list);
-          setCurrentId(firstId);
-          setEvent(first);
+          setAtLanding(true);
         } else {
           const id = auth.showId;
           const ev = normalize(await getEvent(id));
@@ -931,6 +928,7 @@ function Callboard({ auth, onLogout }) {
       flash(err.message || "Couldn't open that show");
     }
   }
+  const openLandingShow = (id) => { setAtLanding(false); switchEvent(id); };
 
   async function newEvent() {
     const name = window.prompt("Name this show:", "New Event");
@@ -1069,6 +1067,14 @@ function Callboard({ auth, onLogout }) {
         <div className="loading">Loading the callboard…</div>
       </div>
     );
+  if (isSuperAdmin && atLanding)
+    return (
+      <div className="cb">
+        <style>{CSS}</style>
+        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} />
+      </div>
+    );
+
   if (loadError || !event)
     return (
       <div className="cb">
@@ -1107,6 +1113,7 @@ function Callboard({ auth, onLogout }) {
               </select>
             </div>
             <div className="top-actions">
+              <button className="btn ghost" onClick={() => setAtLanding(true)}>Calendar</button>
               <button className="btn" onClick={newEvent}>+ New</button>
               <button className="btn ghost" onClick={newDemoEvent} title="Create a fully populated fictional event for demos">Demo</button>
               <button className="btn ghost" onClick={duplicateEvent}>Duplicate</button>
@@ -1388,6 +1395,75 @@ function LockWrapper({ canEdit, label, children }) {
         </div>
       )}
       <div className={canEdit ? "" : "tab-locked"}>{children}</div>
+    </div>
+  );
+}
+
+function ShowsCalendar({ events, onOpen, onNew, onDemo }) {
+  const now = new Date();
+  const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const two = (n) => (n < 10 ? "0" : "") + n;
+  const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+  const startDow = new Date(ym.y, ym.m, 1).getDay();
+  const daysIn = new Date(ym.y, ym.m + 1, 0).getDate();
+  const palette = ["#0077B6", "#E8683D", "#2E9E7B", "#7B5EA7", "#D97CC0", "#F3B24A", "#46C5B8", "#C77DA0"];
+  const colorFor = (e) => { let h = 0; const str = String(e.id || e.name || ""); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0; return palette[h % palette.length]; };
+  const cellStr = (d) => ym.y + "-" + two(ym.m + 1) + "-" + two(d);
+  const onDay = (ds) => events.filter((e) => e.startDate && e.startDate <= ds && (e.endDate || e.startDate) >= ds);
+  const todayStr = now.getFullYear() + "-" + two(now.getMonth() + 1) + "-" + two(now.getDate());
+  const dated = events.filter((e) => e.startDate).slice().sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const undated = events.filter((e) => !e.startDate);
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= daysIn; d++) cells.push(d);
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Shows</h1>
+        <div className="cal-top-actions">
+          <button className="btn" onClick={onNew}>+ New show</button>
+          <button className="btn ghost" onClick={onDemo}>Demo</button>
+        </div>
+      </div>
+      <div className="cal-nav">
+        <button className="cal-navbtn" onClick={() => setYm((v) => ({ y: v.m === 0 ? v.y - 1 : v.y, m: v.m === 0 ? 11 : v.m - 1 }))}>‹</button>
+        <span className="cal-month">{monthNames[ym.m]} {ym.y}</span>
+        <button className="cal-navbtn" onClick={() => setYm((v) => ({ y: v.m === 11 ? v.y + 1 : v.y, m: v.m === 11 ? 0 : v.m + 1 }))}>›</button>
+        <button className="cal-today" onClick={() => setYm({ y: now.getFullYear(), m: now.getMonth() })}>Today</button>
+      </div>
+      <div className="cal-grid">
+        {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((w) => <div key={w} className="cal-dow">{w}</div>)}
+        {cells.map((d, i) => {
+          if (d == null) return <div key={"b" + i} className="cal-cell empty" />;
+          const ds = cellStr(d);
+          const evs = onDay(ds);
+          return (
+            <div key={ds} className={"cal-cell" + (ds === todayStr ? " today" : "")}>
+              <span className="cal-daynum">{d}</span>
+              {evs.map((e) => <button key={e.id} className="cal-chip" style={{ background: colorFor(e) }} onClick={() => onOpen(e.id)} title={e.name}>{e.name || "Untitled"}</button>)}
+            </div>
+          );
+        })}
+      </div>
+      <div className="cal-list">
+        <div className="cal-list-h">All shows by date</div>
+        {dated.map((e) => (
+          <button key={e.id} className="cal-listrow" onClick={() => onOpen(e.id)}>
+            <span className="cal-listdot" style={{ background: colorFor(e) }} />
+            <span className="cal-listdate">{prettyDate(e.startDate)}{e.endDate && e.endDate !== e.startDate ? " – " + prettyDate(e.endDate) : ""}</span>
+            <span className="cal-listname">{e.name || "Untitled"}</span>
+            {e.client ? <span className="cal-listclient">{e.client}</span> : null}
+          </button>
+        ))}
+        {undated.map((e) => (
+          <button key={e.id} className="cal-listrow" onClick={() => onOpen(e.id)}>
+            <span className="cal-listdot" style={{ background: colorFor(e) }} />
+            <span className="cal-listdate dim">No dates</span>
+            <span className="cal-listname">{e.name || "Untitled"}</span>
+          </button>
+        ))}
+        {!events.length && <div className="cal-empty">No shows yet — create one to get started.</div>}
+      </div>
     </div>
   );
 }
@@ -7306,7 +7382,35 @@ const CSS = `
   -webkit-font-smoothing:antialiased;
 }
 .cb *{box-sizing:border-box;}
-.cb .loading{padding:80px 24px; text-align:center; color:var(--dim); font-family:'Oswald'; letter-spacing:.08em;}
+.cb .tilegroup{margin-bottom:10px;}
+.cb .cal-wrap{max-width:1100px; margin:0 auto; padding:24px 20px 60px;}
+.cb .cal-top{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:18px;}
+.cb .cal-h1{font-size:26px; font-weight:800;}
+.cb .cal-top-actions{display:flex; gap:8px;}
+.cb .cal-nav{display:flex; align-items:center; gap:12px; margin-bottom:12px;}
+.cb .cal-navbtn{background:var(--panel2); border:1px solid var(--line); color:var(--ink); width:34px; height:34px; border-radius:8px; font-size:18px; cursor:pointer;}
+.cb .cal-navbtn:hover{border-color:var(--dim);}
+.cb .cal-month{font-size:17px; font-weight:700; min-width:180px;}
+.cb .cal-today{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:7px 12px; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-bottom:30px;}
+.cb .cal-dow{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; text-align:center; padding-bottom:4px;}
+.cb .cal-cell{background:var(--panel); border:1px solid var(--line); border-radius:10px; min-height:96px; padding:6px; display:flex; flex-direction:column; gap:3px; overflow:hidden;}
+.cb .cal-cell.empty{background:transparent; border:0;}
+.cb .cal-cell.today{border-color:var(--accent); box-shadow:inset 0 0 0 1px var(--accent);}
+.cb .cal-daynum{font-size:12px; color:var(--dim); font-weight:600;}
+.cb .cal-cell.today .cal-daynum{color:var(--accent);}
+.cb .cal-chip{border:0; border-radius:6px; color:#0b0e14; font-size:11px; font-weight:700; padding:3px 6px; text-align:left; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.cb .cal-chip:hover{filter:brightness(1.08);}
+.cb .cal-list-h{font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; margin-bottom:10px;}
+.cb .cal-listrow{display:flex; align-items:center; gap:12px; width:100%; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:11px 14px; margin-bottom:6px; cursor:pointer; text-align:left;}
+.cb .cal-listrow:hover{border-color:var(--dim);}
+.cb .cal-listdot{width:10px; height:10px; border-radius:50%; flex:0 0 auto;}
+.cb .cal-listdate{font-size:13px; color:var(--dim); min-width:180px; font-variant-numeric:tabular-nums;}
+.cb .cal-listdate.dim{opacity:.6;}
+.cb .cal-listname{font-size:15px; font-weight:700; color:var(--ink);}
+.cb .cal-listclient{font-size:13px; color:var(--dim); margin-left:auto;}
+.cb .cal-empty{color:var(--dim); padding:24px; text-align:center;}
+@media (max-width:640px){ .cb .cal-cell{min-height:62px;} .cb .cal-chip{font-size:9px; padding:2px 4px;} .cb .cal-listdate{min-width:0;} .cb .cal-listclient{display:none;} }
 
 /* topbar */
 .cb .topbar{
