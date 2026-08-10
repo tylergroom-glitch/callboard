@@ -12,7 +12,9 @@ const DURATION = 1000 * 60 * 60 * 24 * 180; // 180 days
 
 const verify = (t) => {
   const p = verifyToken(t);
-  return p && p.scope === "rundownshare" && p.id && p.share ? p : null;
+  if (!p || p.scope !== "rundownshare" || !p.id) return null;
+  if (p.mode === "output") return p;
+  return p.share ? p : null;
 };
 const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const j = (res, code, obj) => res.status(code).setHeader("Content-Type", "application/json").end(JSON.stringify(obj));
@@ -233,6 +235,126 @@ load();
 </body></html>`;
 }
 
+function buildOutputData(show, rd) {
+  const cols = Array.isArray(rd.columns) ? rd.columns : [];
+  const segCol = (cols.find((c) => c.id === "seg") || cols.find((c) => c.type === "text") || {}).id || "seg";
+  const spkCol = (cols.find((c) => c.id === "speaker") || {}).id || null;
+  const imgCol = (cols.find((c) => c.type === "image") || {}).id || null;
+  const rows = Array.isArray(rd.rows) ? rd.rows : [];
+  const items = rows.filter((r) => r.kind === "item").map((r) => ({
+    name: (r.cells && r.cells[segCol]) || "",
+    durSec: parseDur(r.dur) * 60,
+    actualStart: r.actualStart != null ? r.actualStart : null,
+    speaker: spkCol && r.cells ? (r.cells[spkCol] || "") : "",
+    thumb: imgCol && r.cells ? (r.cells[imgCol] || "") : "",
+  }));
+  return { showName: show.name || "", run: rd.run || { on: false }, startMin: schedMinutes(rd.start), items, cfg: rd.output || { fields: {}, stream: "" } };
+}
+
+function outputPage(token, showName) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${showName} - Output</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#0a0d14;color:#fff;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;overflow:hidden}
+#wrap{height:100vh;display:flex;flex-direction:column}
+#stream{background:#000;flex:1 1 auto;min-height:0}
+#stream:empty{display:none;flex:0 0 0}
+#stream iframe{width:100%;height:100%;border:0;display:block}
+#info{flex:0 0 auto;padding:4vh 5vw;display:flex;flex-direction:column;gap:2.4vh}
+#info.full{flex:1 1 auto;justify-content:center}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:3vw}
+.left{min-width:0}
+.seg{font-size:5vw;font-weight:800;line-height:1.05;overflow-wrap:anywhere}
+.spk{font-size:2.3vw;color:#9aa4b2;margin-top:.6vh}
+.thumb{width:13vh;height:13vh;object-fit:cover;border-radius:14px;border:1px solid #232a3a;flex:0 0 auto}
+.clock{text-align:right;flex:0 0 auto}
+.tod{font-size:3.2vw;font-weight:800;font-variant-numeric:tabular-nums}
+.ou{font-size:2vw;font-weight:800;margin-top:.4vh}
+.ou.ontime{color:#22c55e}.ou.over{color:#f87171}.ou.under{color:#38bdf8}
+.remain{font-size:12vw;font-weight:800;font-variant-numeric:tabular-nums;line-height:.95;letter-spacing:-.02em}
+.remain.over{color:#f87171}
+.remain small{display:block;font-size:1.8vw;color:#9aa4b2;letter-spacing:.25em;font-weight:700;margin-top:.5vh}
+.next{font-size:2vw;color:#9aa4b2}
+.next b{color:#e5e7eb;font-weight:700}
+.prog{height:1.1vh;background:#1a2030;border-radius:1vh;overflow:hidden}
+.progfill{height:100%;background:#38bdf8;width:0;transition:width .5s linear}
+.hide{display:none!important}
+</style></head><body>
+<div id="wrap">
+  <div id="stream"></div>
+  <div id="info">
+    <div class="top">
+      <div class="left"><div class="seg" id="seg"></div><div class="spk" id="spk"></div></div>
+      <img class="thumb" id="thumb" alt="">
+      <div class="clock"><div class="tod" id="tod"></div><div class="ou" id="ou"></div></div>
+    </div>
+    <div class="remain" id="remain"></div>
+    <div class="next" id="next"></div>
+    <div class="prog" id="prog"><div class="progfill" id="progfill"></div></div>
+  </div>
+</div>
+<script>
+var TOKEN=${JSON.stringify(token)};
+var API="/api/rundown-share?token="+encodeURIComponent(TOKEN);
+var DATA=null, streamDone=false;
+function two(n){return (n<10?"0":"")+n;}
+function fmtClock(sec){var neg=sec<0;sec=Math.abs(Math.round(sec));var m=Math.floor(sec/60),s=sec%60;return (neg?"-":"")+m+":"+two(s);}
+function todClock(){var d=new Date();var h=d.getHours(),ap=h>=12?"PM":"AM";h=h%12;if(h===0)h=12;return h+":"+two(d.getMinutes())+":"+two(d.getSeconds())+" "+ap;}
+function esc2(s){return String(s==null?"":s).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;");}
+function ytId(u){if(u.indexOf("youtu.be/")>=0)return u.split("youtu.be/")[1].split("?")[0].split("&")[0];if(u.indexOf("watch?v=")>=0)return u.split("watch?v=")[1].split("&")[0];if(u.indexOf("/embed/")>=0)return u.split("/embed/")[1].split("?")[0];return "";}
+function streamEmbed(u){u=String(u||"").trim();if(!u)return "";
+  if(u.indexOf("youtu")>=0){var id=ytId(u);if(id)return "<iframe src='https://www.youtube.com/embed/"+id+"?autoplay=1&mute=1&playsinline=1' allow='autoplay; fullscreen' allowfullscreen></iframe>";}
+  if(u.indexOf("vimeo.com/")>=0){var vid=u.split("vimeo.com/")[1].split("/").pop().split("?")[0];return "<iframe src='https://player.vimeo.com/video/"+vid+"?autoplay=1&muted=1' allow='autoplay; fullscreen' allowfullscreen></iframe>";}
+  return "<iframe src='"+u.split("'").join("&#39;")+"' allow='autoplay; fullscreen' allowfullscreen></iframe>";}
+function el(id){return document.getElementById(id);}
+function vis(id,on){var e=el(id);if(e)e.classList.toggle("hide",!on);}
+function update(){
+  if(!DATA)return;
+  var cfg=DATA.cfg||{}, f=cfg.fields||{}, run=DATA.run||{}, items=DATA.items||[];
+  if(cfg.stream && !streamDone){el("stream").innerHTML=streamEmbed(cfg.stream);streamDone=true;}
+  el("info").classList.toggle("full", !cfg.stream);
+  var cur=run.on?items[run.segIdx]:null, nxt=run.on?items[run.segIdx+1]:null;
+  vis("seg", f.session!==false);
+  el("seg").textContent=cur?(cur.name||"Untitled cue"):(run.on?"":"Standby");
+  vis("spk", f.speaker!==false && !!(cur&&cur.speaker));
+  el("spk").textContent=cur?(cur.speaker||""):"";
+  var st=f.thumb!==false && cur && cur.thumb; vis("thumb", st); if(st)el("thumb").src=cur.thumb;
+  var remSec=null, startMin=null, nowMin=0;
+  if(cur){var nd=new Date();nowMin=nd.getHours()*60+nd.getMinutes()+nd.getSeconds()/60;
+    if(cur.actualStart!=null)startMin=cur.actualStart;
+    else if(run.segStart){var s2=new Date(run.segStart);startMin=s2.getHours()*60+s2.getMinutes()+s2.getSeconds()/60;}
+    else startMin=nowMin;
+    remSec=(((cur.durSec||0)/60)-(nowMin-startMin))*60;}
+  vis("remain", f.remaining!==false && !!cur);
+  var rem=el("remain"); rem.className="remain"+(remSec!=null&&remSec<0?" over":"");
+  rem.innerHTML=remSec!=null?(fmtClock(remSec)+"<small>REMAINING</small>"):"";
+  vis("tod", f.tod!==false); el("tod").textContent=todClock();
+  vis("ou", f.over!==false && run.on && !!cur);
+  if(run.on && cur){var cum=0;for(var i=0;i<run.segIdx && i<items.length;i++)cum+=(items[i].durSec||0)/60;
+    var planned=DATA.startMin!=null?DATA.startMin+cum:null;
+    var overage=Math.max(0,(nowMin-startMin)-((cur.durSec||0)/60));
+    var lateMin=planned!=null?(startMin-planned)+overage:overage;
+    var a=Math.abs(lateMin)*60; var ou=el("ou");
+    ou.className="ou "+(a<30?"ontime":(lateMin>0?"over":"under"));
+    ou.textContent=a<30?"On time":((lateMin>0?"+":"-")+fmtClock(a));}
+  vis("next", f.next!==false && !!nxt);
+  el("next").innerHTML=nxt?("Next: <b>"+esc2(nxt.name||"Untitled")+"</b>"):"";
+  vis("prog", f.progress!==false && run.on);
+  if(run.on && items.length){var tot=0;items.forEach(function(x){tot+=(x.durSec||0);});
+    var cs=0;for(var k=0;k<run.segIdx && k<items.length;k++)cs+=items[k].durSec||0;
+    var eSeg=cur?((cur.durSec||0)-(remSec!=null?remSec:0)):0;
+    var frac=tot>0?Math.min(1,Math.max(0,(cs+eSeg)/tot)):0;
+    el("progfill").style.width=(frac*100)+"%";}
+}
+function load(){fetch(API+"&data=1").then(function(r){return r.json();}).then(function(d){DATA=d;update();}).catch(function(){});}
+setInterval(update,1000);
+function poll(){load();setTimeout(poll,(DATA&&DATA.run&&DATA.run.on)?2000:15000);}
+setTimeout(poll,2000); load();
+</script></body></html>`;
+}
+
 export default async function handler(req, res) {
   const q = req.query || {};
   const token = q.token;
@@ -241,9 +363,10 @@ export default async function handler(req, res) {
     if (req.method !== "GET") { res.status(405).end(); return; }
     const id = q.id, share = q.share;
     const p = auth(req);
-    if (!id || !share) return j(res, 400, { error: "id and share required" });
+    if (!id) return j(res, 400, { error: "id required" });
     if (!canManageShow(p, id)) return j(res, 403, { error: "Admin only" });
-    const t = signToken({ scope: "rundownshare", id, share, exp: Date.now() + DURATION });
+    if (!q.output && !share) return j(res, 400, { error: "share required" });
+    const t = signToken(q.output ? { scope: "rundownshare", id, mode: "output", exp: Date.now() + DURATION } : { scope: "rundownshare", id, share, exp: Date.now() + DURATION });
     const host = req.headers.host || "";
     const protocol = host.startsWith("localhost") ? "http" : "https";
     return j(res, 200, { url: `${protocol}://${host}/api/rundown-share?token=${t}` });
@@ -255,6 +378,11 @@ export default async function handler(req, res) {
   let show;
   try { show = await loadShow(p.id); } catch { res.status(500).setHeader("Content-Type", "text/html").end(errPage("Could not load the show")); return; }
   const rd = (show.data && show.data.rundown) || {};
+  if (p.mode === "output") {
+    if (req.method === "GET" && q.data) return j(res, 200, buildOutputData(show, rd));
+    if (req.method === "GET") { res.status(200).setHeader("Content-Type", "text/html").end(outputPage(token, esc(show.name))); return; }
+    res.status(405).end(); return;
+  }
   const shares = Array.isArray(rd.shares) ? rd.shares : [];
   const share = shares.find((x) => x.id === p.share);
   if (!share) { res.status(403).setHeader("Content-Type", "text/html").end(errPage("This link was turned off")); return; }
