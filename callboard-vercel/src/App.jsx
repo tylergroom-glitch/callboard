@@ -6294,6 +6294,12 @@ function groupPullByDrawer(items) {
   return out;
 }
 
+function DrawerNameInput({ value, onCommit }) {
+  const [v, setV] = React.useState(value);
+  React.useEffect(() => { setV(value); }, [value]);
+  return <input className="pl-inp pl-drawername" value={v} onChange={(e) => setV(e.target.value)} onBlur={() => { if (v !== value) onCommit(v); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />;
+}
+
 function PullTab({ event, update, isAdmin, editor }) {
   const cases = event.pull.cases;
   const loose = event.pull.loose || [];
@@ -6301,6 +6307,7 @@ function PullTab({ event, update, isAdmin, editor }) {
   const canEdit = isAdmin || editor || unlocked;
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(() => new Set());
+  const [dragIt, setDragIt] = useState(null);
   const prevOpenRef = useRef(null);
 
   // Expand all cases before printing, restore after
@@ -6429,6 +6436,39 @@ function PullTab({ event, update, isAdmin, editor }) {
       if (to < 0 || to >= a.length) return;
       [a[idx], a[to]] = [a[to], a[idx]];
     });
+  const reorderItem = (cid, dragId, targetId) =>
+    update((ev) => {
+      if (dragId === targetId) return;
+      const a = listIn(ev, cid);
+      if (!a) return;
+      const di = a.findIndex((x) => x.id === dragId);
+      if (di < 0) return;
+      const [moved] = a.splice(di, 1);
+      const ti = a.findIndex((x) => x.id === targetId);
+      if (ti < 0) { a.push(moved); return; }
+      if (cid !== "loose" && a[ti].drawer !== undefined) moved.drawer = a[ti].drawer;
+      a.splice(ti, 0, moved);
+    });
+  const duplicateCase = (cid) => {
+    const raw = window.prompt("How many copies of this case?", "1");
+    const n = parseInt(raw, 10);
+    if (!n || n < 1) return;
+    update((ev) => {
+      const idx = ev.pull.cases.findIndex((x) => x.id === cid);
+      if (idx < 0) return;
+      const orig = ev.pull.cases[idx];
+      const copies = [];
+      for (let k = 1; k <= n; k++) {
+        const clone = JSON.parse(JSON.stringify(orig));
+        clone.id = uid();
+        delete clone._source;
+        clone.items = (clone.items || []).map((it) => ({ ...it, id: uid(), out: false, in: false }));
+        clone.case = (orig.case || "Case") + " (" + (k + 1) + ")";
+        copies.push(clone);
+      }
+      ev.pull.cases.splice(idx + 1, 0, ...copies);
+    });
+  };
   const addLoose = () =>
     update((ev) => {
       if (!Array.isArray(ev.pull.loose)) ev.pull.loose = [];
@@ -6802,7 +6842,7 @@ function PullTab({ event, update, isAdmin, editor }) {
     (it.rentedFrom || "").toLowerCase().includes(q) ||
     (caseName || "").toLowerCase().includes(q);
   const visible = cases
-    .filter((c) => activeCat === "All" || c.category === activeCat)
+    .filter((c) => activeCat === "All" || (activeCat === "★" ? c.starred : c.category === activeCat))
     .map((c) => ({ ...c, items: q && !editOn ? c.items.filter((it) => matchItem(it, c.case)) : c.items }))
     .filter((c) => editOn || c.items.length > 0 || activeCat !== "All");
   const looseVisible = q && !editOn ? loose.filter((it) => matchItem(it, "")) : loose;
@@ -6815,9 +6855,16 @@ function PullTab({ event, update, isAdmin, editor }) {
   const SOURCE_OPTS = ["TCG", "Sub-Rental", "Venue", "Other"];
   const needsRentedFrom = (src) => src && src !== "TCG";
   const itemEdit = (cid, it, idx, total) => (
-    <div className="pl-item-edit" key={it.id}>
+    <div
+      className={"pl-item-edit" + (dragIt && dragIt.cid === cid && dragIt.id === it.id ? " dragging" : "")}
+      key={it.id}
+      onDragOver={(e) => { if (dragIt && dragIt.cid === cid && dragIt.id !== it.id) { e.preventDefault(); e.currentTarget.classList.add("dragover"); } }}
+      onDragLeave={(e) => e.currentTarget.classList.remove("dragover")}
+      onDrop={(e) => { e.preventDefault(); e.currentTarget.classList.remove("dragover"); if (dragIt && dragIt.cid === cid) reorderItem(cid, dragIt.id, it.id); setDragIt(null); }}
+    >
       <div className={"pl-ie1" + (needsRentedFrom(it.source) ? " with-rent" : "")}>
         <div className="pl-item-arrows">
+          <span className="pl-grip" draggable onDragStart={(e) => { setDragIt({ cid, id: it.id }); e.dataTransfer.effectAllowed = "move"; try { e.dataTransfer.setData("text/plain", it.id); } catch (err) {} }} onDragEnd={() => setDragIt(null)} title="Drag to reorder">⠿</span>
           <button className="pl-itarrow" disabled={idx === 0} onClick={() => moveItem(cid, it.id, -1)} title="Move up">▲</button>
           <button className="pl-itarrow" disabled={idx === total - 1} onClick={() => moveItem(cid, it.id, 1)} title="Move down">▼</button>
         </div>
@@ -6875,7 +6922,7 @@ function PullTab({ event, update, isAdmin, editor }) {
             <div className="pl-drawergrp" key={dn}>
               <div className="pl-drawerhead">
                 <span className="pl-drawerchev">▾</span>
-                <input className="pl-inp pl-drawername" value={dn} onChange={(e) => renameDrawer(c.id, dn, e.target.value)} />
+                <DrawerNameInput value={dn} onCommit={(nv) => renameDrawer(c.id, dn, nv)} />
                 <button className="pl-x" onClick={() => deleteDrawer(c.id, dn)} title="Delete drawer (moves its items out)">×</button>
               </div>
               {drawerItems.map((it, idx) => itemEdit(c.id, it, idx, drawerItems.length))}
@@ -6939,6 +6986,7 @@ function PullTab({ event, update, isAdmin, editor }) {
       <div className="pl-controls">
         <div className="pl-chips">
           <button className={"pl-chip " + (activeCat === "All" ? "on" : "")} onClick={() => setActiveCat("All")}>All</button>
+          <button className={"pl-chip pl-chip-fav " + (activeCat === "★" ? "on" : "")} onClick={() => setActiveCat(activeCat === "★" ? "All" : "★")}>★ Favorites</button>
           {PULL_CAT_ORDER.map((k) => (
             <button key={k} className={"pl-chip " + (activeCat === k ? "on" : "")} onClick={() => setActiveCat(activeCat === k ? "All" : k)}>
               <span className="pl-dot" style={{ background: cat(k).color }} />
@@ -7278,10 +7326,12 @@ function PullTab({ event, update, isAdmin, editor }) {
                   <select className="pl-inp pl-cat" style={{ color: cc.color }} value={c.category} onChange={(e) => patchCase(c.id, { category: e.target.value })}>
                     {PULL_CAT_ORDER.map((k) => <option key={k}>{k}</option>)}
                   </select>
+                  <button className="pl-dup" onClick={() => duplicateCase(c.id)} title="Duplicate this case (make copies)">Duplicate</button>
                   <button className="pl-del" onClick={() => deleteCase(c.id)} title="Delete case">Delete</button>
                 </div>
               ) : (
-                <div className="pl-headrow" style={{ background: cc.soft }}>
+                <div className={"pl-headrow" + (c.starred ? " starred" : "")} style={{ background: cc.soft }}>
+                  <button className={"pl-star" + (c.starred ? " on" : "")} onClick={() => patchCase(c.id, { starred: !c.starred })} title={c.starred ? "Remove favorite" : "Mark as favorite"}>{c.starred ? "★" : "☆"}</button>
                   <button className="pl-head" onClick={() => toggleCase(c.id)}>
                     <span className="pl-bar2" style={{ background: cc.color }} />
                     <span className="pl-caseno" style={{ background: cc.color }}>#{c.caseNo}</span>
@@ -8063,6 +8113,16 @@ const CSS = `
 .cb .pl-caseact{display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:9px 12px; border-bottom:1px solid var(--line);}
 .cb .pl-caseact-lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-right:2px;}
 .cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
+.cb .pl-grip{cursor:grab; color:#aab0be; font-size:14px; line-height:1; user-select:none; padding:1px 2px; text-align:center;}
+.cb .pl-grip:active{cursor:grabbing;}
+.cb .pl-item-edit.dragover{box-shadow:inset 0 2px 0 var(--accent);}
+.cb .pl-item-edit.dragging{opacity:.45;}
+.cb .pl-dup{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:6px 10px; font-size:12px; font-weight:600; cursor:pointer;}
+.cb .pl-dup:hover{border-color:var(--dim);}
+.cb .pl-star{background:transparent; border:0; font-size:18px; color:#c9ccd6; cursor:pointer; padding:0 6px; line-height:1; flex:0 0 auto; display:flex; align-items:center;}
+.cb .pl-star.on{color:#f5b301;}
+.cb .pl-headrow.starred{box-shadow:inset 3px 0 0 #f5b301;}
+.cb .pl-chip-fav.on{background:#f5b301; border-color:#f5b301; color:#3a2c00;}
 .cb .pl-headrow .pl-head{flex:1; min-width:0; background:transparent !important;}
 .cb .pl-headact{display:flex; align-items:center; gap:6px; padding:6px 12px 6px 4px; flex:0 0 auto;}
 .cb .total-col{border-left:1px solid var(--line); min-width:52px;}
@@ -8424,7 +8484,7 @@ const CSS = `
 .pl-cases { display:flex; flex-direction:column; gap:10px; }
 .pl-card { border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--panel); box-shadow:0 1px 3px rgba(0,0,0,.2); }
 .pl-head { width:100%; border:none; display:flex; align-items:center; gap:10px; padding:11px 14px 11px 0; cursor:pointer; text-align:left; background:var(--panel); }
-.pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto; gap:8px; align-items:center; padding:8px 12px 8px 0; background:var(--panel2); border-bottom:1px solid var(--line); }
+.pl-headedit { display:grid; grid-template-columns:5px auto 46px minmax(70px,1fr) 104px auto auto; gap:8px; align-items:center; padding:8px 12px 8px 0; background:var(--panel2); border-bottom:1px solid var(--line); }
 .pl-bar2 { width:5px; align-self:stretch; flex-shrink:0; min-height:34px; border-radius:0; }
 .pl-hash { color:#475569; font-size:12px; font-weight:700; }
 .pl-caseno { color:#fff; font-size:11.5px; font-weight:700; border-radius:6px; padding:2px 7px; flex-shrink:0; }
@@ -8604,7 +8664,7 @@ const CSS = `
 .pl-empty, .pl-emptycase { text-align:center; color:#94a3b8; padding:14px; font-size:13px; }
 .pl-print { display:none; } /* shown only in @media print */
 .pl-empty { padding:34px; }
-@media (max-width:560px){ .pl-headedit{ grid-template-columns:5px auto 44px 1fr 92px auto; } }
+@media (max-width:560px){ .pl-headedit{ grid-template-columns:5px auto 44px 1fr 92px auto auto; } }
 
 `;
 
