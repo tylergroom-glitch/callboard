@@ -280,6 +280,7 @@ function normalize(e) {
   e.schedule = e.schedule || [];
   if (!Array.isArray(e.commPatch)) e.commPatch = [];
   if (!Array.isArray(e.commChannels)) e.commChannels = [];
+  if (!Array.isArray(e.commHidden)) e.commHidden = [];
   if (!e.commData || typeof e.commData !== "object") e.commData = {};
   e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
@@ -4087,9 +4088,15 @@ function CommPatchTab({ event, update, isAdmin, editor }) {
   const unlocked = !!event.commsUnlocked;
   const canEdit = isAdmin || editor || unlocked;
   const channels = event.commChannels || [];
-  const crew = (event.crew || []).filter((c) => (c.name || "").trim());
+  const hidden = new Set(event.commHidden || []);
+  const crew = (event.crew || []).filter((c) => (c.name || "").trim() && !hidden.has(c.id));
+  const hiddenCrew = (event.crew || []).filter((c) => (c.name || "").trim() && hidden.has(c.id));
+  const hideCrew = (cid) => update((ev) => { if (!Array.isArray(ev.commHidden)) ev.commHidden = []; if (!ev.commHidden.includes(cid)) ev.commHidden.push(cid); });
+  const showCrew = (cid) => update((ev) => { ev.commHidden = (ev.commHidden || []).filter((x) => x !== cid); });
   const dataOf = (cid) => (event.commData && event.commData[cid]) || {};
   const isOn = (cid, chId) => { const d = dataOf(cid); return !!(d.chans && d.chans[chId]); };
+  const wiredCount = crew.filter((c) => dataOf(c.id).type === "Wired").length;
+  const wirelessCount = crew.filter((c) => dataOf(c.id).type === "Wireless").length;
   const ensure = (ev, cid) => { if (!ev.commData) ev.commData = {}; if (!ev.commData[cid]) ev.commData[cid] = {}; return ev.commData[cid]; };
   const setType = (cid, t) => update((ev) => { ensure(ev, cid).type = t; });
   const toggleChan = (cid, chId, on) => update((ev) => { const d = ensure(ev, cid); if (!d.chans) d.chans = {}; if (on) d.chans[chId] = true; else delete d.chans[chId]; });
@@ -4102,14 +4109,14 @@ function CommPatchTab({ event, update, isAdmin, editor }) {
         <div className="pl-lockwrap">
           {isAdmin ? (
             <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.commsUnlocked = !unlocked))}>
-              {unlocked ? "\U0001f513 Crew editing ON" : "\U0001f512 Crew editing OFF"}
+              {unlocked ? "\uD83D\uDD13 Crew editing ON" : "\uD83D\uDD12 Crew editing OFF"}
             </button>
           ) : editor ? (
-            <span className="pl-locknote open">\U0001f513 Editor access \u2014 you can edit</span>
+            <span className="pl-locknote open">{"\uD83D\uDD13 Editor access \u2014 you can edit"}</span>
           ) : unlocked ? (
-            <span className="pl-locknote open">\U0001f513 Editing unlocked by admin</span>
+            <span className="pl-locknote open">{"\uD83D\uDD13 Editing unlocked by admin"}</span>
           ) : (
-            <span className="pl-locknote">\U0001f512 View only</span>
+            <span className="pl-locknote">{"\uD83D\uDD12 View only"}</span>
           )}
         </div>
       </div>
@@ -4117,6 +4124,7 @@ function CommPatchTab({ event, update, isAdmin, editor }) {
         {crew.length === 0 ? (
           <Empty>Add crew in the Brief to populate this list.</Empty>
         ) : (
+          <>
           <div className="comm-scroll">
             <table className="comm-matrix">
               <thead>
@@ -4143,11 +4151,11 @@ function CommPatchTab({ event, update, isAdmin, editor }) {
                   const d = dataOf(c.id);
                   return (
                     <tr key={c.id}>
-                      <td className="comm-namecol">{c.name}{c.position ? <span className="comm-rolehint"> {c.position}</span> : null}</td>
+                      <td className="comm-namecol"><span className="comm-nrow"><span className="comm-nname">{c.name}{c.position ? <span className="comm-rolehint"> {c.position}</span> : null}</span>{canEdit && <button className="comm-rowrm" title="Remove from comms" onClick={() => hideCrew(c.id)}>&times;</button>}</span></td>
                       <td className="comm-typecol">
                         {canEdit ? (
                           <select value={d.type || ""} onChange={(e) => setType(c.id, e.target.value)}>
-                            <option value="">\u2014</option>
+                            <option value=""></option>
                             <option value="Wired">Wired</option>
                             <option value="Wireless">Wireless</option>
                           </select>
@@ -4171,6 +4179,20 @@ function CommPatchTab({ event, update, isAdmin, editor }) {
               </tbody>
             </table>
           </div>
+          <div className="comm-tally">
+            <span className="comm-tally-item"><b>{wiredCount}</b> wired</span>
+            <span className="comm-tally-item"><b>{wirelessCount}</b> wireless</span>
+            <span className="comm-tally-item comm-tally-total"><b>{wiredCount + wirelessCount}</b> total packs</span>
+          </div>
+          {canEdit && hiddenCrew.length > 0 && (
+            <div className="comm-readd">
+              <span className="comm-readd-lbl">Not on comms:</span>
+              {hiddenCrew.map((c) => (
+                <button key={c.id} className="comm-readd-btn" onClick={() => showCrew(c.id)}>+ {c.name}</button>
+              ))}
+            </div>
+          )}
+          </>
         )}
       </Panel>
     </div>
@@ -8606,6 +8628,18 @@ const CSS = `
 .cb .comm-chk{width:18px; height:18px; cursor:pointer; accent-color:var(--accent);}
 .cb .comm-dot{color:var(--green); font-size:12px;}
 .cb .comm-nochan, .cb .comm-matrix td.comm-nochan{color:var(--dim); font-weight:400; min-width:120px;}
+.cb .comm-tally{display:flex; gap:22px; padding:12px 4px 2px; flex-wrap:wrap;}
+.cb .comm-tally-item{font-size:13px; color:var(--dim); display:flex; align-items:baseline; gap:5px;}
+.cb .comm-tally-item b{font-size:19px; color:var(--ink); font-weight:800;}
+.cb .comm-tally-total b{color:var(--accent);}
+.cb .comm-nrow{display:flex; align-items:center; gap:8px; justify-content:space-between;}
+.cb .comm-nname{min-width:0;}
+.cb .comm-rowrm{background:transparent; border:0; color:var(--dim); cursor:pointer; font-size:15px; line-height:1; flex:0 0 auto; opacity:.6;}
+.cb .comm-rowrm:hover{color:#f87171; opacity:1;}
+.cb .comm-readd{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 4px 2px;}
+.cb .comm-readd-lbl{font-size:12px; color:var(--dim); font-weight:600;}
+.cb .comm-readd-btn{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:16px; padding:5px 12px; font-size:12px; font-weight:600; cursor:pointer;}
+.cb .comm-readd-btn:hover{border-color:var(--accent); color:var(--accent);}
 .cb .io-num{text-align:center; font-variant-numeric:tabular-nums; color:var(--dim);}
 .cb .io-ro { min-width:420px; }
 .cb .io-ro-cell { display:flex; align-items:center; padding:0 4px; font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
