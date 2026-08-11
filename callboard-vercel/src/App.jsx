@@ -14,6 +14,7 @@ import {
   generateSurveyLink,
   generateRundownShareLink,
   generateRundownOutputLink,
+  generateScheduleFillLink,
   importAgenda,
   listTemplates,
   createTemplate,
@@ -1175,7 +1176,7 @@ function Callboard({ auth, onLogout }) {
           <main className={"content" + (tab === "rundown" ? " content-wide" : "")} data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
             {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
-            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
             {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
             {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
@@ -3366,7 +3367,7 @@ function TodoTab({ event, update, isAdmin, editor }) {
     </div>
   );
 }
-function ScheduleTab({ event, update, isAdmin, editor }) {
+function ScheduleTab({ event, update, isAdmin, editor, showId }) {
   const unlocked = !!event.scheduleUnlocked;
   const canEdit = isAdmin || editor || unlocked;
   const addDay = () =>
@@ -3396,6 +3397,10 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
     });
   };
   const [callOpen, setCallOpen] = useState(false);
+  const [clientOpen, setClientOpen] = useState(false);
+  const [clientLink, setClientLink] = useState("");
+  const [clientBusy, setClientBusy] = useState(false);
+  const genClientLink = async () => { setClientBusy(true); try { const r = await generateScheduleFillLink(showId); setClientLink(r.url); } catch (e) { window.alert("Couldn't generate the link. Give the show a moment to save, then try again."); } setClientBusy(false); };
   const [callTime, setCallTime] = useState("");
   const [callDays, setCallDays] = useState(() => new Set());
   const [callCrew, setCallCrew] = useState(() => new Set());
@@ -3581,11 +3586,24 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
               <button className="ts-batchbtn" onClick={() => { setImpOpen((o) => !o); setImpDays(null); setRecon(null); setImpErr(""); }}>Import agenda</button>
               <button className="ts-batchbtn" onClick={() => (callOpen ? setCallOpen(false) : openCalls())}>⚡ Call times</button>
               <button className="ts-batchbtn" onClick={fillDaysFromDates} disabled={!event.startDate} title="Create a day for each date between the show's start and end dates (from the Brief)">Fill show days</button>
+              {isAdmin && <button className={"ts-batchbtn" + (clientOpen ? " on" : "")} onClick={() => setClientOpen((o) => !o)}>Client fill link</button>}
               <AddBtn onClick={addDay}>Day</AddBtn>
             </>
           )}
         </div>
       </div>
+
+      {isAdmin && clientOpen && (
+        <div className="ts-batch">
+          <div className="ts-batch-title">Client schedule link</div>
+          <p className="rd-sharehint">Send this to your client so they can fill out the production schedule — days, times and activities — without seeing the rest of the app. What they save replaces this show’s schedule, so generate it before they start and re-check it after.</p>
+          <div className="rd-out-gen">
+            <button className="ts-batchbtn" onClick={genClientLink} disabled={clientBusy}>{clientBusy ? "Generating…" : "Generate link"}</button>
+            {clientLink && <a className="rd-out-link" href={clientLink} target="_blank" rel="noreferrer">{clientLink}</a>}
+            {clientLink && <button className="ts-batchbtn" onClick={() => { if (navigator.clipboard) navigator.clipboard.writeText(clientLink); }}>Copy</button>}
+          </div>
+        </div>
+      )}
 
       {impOpen && (
         <div className="ts-batch">
@@ -3760,7 +3778,8 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                   if (hideDone && it.done) return null;
                   const scol = schedColor(it.color);
                   return (
-                    <div className={"row sched-grid" + (it.done ? " sched-done" : "")} key={it.id} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 8 }}>
+                    <div className="sched-item-wrap" key={it.id}>
+                    <div className={"row sched-grid" + (it.done ? " sched-done" : "")} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 8 }}>
                       <input type="checkbox" className="sched-done-ck" checked={!!it.done} title="Mark done" onChange={(e) => update((ev) => (dref(ev).items[ii].done = e.target.checked))} />
                       <select className="sched-color" value={it.color || ""} style={{ color: it.color ? "#fff" : "var(--ink)", background: it.color ? scol.bar : "var(--panel2)", borderColor: it.color ? scol.bar : "var(--line)" }} onChange={(e) => update((ev) => (dref(ev).items[ii].color = e.target.value))}>
                         {SCHED_COLORS.map((col) => (
@@ -3774,6 +3793,17 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                       <input value={it.activity} placeholder="Task" onChange={(e) => update((ev) => (dref(ev).items[ii].activity = e.target.value))} />
                       <input value={it.notes || ""} placeholder="Notes" onChange={(e) => update((ev) => (dref(ev).items[ii].notes = e.target.value))} />
                       <RemoveBtn onClick={() => update((ev) => dref(ev).items.splice(ii, 1))} />
+                    </div>
+                    <div className="sched-tasks">
+                      {(it.tasks || []).map((tk, ti) => (
+                        <div className="sched-task" key={tk.id}>
+                          <input type="checkbox" checked={!!tk.done} onChange={(e) => update((ev) => (dref(ev).items[ii].tasks[ti].done = e.target.checked))} />
+                          <input className={"sched-task-text" + (tk.done ? " done" : "")} value={tk.text || ""} placeholder="Task…" onChange={(e) => update((ev) => (dref(ev).items[ii].tasks[ti].text = e.target.value))} />
+                          <RemoveBtn onClick={() => update((ev) => dref(ev).items[ii].tasks.splice(ti, 1))} />
+                        </div>
+                      ))}
+                      <button className="sched-addtask" onClick={() => update((ev) => { const t = dref(ev).items[ii]; if (!Array.isArray(t.tasks)) t.tasks = []; t.tasks.push({ id: uid(), text: "", done: false }); })}>+ Task</button>
+                    </div>
                     </div>
                   );
                 })}
@@ -3798,9 +3828,21 @@ function ScheduleTab({ event, update, isAdmin, editor }) {
                   const scol = schedColor(it.color);
                   const dur = schedDur(it.time, it.end);
                   return (
-                    <div className={"sched-ro-row" + (it.done ? " sched-done" : "")} key={it.id} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 10 }}>
+                    <div className="sched-ro-wrap" key={it.id}>
+                    <div className={"sched-ro-row" + (it.done ? " sched-done" : "")} style={{ background: scol.bg, borderLeft: "4px solid " + scol.bar, paddingLeft: 10 }}>
                       <span className="sched-ro-time">{it.time || "—"}{it.end ? " – " + it.end : ""}{dur ? " (" + dur + ")" : ""}</span>
                       <span className="sched-ro-act">{it.room ? <b className="sched-ro-room">{it.room}: </b> : null}{it.activity || ""}{it.notes ? <em className="sched-ro-notes"> — {it.notes}</em> : null}</span>
+                    </div>
+                    {it.tasks && it.tasks.length > 0 && (
+                      <div className="sched-ro-tasks">
+                        {it.tasks.map((tk) => (
+                          <div className={"sched-ro-task" + (tk.done ? " done" : "")} key={tk.id}>
+                            <span className="sched-ro-taskck">{tk.done ? "☑" : "☐"}</span>
+                            <span>{tk.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     </div>
                   );
                 })
@@ -6300,7 +6342,7 @@ function DrawerNameInput({ value, onCommit }) {
   return <input className="pl-inp pl-drawername" value={v} onChange={(e) => setV(e.target.value)} onBlur={() => { if (v !== value) onCommit(v); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />;
 }
 
-function TruckPack({ cases }) {
+function TruckPack({ cases, onMove, onReset }) {
   const TRUCKS = {
     "Sprinter van": { w: 54, len: 144, payload: 3500 },
     "24' box truck": { w: 96, len: 288, payload: 9000 },
@@ -6308,33 +6350,49 @@ function TruckPack({ cases }) {
     "53' trailer": { w: 100, len: 636, payload: 44000 },
   };
   const [truckKey, setTruckKey] = React.useState("26' box truck");
+  const [drag, setDrag] = React.useState(null);
+  const svgRef = React.useRef(null);
   const truck = TRUCKS[truckKey];
   const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
   const totalWeight = cases.reduce((sum, c) => sum + num(c.weight), 0);
   const totalCube = cases.reduce((sum, c) => { const v = num(c.dimL) * num(c.dimW) * num(c.dimH); return sum + (v > 0 ? v / 1728 : 0); }, 0);
   const withDims = cases.filter((c) => num(c.dimL) > 0 && num(c.dimW) > 0);
-  const sorted = withDims.slice().sort((a, b) => (num(b.dimL) * num(b.dimW)) - (num(a.dimL) * num(a.dimW)));
-  let x = 0, y = 0, rowDepth = 0;
-  const placed = [];
+  const anyManual = withDims.some((c) => c.truckX != null);
+  // auto-pack defaults (shelf packer)
+  const sorted = withDims.slice().sort((x, z) => (num(z.dimL) * num(z.dimW)) - (num(x.dimL) * num(x.dimW)));
+  const autoMap = {};
+  let ax = 0, ay = 0, rowDepth = 0;
   sorted.forEach((c) => {
     let across = num(c.dimW), depth = num(c.dimL);
     if (across > truck.w && depth <= truck.w) { const t = across; across = depth; depth = t; }
     across = Math.min(across, truck.w);
-    if (x + across > truck.w + 0.01) { y += rowDepth; x = 0; rowDepth = 0; }
-    placed.push({ c: c, x: x, y: y, across: across, depth: depth });
-    x += across; rowDepth = Math.max(rowDepth, depth);
+    if (ax + across > truck.w + 0.01) { ay += rowDepth; ax = 0; rowDepth = 0; }
+    autoMap[c.id] = { x: ax, y: ay, across: across, depth: depth };
+    ax += across; rowDepth = Math.max(rowDepth, depth);
   });
-  const usedLen = y + rowDepth;
-  const usedFt = usedLen / 12;
-  const trucksNeeded = Math.max(1, truck.len > 0 ? Math.ceil(usedLen / truck.len) : 1, truck.payload > 0 ? Math.ceil(totalWeight / truck.payload) : 1);
-  const svgW = 640;
+  const num2 = (v, d) => (v != null ? v : d);
+  const boxes = withDims.map((c) => {
+    const am = autoMap[c.id];
+    let px = c.truckX != null ? c.truckX : am.x;
+    let py = c.truckY != null ? c.truckY : am.y;
+    if (drag && drag.id === c.id) { px = drag.x; py = drag.y; }
+    return { c: c, x: px, y: py, across: am.across, depth: am.depth };
+  });
+  const committedExtent = withDims.reduce((m, c) => { const am = autoMap[c.id]; const py = c.truckY != null ? c.truckY : am.y; return Math.max(m, py + am.depth); }, 0);
+  const planLen = Math.max(truck.len, committedExtent);
+  const usedFt = (anyManual ? planLen : committedExtent) / 12;
+  const trucksNeeded = Math.max(1, truck.len > 0 ? Math.ceil(planLen / truck.len) : 1, truck.payload > 0 ? Math.ceil(totalWeight / truck.payload) : 1);
+  const svgW = 400;
   const scale = svgW / truck.w;
-  const planLen = Math.max(usedLen, truck.len);
   const svgH = planLen * scale;
   const palette = ["#0077B6", "#E8683D", "#2E9E7B", "#7B5EA7", "#D97CC0", "#F3B24A", "#46C5B8", "#C77DA0"];
   const colorFor = (c) => { let h = 0; const str = String(c.id || ""); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0; return palette[h % palette.length]; };
   const marks = [];
   for (let ft = 0; ft * 12 <= planLen; ft++) marks.push(ft);
+  const toInch = (e) => { const r = svgRef.current.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * svgW / scale, y: (e.clientY - r.top) / r.height * svgH / scale }; };
+  const startDrag = (e, b2) => { e.preventDefault(); const pt = toInch(e); setDrag({ id: b2.c.id, offX: pt.x - b2.x, offY: pt.y - b2.y, x: b2.x, y: b2.y, across: b2.across }); try { e.target.setPointerCapture(e.pointerId); } catch (err) {} };
+  const moveDrag = (e) => { if (!drag) return; const pt = toInch(e); let nx = Math.round(pt.x - drag.offX); let ny = Math.round(pt.y - drag.offY); nx = Math.max(0, Math.min(nx, truck.w - drag.across)); ny = Math.max(0, ny); setDrag((d) => (d ? { ...d, x: nx, y: ny } : d)); };
+  const endDrag = () => { if (drag) { onMove(drag.id, drag.x, drag.y); setDrag(null); } };
   return (
     <div className="tp-panel">
       <div className="tp-stats">
@@ -6346,32 +6404,39 @@ function TruckPack({ cases }) {
       <div className="tp-truckrow">
         <label>Truck <select value={truckKey} onChange={(e) => setTruckKey(e.target.value)}>{Object.keys(TRUCKS).map((k) => <option key={k}>{k}</option>)}</select></label>
         <span className="tp-cap">{truck.w}&quot; wide &middot; {(truck.len / 12).toFixed(0)}' long &middot; {truck.payload.toLocaleString()} lb payload</span>
-        {totalWeight > truck.payload && <span className="tp-warn">Over one truck’s payload</span>}
+        {totalWeight > truck.payload && <span className="tp-warn">Over one truck's payload</span>}
+        {anyManual && <button className="pl-vendorbtn" onClick={onReset} title="Re-pack automatically">Reset layout</button>}
       </div>
-      {placed.length ? (
+      {boxes.length ? (
         <div className="tp-plan">
-          <svg viewBox={"0 0 " + svgW + " " + svgH} width="100%" style={{ maxHeight: "58vh", background: "#0e1420", borderRadius: 8 }}>
-            {marks.map((ft) => (<line key={ft} x1={0} y1={ft * 12 * scale} x2={svgW} y2={ft * 12 * scale} stroke="#20304a" strokeWidth={ft % 5 === 0 ? 1.4 : 0.5} />))}
-            {truck.len < planLen && <line x1={0} y1={truck.len * scale} x2={svgW} y2={truck.len * scale} stroke="#f87171" strokeWidth={1.6} strokeDasharray="6 4" />}
-            {placed.map((pp, i) => (
-              <g key={i}>
-                <rect x={pp.x * scale + 1} y={pp.y * scale + 1} width={Math.max(0, pp.across * scale - 2)} height={Math.max(0, pp.depth * scale - 2)} fill={colorFor(pp.c)} opacity="0.88" rx="3" />
-                <text x={pp.x * scale + (pp.across * scale) / 2} y={pp.y * scale + (pp.depth * scale) / 2} fill="#fff" fontSize="11" fontWeight="700" textAnchor="middle" dominantBaseline="middle">{pp.c.case || ("#" + pp.c.caseNo)}</text>
+          <div className="tp-scroll">
+          <svg ref={svgRef} viewBox={"0 0 " + svgW + " " + svgH} width={svgW} height={svgH} style={{ background: "#05070c", borderRadius: 8, touchAction: "none", display: "block", margin: "0 auto" }} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerLeave={endDrag}>
+            {planLen > truck.len && <rect x={0} y={truck.len * scale} width={svgW} height={(planLen - truck.len) * scale} fill="rgba(248,113,113,0.07)" />}
+            <rect x={2.5} y={2.5} width={svgW - 5} height={truck.len * scale - 5} fill="#141d2e" stroke="#4b9fff" strokeWidth={3.5} rx={6} />
+            {marks.map((ft) => (<line key={ft} x1={0} y1={ft * 12 * scale} x2={truck.w * scale} y2={ft * 12 * scale} stroke="#1c2740" strokeWidth={ft % 5 === 0 ? 1.2 : 0.5} />))}
+            {planLen > truck.len && <line x1={0} y1={truck.len * scale} x2={svgW} y2={truck.len * scale} stroke="#f87171" strokeWidth={1.8} strokeDasharray="6 4" />}
+            <text x={truck.w * scale / 2} y={17} fill="#8595ad" fontSize="11" fontWeight="700" textAnchor="middle" style={{ pointerEvents: "none" }}>FRONT &middot; CAB</text>
+            <text x={truck.w * scale / 2} y={truck.len * scale - 8} fill="#8595ad" fontSize="11" fontWeight="700" textAnchor="middle" style={{ pointerEvents: "none" }}>REAR &middot; DOORS</text>
+            {boxes.map((b2) => (
+              <g key={b2.c.id} onPointerDown={(e) => startDrag(e, b2)} style={{ cursor: "grab" }}>
+                <rect x={b2.x * scale + 1} y={b2.y * scale + 1} width={Math.max(0, b2.across * scale - 2)} height={Math.max(0, b2.depth * scale - 2)} fill={colorFor(b2.c)} opacity={drag && drag.id === b2.c.id ? 1 : 0.88} rx={3} stroke={drag && drag.id === b2.c.id ? "#ffffff" : "none"} strokeWidth={1.5} />
+                <text x={b2.x * scale + (b2.across * scale) / 2} y={b2.y * scale + (b2.depth * scale) / 2} fill="#ffffff" fontSize="11" fontWeight="700" textAnchor="middle" dominantBaseline="middle" style={{ pointerEvents: "none" }}>{b2.c.case || ("#" + b2.c.caseNo)}</text>
               </g>
             ))}
           </svg>
-          <div className="tp-planhint">Top-down floor plan, single layer. The red dashed line marks the end of one truck; stacking cases will shorten the floor length needed.</div>
+          </div>
+          <div className="tp-planhint">Top-down floor plan (single layer) &mdash; drag any case to reposition it. Blue outline is the truck floor; the red dashed line marks the end of one truck. Stacking cases will shorten the floor length needed.</div>
         </div>
       ) : (
         <div className="tp-empty">Add Length &times; Width to your cases (in edit mode) to see a floor plan.</div>
       )}
       <div className="tp-list">
-        <div className="tp-list-h">Pack order — heaviest first</div>
-        {cases.slice().sort((a, b) => num(b.weight) - num(a.weight)).map((c) => (
+        <div className="tp-list-h">Pack order &mdash; heaviest first</div>
+        {cases.slice().sort((x, z) => num(z.weight) - num(x.weight)).map((c) => (
           <div key={c.id} className="tp-row">
             <span className="tp-rowname">{c.case || ("Case #" + c.caseNo)}</span>
-            <span className="tp-rowdim">{num(c.dimL) ? num(c.dimL) + "×" + num(c.dimW) + "×" + num(c.dimH) + "\"" : "—"}</span>
-            <span className="tp-rowwt">{num(c.weight) ? num(c.weight).toLocaleString() + " lb" : "—"}</span>
+            <span className="tp-rowdim">{num(c.dimL) ? num(c.dimL) + "\u00d7" + num(c.dimW) + "\u00d7" + num(c.dimH) + "\"" : "\u2014"}</span>
+            <span className="tp-rowwt">{num(c.weight) ? num(c.weight).toLocaleString() + " lb" : "\u2014"}</span>
           </div>
         ))}
       </div>
@@ -6388,6 +6453,7 @@ function PullTab({ event, update, isAdmin, editor }) {
   const [open, setOpen] = useState(() => new Set());
   const [dragIt, setDragIt] = useState(null);
   const [truckOpen, setTruckOpen] = useState(false);
+  const [groupByDept, setGroupByDept] = useState(false);
   const prevOpenRef = useRef(null);
 
   // Expand all cases before printing, restore after
@@ -6506,7 +6572,10 @@ function PullTab({ event, update, isAdmin, editor }) {
   const addItem = (cid, drawer = "") =>
     update((ev) => {
       const a = listIn(ev, cid);
-      if (a) a.push({ ...pullItem(), drawer });
+      if (!a) return;
+      const c = cid === "loose" ? null : ev.pull.cases.find((x) => x.id === cid);
+      const sub = c && (needsRentedFrom(c.source) || (c.rentedFrom || "").trim());
+      a.push({ ...pullItem(), drawer, ...(sub ? { source: c.source || "", rentedFrom: c.rentedFrom || "" } : {}) });
     });
   const moveItem = (cid, itemId, dir) =>
     update((ev) => {
@@ -6928,6 +6997,21 @@ function PullTab({ event, update, isAdmin, editor }) {
     .filter((c) => editOn || c.items.length > 0 || activeCat !== "All");
   const looseVisible = q && !editOn ? loose.filter((it) => matchItem(it, "")) : loose;
   const showLoose = editOn || (activeCat === "All" && looseVisible.length > 0);
+  const catIdx = (c) => { const i = PULL_CAT_ORDER.indexOf(c.category); return i < 0 ? PULL_CAT_ORDER.length : i; };
+  const visibleSorted = groupByDept ? visible.slice().sort((a, b) => catIdx(a) - catIdx(b)) : visible;
+  const DEPT_KEYWORDS = {
+    Audio: ["speaker", "mic", "amp", "console", "audio", "wedge", "subwoofer", "array", "mixer", "snake", "clear-com", "clearcom", "comms", "iem", "wireless", "ulx", "qlx", "shure", "sennheiser", "dm3", "dm7", "acoustics", "syva", "di box", "antenna"],
+    Video: ["camera", "projector", "led wall", "switcher", "video", "hdmi", "sdi", "scaler", "processor", "ptz", "blackmagic", "atem", "novastar", "lens", "video wall", "led panel", "confidence", "tricaster"],
+    Lighting: ["light", "fixture", "dimmer", "par ", "moving", "wash", "spotlight", "hazer", "haze", "fog", "truss", "chauvet", "elation", "source four", "leko"],
+    Power: ["power", "distro", "generator", "edison", "cam-lock", "camlock", "transformer", "socapex", "soca", "feeder"],
+    Scenic: ["scenic", "drape", "pipe", "stage", "riser", "deck", "podium", "lectern", "backdrop", "skirt"],
+  };
+  const guessDept = (c) => { const hay = ((c.case || "") + " " + (c.items || []).map((it) => it.item || "").join(" ")).toLowerCase(); for (let d = 0; d < PULL_CAT_ORDER.length; d++) { const dept = PULL_CAT_ORDER[d]; const kws = DEPT_KEYWORDS[dept]; if (kws && kws.some((k) => hay.indexOf(k) >= 0)) return dept; } return "Misc"; };
+  const autoCategorize = () => {
+    if (!window.confirm("Auto-assign a department to cases that are Misc or unset, based on their names and gear? Cases you have already categorized will not change.")) return;
+    update((ev) => { ev.pull.cases.forEach((c) => { if (!c.category || c.category === "Misc") { const g = guessDept(c); if (g !== "Misc") c.category = g; } }); });
+    setGroupByDept(true);
+  };
 
   const cat = (name) => PULL_CATS[name] || PULL_CATS.Misc;
   const prog = (c) => ({ out: c.items.filter((i) => i.out).length, back: c.items.filter((i) => i.in).length, total: c.items.length });
@@ -7104,6 +7188,8 @@ function PullTab({ event, update, isAdmin, editor }) {
         {!editOn && <button className="pl-vendorbtn" onClick={expandAll} title="Open every case">Expand all</button>}
         {!editOn && <button className="pl-vendorbtn" onClick={collapseAll} title="Collapse every case">Collapse all</button>}
         <button className={"pl-vendorbtn" + (truckOpen ? " on" : "")} onClick={() => setTruckOpen((v) => !v)} title="Truck pack & total weight">🚚 Truck pack</button>
+        <button className={"pl-vendorbtn" + (groupByDept ? " on" : "")} onClick={() => setGroupByDept((v) => !v)} title="Group cases under department headers">Group by dept</button>
+        {editOn && <button className="pl-vendorbtn" onClick={autoCategorize} title="Auto-assign departments from case names & gear">Auto-categorize</button>}
         <button className="pl-vendorbtn" onClick={exportByVendor} title="Print / save a pull list grouped by vendor (rental house)">Export by vendor</button>
       </div>
 
@@ -7384,7 +7470,7 @@ function PullTab({ event, update, isAdmin, editor }) {
         </div>
       )}
 
-      {truckOpen && <TruckPack cases={cases} />}
+      {truckOpen && <TruckPack cases={cases} onMove={(id, x, y) => patchCase(id, { truckX: x, truckY: y })} onReset={() => update((ev) => ev.pull.cases.forEach((c) => { delete c.truckX; delete c.truckY; }))} />}
       {/* cases */}
       <div className="pl-cases">
         {editOn && (
@@ -7415,8 +7501,11 @@ function PullTab({ event, update, isAdmin, editor }) {
           </div>
         )}
 
-        {visible.map((c) => {
+        {visibleSorted.map((c, ci) => {
           const cc = cat(c.category);
+          const showDept = groupByDept && (ci === 0 || catIdx(visibleSorted[ci - 1]) !== catIdx(c));
+          const deptName = PULL_CAT_ORDER.indexOf(c.category) >= 0 ? c.category : "Misc";
+          const dcc = cat(deptName);
           const p = prog(c);
           const caseVendor = (c.rentedFrom || "").trim() || (c.source && c.source !== "TCG" ? c.source : "");
           const isOpen = open.has(c.id) || (!!q && !editOn) || editOn;
@@ -7424,7 +7513,9 @@ function PullTab({ event, update, isAdmin, editor }) {
           const allOut = p.total > 0 && p.out === p.total;
           const allIn = p.out > 0 && p.back === p.out;
           return (
-            <div className="pl-card" key={c.id} style={{ borderColor: cc.ring }}>
+            <React.Fragment key={c.id}>
+            {showDept && <div className="pl-deptheader" style={{ color: dcc.color, background: dcc.soft, borderColor: dcc.ring }}>{deptName}</div>}
+            <div className="pl-card" style={{ borderColor: cc.ring }}>
               {editOn ? (
                 <div className="pl-headedit">
                   <span className="pl-bar2" style={{ background: cc.color }} />
@@ -7461,6 +7552,7 @@ function PullTab({ event, update, isAdmin, editor }) {
               )}
               {isOpen && (editOn ? caseBodyEdit(c) : caseBodyRead(c, cc))}
             </div>
+            </React.Fragment>
           );
         })}
 
@@ -7887,6 +7979,19 @@ const CSS = `
 .cb .row.sched-done input:not([type="checkbox"]), .cb .row.sched-done .sched-dur{text-decoration:line-through;}
 .cb .sched-ro-row.sched-done{opacity:.48;}
 .cb .sched-ro-row.sched-done .sched-ro-time, .cb .sched-ro-row.sched-done .sched-ro-act{text-decoration:line-through;}
+.cb .sched-item-wrap{margin-bottom:2px;}
+.cb .sched-ro-tasks{display:flex; flex-direction:column; gap:2px; margin:2px 0 8px 14px; padding-left:12px; border-left:2px dashed var(--line);}
+.cb .sched-ro-task{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink);}
+.cb .sched-ro-task.done span:last-child{text-decoration:line-through; color:var(--dim);}
+.cb .sched-ro-taskck{color:var(--accent); font-size:15px; flex:0 0 auto;}
+.cb .sched-ro-task.done .sched-ro-taskck{color:var(--green);}
+.cb .sched-tasks{display:flex; flex-direction:column; gap:4px; margin:2px 0 8px 34px; padding-left:12px; border-left:2px dashed var(--line);}
+.cb .sched-task{display:flex; align-items:center; gap:8px;}
+.cb .sched-task input[type=checkbox]{width:15px; height:15px; flex:0 0 auto;}
+.cb .sched-task-text{flex:1; min-width:0; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:5px 9px; font-size:13px; font-family:inherit;}
+.cb .sched-task-text.done{text-decoration:line-through; color:var(--dim);}
+.cb .sched-addtask{align-self:flex-start; background:transparent; border:1px dashed var(--line); color:var(--dim); border-radius:7px; padding:4px 10px; font-size:12px; font-weight:600; cursor:pointer;}
+.cb .sched-addtask:hover{border-color:var(--accent); color:var(--accent);}
 .cb .sched-hidden-note{font-size:12px; color:var(--faint); font-style:italic; padding:6px 2px 2px;}
 .cb .rd-clockbar{display:flex; flex-wrap:wrap; gap:16px 24px; justify-content:space-between; align-items:center; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:12px 16px; margin-bottom:14px;}
 .cb .rd-progress{height:8px; background:var(--panel2); border:1px solid var(--line); border-radius:6px; overflow:hidden; margin:-2px 0 14px;}
@@ -8232,6 +8337,7 @@ const CSS = `
 .cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
 .cb .pl-grip{cursor:grab; color:#aab0be; font-size:14px; line-height:1; user-select:none; padding:1px 2px; text-align:center;}
 .cb .pl-toolbar-bottom{margin-top:12px;}
+.cb .pl-deptheader{font-size:13px; font-weight:800; text-transform:uppercase; letter-spacing:.06em; padding:9px 14px; border-radius:8px; border:1px solid; margin:16px 0 6px;}
 .cb .pl-casedims{display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 12px; margin:0 0 6px; background:var(--panel2); border:1px dashed var(--line); border-radius:8px;}
 .cb .pl-dim{width:60px; text-align:center;}
 .cb .pl-dimx{color:var(--dim);}
@@ -8244,6 +8350,7 @@ const CSS = `
 .cb .tp-truckrow select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:6px 8px; font-family:inherit; font-weight:600;}
 .cb .tp-cap{color:var(--dim); font-size:12px;}
 .cb .tp-warn{color:#f87171; font-weight:700; font-size:12px; background:rgba(248,113,113,.12); padding:3px 8px; border-radius:6px;}
+.cb .tp-scroll{max-height:64vh; overflow:auto; background:#05070c; border:1px solid var(--line); border-radius:10px; padding:8px;}
 .cb .tp-planhint{font-size:11px; color:var(--dim); margin-top:6px;}
 .cb .tp-empty{color:var(--dim); padding:20px; text-align:center; background:var(--panel2); border-radius:8px; margin-bottom:12px;}
 .cb .tp-list-h{font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; margin:14px 0 8px;}
