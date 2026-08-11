@@ -278,6 +278,7 @@ function normalize(e) {
   e.contacts = e.contacts || [];
   e.crew = e.crew || [];
   e.schedule = e.schedule || [];
+  if (!Array.isArray(e.commPatch)) e.commPatch = [];
   e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
   if (!e.rundown.run) e.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
@@ -343,6 +344,7 @@ function normalize(e) {
   });
   if (typeof e.gearEditUnlocked !== "boolean") e.gearEditUnlocked = false;
   if (typeof e.scheduleUnlocked !== "boolean") e.scheduleUnlocked = false;
+  if (typeof e.commsUnlocked !== "boolean") e.commsUnlocked = false;
   if (typeof e.audioUnlocked !== "boolean") e.audioUnlocked = false;
   if (typeof e.videoUnlocked !== "boolean") e.videoUnlocked = false;
   if (typeof e.briefUnlocked !== "boolean") e.briefUnlocked = false;
@@ -1184,6 +1186,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "notes" && <NotesTab event={event} update={update} />}
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={isEditor} />}
+            {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
             {tab === "diagrams" && <LockWrapper canEdit={canEditTabs || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "floorplans" && <LockWrapper canEdit={canEditTabs || !!event.floorplansUnlocked} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
@@ -1288,6 +1291,7 @@ const SECTIONS = [
   { key: "audio", label: "Audio I/O", desc: "Audio patch sheets", color: "#9C9AA6", group: "Tech Documents" },
   { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63", group: "Tech Documents" },
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3", group: "Tech Documents" },
+  { key: "comms", label: "Comm Patch", desc: "Intercom channels & assignments", color: "#4FB0A5", group: "Tech Documents" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true, group: "Admin" },
   { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
@@ -2285,6 +2289,7 @@ function BriefTab({ event, update, isAdmin }) {
                 {phonesCopied ? "✓ Copied!" : "Copy phones"}
               </button>
             )}
+            <button className="ts-batchbtn" onClick={() => update((ev) => ev.crew.sort((a, b) => { const an = (a.name || "").trim(), bn = (b.name || "").trim(); if (!an && !bn) return 0; if (!an) return 1; if (!bn) return -1; return an.localeCompare(bn); }))} title="Sort crew alphabetically by name">Sort A–Z</button>
             <AddBtn
               onClick={() =>
                 update((ev) => ev.crew.push({ id: uid(), name: "", position: "", phone: "", email: "" }))
@@ -4076,21 +4081,93 @@ function NotesTab({ event, update }) {
 /* ============================================================
    AUDIO / VIDEO I/O TAB — patch sheets (one or more devices)
    ============================================================ */
+function CommPatchTab({ event, update, isAdmin, editor }) {
+  const unlocked = !!event.commsUnlocked;
+  const canEdit = isAdmin || editor || unlocked;
+  const rows = event.commPatch || [];
+  const { roster } = React.useContext(RosterCtx);
+  const roleFor = (name) => { const m = (roster || []).find((x) => x.name && name && x.name.trim().toLowerCase() === String(name).trim().toLowerCase()); return m ? ((m.data && m.data.position) || "") : ""; };
+  const addRow = () => update((ev) => { if (!Array.isArray(ev.commPatch)) ev.commPatch = []; ev.commPatch.push({ id: uid(), channel: String(ev.commPatch.length + 1), name: "", role: "", pack: "", notes: "" }); });
+  const patch = (ri, k, v) => update((ev) => (ev.commPatch[ri][k] = v));
+  const setName = (ri, v) => update((ev) => { ev.commPatch[ri].name = v; if (!ev.commPatch[ri].role) { const r = roleFor(v); if (r) ev.commPatch[ri].role = r; } });
+  const remove = (ri) => update((ev) => ev.commPatch.splice(ri, 1));
+  return (
+    <div className="stack">
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.commsUnlocked = !unlocked))}>
+              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+            </button>
+          ) : editor ? (
+            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
+          ) : unlocked ? (
+            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+          ) : (
+            <span className="pl-locknote">🔒 View only</span>
+          )}
+        </div>
+      </div>
+      <Panel title="Comm Patch" action={canEdit ? <AddBtn onClick={addRow}>Channel</AddBtn> : null}>
+        <div className="rows scroll-x">
+          <div className="rowhead comm-grid">
+            <span>Ch</span><span>Name</span><span>Role</span><span>Pack #</span><span>Notes</span>{canEdit && <span />}
+          </div>
+          {rows.length === 0 && <Empty>No comm channels yet.</Empty>}
+          {rows.map((r, ri) => (
+            canEdit ? (
+              <div className="row comm-grid" key={r.id}>
+                <input className="comm-ch" value={r.channel || ""} placeholder="1" onChange={(e) => patch(ri, "channel", e.target.value)} />
+                <CrewSelect crew={event.crew} value={r.name || ""} onChange={(e) => setName(ri, e.target.value)} />
+                <input value={r.role || ""} placeholder="Role" onChange={(e) => patch(ri, "role", e.target.value)} />
+                <input value={r.pack || ""} placeholder="Pack #" onChange={(e) => patch(ri, "pack", e.target.value)} />
+                <input value={r.notes || ""} placeholder="Notes" onChange={(e) => patch(ri, "notes", e.target.value)} />
+                <RemoveBtn onClick={() => remove(ri)} />
+              </div>
+            ) : (
+              <div className="row comm-grid comm-ro" key={r.id}>
+                <span className="io-ro-cell dim">{r.channel}</span>
+                <span className="io-ro-cell">{r.name}</span>
+                <span className="io-ro-cell dim">{r.role}</span>
+                <span className="io-ro-cell dim">{r.pack}</span>
+                <span className="io-ro-cell dim">{r.notes}</span>
+              </div>
+            )
+          ))}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function IOList({ event, update, kind, block, bi, side, readOnly }) {
   const rows = block[side];
   const label = side === "ins" ? "Source" : "Destination";
+  const DEF_IOW = [44, 200, 110, 130, 110, 150, 28];
+  const baseW = (Array.isArray(event.ioColW) && event.ioColW.length === 7) ? event.ioColW : DEF_IOW;
+  const [dragW, setDragW] = useState(null);
+  const dragRef = useRef(null);
+  const ioW = dragW || baseW;
+  const gtc = ioW.map((w) => w + "px").join(" ");
+  const startResize = (e, idx) => {
+    e.preventDefault(); e.stopPropagation();
+    const startX = e.clientX; const startWidths = ioW.slice(); dragRef.current = startWidths.slice();
+    const onMove = (mv) => { const nw = startWidths.slice(); nw[idx] = Math.max(40, startWidths[idx] + (mv.clientX - startX)); dragRef.current = nw; setDragW(nw); };
+    const onUp = () => { document.removeEventListener("pointermove", onMove); document.removeEventListener("pointerup", onUp); const final = dragRef.current; setDragW(null); update((ev) => (ev.ioColW = final)); };
+    document.addEventListener("pointermove", onMove); document.addEventListener("pointerup", onUp);
+  };
   const addRow = () =>
     update((ev) => ev[kind].blocks[bi][side].push(ioRow(rows.length + 1)));
   return (
     <div className="io-side">
       <div className="io-side-h">{side === "ins" ? "Inputs" : "Outputs"}</div>
       <div className="rows scroll-x">
-        <div className="rowhead io-grid">
-          <span>#</span><span>{label}</span><span>Patch</span><span>Signal</span><span>Length</span><span>Notes</span>{!readOnly && <span />}
+        <div className="rowhead io-grid" style={{ gridTemplateColumns: gtc }}>
+          <span className="io-h">#{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 0)} />}</span><span className="io-h">{label}{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 1)} />}</span><span className="io-h">Patch{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 2)} />}</span><span className="io-h">Signal{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 3)} />}</span><span className="io-h">Length{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 4)} />}</span><span className="io-h">Notes{!readOnly && <i className="io-resz" onPointerDown={(e) => startResize(e, 5)} />}</span>{!readOnly && <span />}
         </div>
         {rows.map((r, ri) => (
           readOnly ? (
-            <div className="row io-grid io-ro" key={r.id}>
+            <div className="row io-grid io-ro" key={r.id} style={{ gridTemplateColumns: gtc }}>
               <span className="io-ro-cell dim">{r.num}</span>
               <span className="io-ro-cell">{r.name}</span>
               <span className="io-ro-cell dim">{r.patch}</span>
@@ -4099,7 +4176,7 @@ function IOList({ event, update, kind, block, bi, side, readOnly }) {
               <span className="io-ro-cell dim">{r.notes}</span>
             </div>
           ) : (
-            <div className="row io-grid" key={r.id}>
+            <div className="row io-grid" key={r.id} style={{ gridTemplateColumns: gtc }}>
               <input className="io-num" value={r.num} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].num = e.target.value))} />
               <input value={r.name} placeholder={label} onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].name = e.target.value))} />
               <input value={r.patch} placeholder="Patch" onChange={(e) => update((ev) => (ev[kind].blocks[bi][side][ri].patch = e.target.value))} />
@@ -8467,6 +8544,14 @@ const CSS = `
 .cb .io-side{display:flex; flex-direction:column;}
 .cb .io-side-h{font-family:'Oswald'; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--amber); margin-bottom:8px; padding-bottom:5px; border-bottom:1px solid var(--line);}
 .cb .io-grid{grid-template-columns:44px 1.2fr .7fr .8fr .7fr .9fr 28px; min-width:500px;}
+.cb .io-grid .io-h{position:relative;}
+.cb .io-resz{position:absolute; top:0; right:-5px; width:11px; height:100%; cursor:col-resize; z-index:3; touch-action:none;}
+.cb .io-resz::after{content:''; position:absolute; right:5px; top:1px; bottom:1px; width:2px; border-radius:1px; background:transparent;}
+.cb .io-resz:hover::after{background:var(--accent);}
+.cb .comm-grid{display:grid; grid-template-columns:56px 1.4fr 1fr .7fr 1.3fr 28px; gap:8px; align-items:center; min-width:560px;}
+.cb .comm-grid input, .cb .comm-grid select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:8px 9px; font-size:13px; font-family:inherit; width:100%; min-width:0;}
+.cb .comm-grid input:focus, .cb .comm-grid select:focus{border-color:var(--accent); outline:none;}
+.cb .comm-ch{text-align:center; font-weight:700;}
 .cb .io-num{text-align:center; font-variant-numeric:tabular-nums; color:var(--dim);}
 .cb .io-ro { min-width:420px; }
 .cb .io-ro-cell { display:flex; align-items:center; padding:0 4px; font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
