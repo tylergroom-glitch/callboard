@@ -3857,7 +3857,7 @@ function ItineraryTab({ event, update }) {
   const nightsBetween = (a, b) => { if (!a || !b) return ""; const d = Math.round((new Date(b) - new Date(a)) / 86400000); return d > 0 ? d : ""; };
   const dietMap = {};
   (event.crew || []).forEach((c) => { if (c.name && c.dietary) dietMap[(c.name || "").trim().toLowerCase()] = c.dietary; });
-  (roster || []).forEach((m) => { const d = m.data || {}; if (d.name && d.dietary) dietMap[(d.name || "").trim().toLowerCase()] = d.dietary; });
+  (roster || []).forEach((m) => { const nm = m.name; const diet = (m.data || {}).dietary; if (nm && diet) dietMap[nm.trim().toLowerCase()] = diet; });
   const dietaryFor = (n) => dietMap[(n || "").trim().toLowerCase()] || "";
   const roomDietary = (st) => { const parts = []; const d1 = dietaryFor(st.crewName); if (d1) parts.push((splitName(st.crewName).first || st.crewName) + ": " + d1); if (st.shareWith) { const d2 = dietaryFor(st.shareWith); if (d2) parts.push((splitName(st.shareWith).first || st.shareWith) + ": " + d2); } return parts.join("; "); };
   const roomingList = () => {
