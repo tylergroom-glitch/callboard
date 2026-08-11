@@ -8611,7 +8611,7 @@ const CSS = `
 .cb .comm-grid input, .cb .comm-grid select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:8px 9px; font-size:13px; font-family:inherit; width:100%; min-width:0;}
 .cb .comm-grid input:focus, .cb .comm-grid select:focus{border-color:var(--accent); outline:none;}
 .cb .comm-ch{text-align:center; font-weight:700;}
-.cb .comm-scroll{overflow:auto; max-height:calc(100vh - 260px); border:1px solid var(--line); border-radius:10px;}
+.cb .comm-scroll{overflow-x:auto; border:1px solid var(--line); border-radius:10px;}
 .cb .comm-matrix{border-collapse:separate; border-spacing:0; width:100%; font-size:13px;}
 .cb .comm-matrix th, .cb .comm-matrix td{border-bottom:1px solid var(--line); border-right:1px solid var(--line); padding:7px 8px; text-align:center; background:var(--panel);}
 .cb .comm-matrix thead th{position:sticky; top:0; z-index:3; background:var(--panel2); font-weight:700; font-size:12px; color:var(--dim);}
