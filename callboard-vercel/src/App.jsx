@@ -3858,8 +3858,9 @@ function ItineraryTab({ event, update }) {
   const dietMap = {};
   (event.crew || []).forEach((c) => { if (c.name && c.dietary) dietMap[(c.name || "").trim().toLowerCase()] = c.dietary; });
   (roster || []).forEach((m) => { const nm = m.name; const diet = (m.data || {}).dietary; if (nm && diet) dietMap[nm.trim().toLowerCase()] = diet; });
-  const dietaryFor = (n) => dietMap[(n || "").trim().toLowerCase()] || "";
-  const roomDietary = (st) => { const parts = []; const d1 = dietaryFor(st.crewName); if (d1) parts.push((splitName(st.crewName).first || st.crewName) + ": " + d1); if (st.shareWith) { const d2 = dietaryFor(st.shareWith); if (d2) parts.push((splitName(st.shareWith).first || st.shareWith) + ": " + d2); } return parts.join("; "); };
+  const isNoneDiet = (v) => { let t = ""; const str = (v || "").toLowerCase(); for (let i = 0; i < str.length; i++) { const ch = str[i]; if (ch >= "a" && ch <= "z") t += ch; } return t === "" || t === "none" || t === "na" || t === "no" || t === "nil" || t === "nan" || t === "norestrictions" || t === "norestriction" || t === "noneneeded" || t === "nonerequired" || t === "nothing"; };
+  const dietaryFor = (n) => { const v = dietMap[(n || "").trim().toLowerCase()] || ""; return isNoneDiet(v) ? "" : v; };
+  const roomDietary = (st) => { const d1 = dietaryFor(st.crewName); if (!st.shareWith) return d1; const parts = []; if (d1) parts.push((splitName(st.crewName).first || st.crewName) + ": " + d1); const d2 = dietaryFor(st.shareWith); if (d2) parts.push((splitName(st.shareWith).first || st.shareWith) + ": " + d2); return parts.join("; "); };
   const roomingList = () => {
     const esc = (x) => String(x == null ? "" : x).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;");
     const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return { first: nm.first, last: nm.last, shareWith: st.shareWith || "", checkIn: st.checkIn, checkOut: st.checkOut, roomType: st.roomType || "", dietary: roomDietary(st), nights: nightsBetween(st.checkIn, st.checkOut), conf: st.confirmation || "" }; });
