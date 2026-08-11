@@ -279,6 +279,8 @@ function normalize(e) {
   e.crew = e.crew || [];
   e.schedule = e.schedule || [];
   if (!Array.isArray(e.commPatch)) e.commPatch = [];
+  if (!Array.isArray(e.commChannels)) e.commChannels = [];
+  if (!e.commData || typeof e.commData !== "object") e.commData = {};
   e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
   if (!e.rundown.run) e.rundown.run = { on: false, showStart: 0, segIdx: 0, segStart: 0 };
@@ -4084,57 +4086,92 @@ function NotesTab({ event, update }) {
 function CommPatchTab({ event, update, isAdmin, editor }) {
   const unlocked = !!event.commsUnlocked;
   const canEdit = isAdmin || editor || unlocked;
-  const rows = event.commPatch || [];
-  const { roster } = React.useContext(RosterCtx);
-  const roleFor = (name) => { const m = (roster || []).find((x) => x.name && name && x.name.trim().toLowerCase() === String(name).trim().toLowerCase()); return m ? ((m.data && m.data.position) || "") : ""; };
-  const addRow = () => update((ev) => { if (!Array.isArray(ev.commPatch)) ev.commPatch = []; ev.commPatch.push({ id: uid(), channel: String(ev.commPatch.length + 1), name: "", role: "", pack: "", notes: "" }); });
-  const patch = (ri, k, v) => update((ev) => (ev.commPatch[ri][k] = v));
-  const setName = (ri, v) => update((ev) => { ev.commPatch[ri].name = v; if (!ev.commPatch[ri].role) { const r = roleFor(v); if (r) ev.commPatch[ri].role = r; } });
-  const remove = (ri) => update((ev) => ev.commPatch.splice(ri, 1));
+  const channels = event.commChannels || [];
+  const crew = (event.crew || []).filter((c) => (c.name || "").trim());
+  const dataOf = (cid) => (event.commData && event.commData[cid]) || {};
+  const isOn = (cid, chId) => { const d = dataOf(cid); return !!(d.chans && d.chans[chId]); };
+  const ensure = (ev, cid) => { if (!ev.commData) ev.commData = {}; if (!ev.commData[cid]) ev.commData[cid] = {}; return ev.commData[cid]; };
+  const setType = (cid, t) => update((ev) => { ensure(ev, cid).type = t; });
+  const toggleChan = (cid, chId, on) => update((ev) => { const d = ensure(ev, cid); if (!d.chans) d.chans = {}; if (on) d.chans[chId] = true; else delete d.chans[chId]; });
+  const addChannel = () => update((ev) => { if (!Array.isArray(ev.commChannels)) ev.commChannels = []; ev.commChannels.push({ id: uid(), label: "Ch " + (ev.commChannels.length + 1) }); });
+  const setChanLabel = (chId, label) => update((ev) => { const ch = (ev.commChannels || []).find((x) => x.id === chId); if (ch) ch.label = label; });
+  const removeChannel = (chId) => update((ev) => { ev.commChannels = (ev.commChannels || []).filter((x) => x.id !== chId); Object.keys(ev.commData || {}).forEach((cid) => { if (ev.commData[cid] && ev.commData[cid].chans) delete ev.commData[cid].chans[chId]; }); });
   return (
     <div className="stack">
       <div className="pl-bar">
         <div className="pl-lockwrap">
           {isAdmin ? (
             <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev.commsUnlocked = !unlocked))}>
-              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+              {unlocked ? "\U0001f513 Crew editing ON" : "\U0001f512 Crew editing OFF"}
             </button>
           ) : editor ? (
-            <span className="pl-locknote open">🔓 Editor access — you can edit</span>
+            <span className="pl-locknote open">\U0001f513 Editor access \u2014 you can edit</span>
           ) : unlocked ? (
-            <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+            <span className="pl-locknote open">\U0001f513 Editing unlocked by admin</span>
           ) : (
-            <span className="pl-locknote">🔒 View only</span>
+            <span className="pl-locknote">\U0001f512 View only</span>
           )}
         </div>
       </div>
-      <Panel title="Comm Patch" action={canEdit ? <AddBtn onClick={addRow}>Channel</AddBtn> : null}>
-        <div className="rows scroll-x">
-          <div className="rowhead comm-grid">
-            <span>Ch</span><span>Name</span><span>Role</span><span>Pack #</span><span>Notes</span>{canEdit && <span />}
+      <Panel title="Comm Patch" action={canEdit ? <AddBtn onClick={addChannel}>Channel</AddBtn> : null}>
+        {crew.length === 0 ? (
+          <Empty>Add crew in the Brief to populate this list.</Empty>
+        ) : (
+          <div className="comm-scroll">
+            <table className="comm-matrix">
+              <thead>
+                <tr>
+                  <th className="comm-namecol">Name</th>
+                  <th className="comm-typecol">Type</th>
+                  {channels.map((ch) => (
+                    <th key={ch.id}>
+                      {canEdit ? (
+                        <div className="comm-chhead">
+                          <input value={ch.label || ""} placeholder="Channel" onChange={(e) => setChanLabel(ch.id, e.target.value)} />
+                          <button className="comm-chrm" title="Remove channel" onClick={() => removeChannel(ch.id)}>&times;</button>
+                        </div>
+                      ) : (
+                        <span className="comm-chlabel">{ch.label || "\u2014"}</span>
+                      )}
+                    </th>
+                  ))}
+                  {channels.length === 0 && <th className="comm-nochan">{canEdit ? "Add a channel \u2192" : "No channels"}</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {crew.map((c) => {
+                  const d = dataOf(c.id);
+                  return (
+                    <tr key={c.id}>
+                      <td className="comm-namecol">{c.name}{c.position ? <span className="comm-rolehint"> {c.position}</span> : null}</td>
+                      <td className="comm-typecol">
+                        {canEdit ? (
+                          <select value={d.type || ""} onChange={(e) => setType(c.id, e.target.value)}>
+                            <option value="">\u2014</option>
+                            <option value="Wired">Wired</option>
+                            <option value="Wireless">Wireless</option>
+                          </select>
+                        ) : (
+                          <span className="dim">{d.type || "\u2014"}</span>
+                        )}
+                      </td>
+                      {channels.map((ch) => (
+                        <td key={ch.id} className="comm-cell">
+                          {canEdit ? (
+                            <input type="checkbox" className="comm-chk" checked={isOn(c.id, ch.id)} onChange={(e) => toggleChan(c.id, ch.id, e.target.checked)} />
+                          ) : (
+                            <span className={"comm-dot" + (isOn(c.id, ch.id) ? " on" : "")}>{isOn(c.id, ch.id) ? "\u25cf" : ""}</span>
+                          )}
+                        </td>
+                      ))}
+                      {channels.length === 0 && <td />}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-          {rows.length === 0 && <Empty>No comm channels yet.</Empty>}
-          {rows.map((r, ri) => (
-            canEdit ? (
-              <div className="row comm-grid" key={r.id}>
-                <input className="comm-ch" value={r.channel || ""} placeholder="1" onChange={(e) => patch(ri, "channel", e.target.value)} />
-                <CrewSelect crew={event.crew} value={r.name || ""} onChange={(e) => setName(ri, e.target.value)} />
-                <input value={r.role || ""} placeholder="Role" onChange={(e) => patch(ri, "role", e.target.value)} />
-                <input value={r.pack || ""} placeholder="Pack #" onChange={(e) => patch(ri, "pack", e.target.value)} />
-                <input value={r.notes || ""} placeholder="Notes" onChange={(e) => patch(ri, "notes", e.target.value)} />
-                <RemoveBtn onClick={() => remove(ri)} />
-              </div>
-            ) : (
-              <div className="row comm-grid comm-ro" key={r.id}>
-                <span className="io-ro-cell dim">{r.channel}</span>
-                <span className="io-ro-cell">{r.name}</span>
-                <span className="io-ro-cell dim">{r.role}</span>
-                <span className="io-ro-cell dim">{r.pack}</span>
-                <span className="io-ro-cell dim">{r.notes}</span>
-              </div>
-            )
-          ))}
-        </div>
+        )}
       </Panel>
     </div>
   );
@@ -8552,6 +8589,23 @@ const CSS = `
 .cb .comm-grid input, .cb .comm-grid select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:8px 9px; font-size:13px; font-family:inherit; width:100%; min-width:0;}
 .cb .comm-grid input:focus, .cb .comm-grid select:focus{border-color:var(--accent); outline:none;}
 .cb .comm-ch{text-align:center; font-weight:700;}
+.cb .comm-scroll{overflow:auto; max-height:calc(100vh - 260px); border:1px solid var(--line); border-radius:10px;}
+.cb .comm-matrix{border-collapse:separate; border-spacing:0; width:100%; font-size:13px;}
+.cb .comm-matrix th, .cb .comm-matrix td{border-bottom:1px solid var(--line); border-right:1px solid var(--line); padding:7px 8px; text-align:center; background:var(--panel);}
+.cb .comm-matrix thead th{position:sticky; top:0; z-index:3; background:var(--panel2); font-weight:700; font-size:12px; color:var(--dim);}
+.cb .comm-matrix .comm-namecol{position:sticky; left:0; z-index:2; text-align:left; min-width:160px; background:var(--panel);}
+.cb .comm-matrix thead .comm-namecol{z-index:4; background:var(--panel2);}
+.cb .comm-rolehint{color:var(--dim); font-size:11px; display:block;}
+.cb .comm-typecol{min-width:104px;}
+.cb .comm-matrix .comm-typecol select{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:5px 6px; font-family:inherit; font-size:12px;}
+.cb .comm-chhead{display:flex; flex-direction:column; align-items:center; gap:3px;}
+.cb .comm-chhead input{width:88px; text-align:center; background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:5px 4px; font-family:inherit; font-size:12px; font-weight:700;}
+.cb .comm-chrm{background:transparent; border:0; color:var(--dim); cursor:pointer; font-size:14px; line-height:1;}
+.cb .comm-chrm:hover{color:#f87171;}
+.cb .comm-chlabel{font-weight:700; color:var(--ink); font-size:12px;}
+.cb .comm-chk{width:18px; height:18px; cursor:pointer; accent-color:var(--accent);}
+.cb .comm-dot{color:var(--green); font-size:12px;}
+.cb .comm-nochan, .cb .comm-matrix td.comm-nochan{color:var(--dim); font-weight:400; min-width:120px;}
 .cb .io-num{text-align:center; font-variant-numeric:tabular-nums; color:var(--dim);}
 .cb .io-ro { min-width:420px; }
 .cb .io-ro-cell { display:flex; align-items:center; padding:0 4px; font-size:13px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
