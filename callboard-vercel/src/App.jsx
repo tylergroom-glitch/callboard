@@ -6333,12 +6333,13 @@ function PullTab({ event, update, isAdmin, editor }) {
   }, [cases]);
   const exportByVendor = () => {
     const groups = {};
-    const add = (it, caseName) => {
+    const add = (it, caseName, caseVendor) => {
       if (!it.item || !it.item.trim()) return;
-      const vendor = (it.rentedFrom || "").trim() || (it.source || "").trim() || "Unassigned";
+      const iv = (it.rentedFrom || "").trim() || (it.source && it.source !== "TCG" ? (it.source || "").trim() : "");
+      const vendor = iv || (caseVendor || "").trim() || (it.source || "").trim() || "Unassigned";
       (groups[vendor] || (groups[vendor] = [])).push({ qty: it.qty, item: it.item, notes: it.notes, caseName: caseName });
     };
-    cases.forEach((c) => (c.items || []).forEach((it) => add(it, c.case || ("Case " + (c.caseNo || "")))));
+    cases.forEach((c) => { const cv = (c.rentedFrom || "").trim() || (c.source && c.source !== "TCG" ? (c.source || "").trim() : ""); (c.items || []).forEach((it) => add(it, c.case || ("Case " + (c.caseNo || "")), cv)); });
     loose.forEach((it) => add(it, "Loose items"));
     const vendors = Object.keys(groups).sort((a, b) => a.localeCompare(b));
     const esc = wdEsc;
@@ -6906,6 +6907,16 @@ function PullTab({ event, update, isAdmin, editor }) {
     const noDrawer = c.items.filter((it) => !(it.drawer || "").trim());
     return (
       <div className="pl-body">
+        <div className="pl-casevendor">
+          <span className="pl-cv-lbl">Whole case from</span>
+          <select className="pl-inp pl-cv-src" value={SOURCE_OPTS.includes(c.source) ? c.source : (c.source ? "Other" : "TCG")} onChange={(e) => patchCase(c.id, { source: e.target.value, rentedFrom: e.target.value === "TCG" ? "" : c.rentedFrom })}>
+            {SOURCE_OPTS.map((sopt) => <option key={sopt}>{sopt}</option>)}
+          </select>
+          {needsRentedFrom(c.source) && (
+            <input className="pl-inp pl-cv-vendor" value={c.rentedFrom || ""} placeholder="Subrental vendor" onChange={(e) => patchCase(c.id, { rentedFrom: e.target.value })} />
+          )}
+          <span className="pl-cv-hint">Applies to every item in this case, unless an item has its own vendor set.</span>
+        </div>
         {noDrawer.map((it, idx) => itemEdit(c.id, it, idx, noDrawer.length))}
         <div className="pl-addrow">
           <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>
@@ -6945,6 +6956,8 @@ function PullTab({ event, update, isAdmin, editor }) {
     </div>
   );
 
+  const expandAll = () => setOpen(new Set(cases.map((c) => c.id)));
+  const collapseAll = () => setOpen(new Set());
   return (
     <div className="stack pull">
       {/* lock / mode bar */}
@@ -6998,6 +7011,8 @@ function PullTab({ event, update, isAdmin, editor }) {
         {!editOn && (
           <input className="pl-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search gear, case, or drawer…" />
         )}
+        {!editOn && <button className="pl-vendorbtn" onClick={expandAll} title="Open every case">Expand all</button>}
+        {!editOn && <button className="pl-vendorbtn" onClick={collapseAll} title="Collapse every case">Collapse all</button>}
         <button className="pl-vendorbtn" onClick={exportByVendor} title="Print / save a pull list grouped by vendor (rental house)">Export by vendor</button>
       </div>
 
@@ -7311,6 +7326,7 @@ function PullTab({ event, update, isAdmin, editor }) {
         {visible.map((c) => {
           const cc = cat(c.category);
           const p = prog(c);
+          const caseVendor = (c.rentedFrom || "").trim() || (c.source && c.source !== "TCG" ? c.source : "");
           const isOpen = open.has(c.id) || (!!q && !editOn) || editOn;
           const done = p.total > 0 && p.back === p.total;
           const allOut = p.total > 0 && p.out === p.total;
@@ -7337,6 +7353,7 @@ function PullTab({ event, update, isAdmin, editor }) {
                     <span className="pl-caseno" style={{ background: cc.color }}>#{c.caseNo}</span>
                     <span className="pl-casename">{c.case}</span>
                     <span className="pl-tag" style={{ color: cc.color, borderColor: cc.ring }}>{c.category}</span>
+                    {caseVendor && <span className="pl-subrental" title="Whole-case subrental vendor">⤷ {caseVendor}</span>}
                     <span className="pl-spacer" />
                     <span className="pl-count">
                       {p.out}/{p.total} pulled
@@ -7387,6 +7404,7 @@ function PullTab({ event, update, isAdmin, editor }) {
                 <div className="pl-print-casehdr">
                   <span className="pl-print-casenum">#{c.caseNo}</span>
                   <span className="pl-print-casename">{c.case}</span>
+                  {((c.rentedFrom || "").trim() || (c.source && c.source !== "TCG" ? c.source : "")) && <span className="pl-print-vendor">Subrental: {(c.rentedFrom || "").trim() || c.source}</span>}
                 </div>
                 {groupPullByDrawer(c.items).map((g, gi) => (
                   <div key={gi}>
@@ -7703,6 +7721,7 @@ const CSS = `
   .cb .pl-print-casehdr { display: flex; align-items: center; gap: 7pt; margin-bottom: 4pt; padding-bottom: 3pt; border-bottom: 0.5pt solid #ddd; }
   .cb .pl-print-casenum { font-size: 8pt; font-weight: 700; color: #fff; background: #333; border-radius: 3pt; padding: 1.5pt 6pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .cb .pl-print-casename { font-size: 11pt; font-weight: 700; color: #000; }
+  .cb .pl-print-vendor { font-size: 8.5pt; font-weight: 700; color: #92400e; background: #fef3c7; border-radius: 3pt; padding: 1.5pt 6pt; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
   .cb .pl-print-drawer { font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: #999; margin: 5pt 0 2pt 10pt; }
 
@@ -8114,6 +8133,12 @@ const CSS = `
 .cb .pl-caseact-lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-right:2px;}
 .cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
 .cb .pl-grip{cursor:grab; color:#aab0be; font-size:14px; line-height:1; user-select:none; padding:1px 2px; text-align:center;}
+.cb .pl-casevendor{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 12px; margin:0 0 6px; background:var(--panel2); border:1px dashed var(--line); border-radius:8px;}
+.cb .pl-cv-lbl{font-size:12px; font-weight:700; color:var(--dim);}
+.cb .pl-cv-src{min-width:110px;}
+.cb .pl-cv-vendor{min-width:150px;}
+.cb .pl-cv-hint{font-size:11px; color:var(--dim);}
+.cb .pl-subrental{font-size:11px; font-weight:700; color:#b45309; background:#fef3c7; border-radius:6px; padding:2px 7px; white-space:nowrap;}
 .cb .pl-grip:active{cursor:grabbing;}
 .cb .pl-item-edit.dragover{box-shadow:inset 0 2px 0 var(--accent);}
 .cb .pl-item-edit.dragging{opacity:.45;}
