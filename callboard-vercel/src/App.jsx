@@ -7372,6 +7372,12 @@ function PullTab({ event, update, isAdmin, editor }) {
           );
         })}
 
+        {editOn && (
+          <div className="pl-toolbar pl-toolbar-bottom">
+            <button className="pl-tbbtn" onClick={addCase}>+ Add case</button>
+            <button className="pl-tbbtn" onClick={addLoose}>+ Add loose gear</button>
+          </div>
+        )}
         {editOn && cases.length > 0 && <button className="pl-clear" onClick={clearAll}>Clear all gear</button>}
         {!editOn && visible.length === 0 && !showLoose && <div className="pl-empty">No gear matches that filter.</div>}
       </div>
@@ -8133,6 +8139,7 @@ const CSS = `
 .cb .pl-caseact-lbl{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); font-weight:700; margin-right:2px;}
 .cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
 .cb .pl-grip{cursor:grab; color:#aab0be; font-size:14px; line-height:1; user-select:none; padding:1px 2px; text-align:center;}
+.cb .pl-toolbar-bottom{margin-top:12px;}
 .cb .pl-casevendor{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 12px; margin:0 0 6px; background:var(--panel2); border:1px dashed var(--line); border-radius:8px;}
 .cb .pl-cv-lbl{font-size:12px; font-weight:700; color:var(--dim);}
 .cb .pl-cv-src{min-width:110px;}
