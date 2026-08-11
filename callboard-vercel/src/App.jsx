@@ -3841,6 +3841,7 @@ function CrewSelect({ crew, value, onChange }) {
 }
 
 function ItineraryTab({ event, update }) {
+  const { roster } = React.useContext(RosterCtx);
   const it = event.itinerary;
   const addAllCrewStays = () =>
     update((ev) => {
@@ -3854,13 +3855,18 @@ function ItineraryTab({ event, update }) {
   const roomStays = () => (it.stays || []).filter((x) => (x.crewName || "").trim());
   const splitName = (n) => { const parts = (n || "").trim().split(" ").filter(Boolean); return { first: parts[0] || "", last: parts.slice(1).join(" ") }; };
   const nightsBetween = (a, b) => { if (!a || !b) return ""; const d = Math.round((new Date(b) - new Date(a)) / 86400000); return d > 0 ? d : ""; };
+  const dietMap = {};
+  (event.crew || []).forEach((c) => { if (c.name && c.dietary) dietMap[(c.name || "").trim().toLowerCase()] = c.dietary; });
+  (roster || []).forEach((m) => { const d = m.data || {}; if (d.name && d.dietary) dietMap[(d.name || "").trim().toLowerCase()] = d.dietary; });
+  const dietaryFor = (n) => dietMap[(n || "").trim().toLowerCase()] || "";
+  const roomDietary = (st) => { const parts = []; const d1 = dietaryFor(st.crewName); if (d1) parts.push((splitName(st.crewName).first || st.crewName) + ": " + d1); if (st.shareWith) { const d2 = dietaryFor(st.shareWith); if (d2) parts.push((splitName(st.shareWith).first || st.shareWith) + ": " + d2); } return parts.join("; "); };
   const roomingList = () => {
     const esc = (x) => String(x == null ? "" : x).split("&").join("&amp;").split("<").join("&lt;").split(">").join("&gt;");
-    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return { first: nm.first, last: nm.last, checkIn: st.checkIn, checkOut: st.checkOut, roomType: st.roomType || "", nights: nightsBetween(st.checkIn, st.checkOut), conf: st.confirmation || "" }; });
+    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return { first: nm.first, last: nm.last, shareWith: st.shareWith || "", checkIn: st.checkIn, checkOut: st.checkOut, roomType: st.roomType || "", dietary: roomDietary(st), nights: nightsBetween(st.checkIn, st.checkOut), conf: st.confirmation || "" }; });
     rows.sort((a, b) => (a.last || "").localeCompare(b.last || "") || (a.first || "").localeCompare(b.first || ""));
     const title = (event.name || "Show") + " — Rooming List";
     let bodyRows = "";
-    rows.forEach((r) => { bodyRows += "<tr><td>" + esc(r.last) + "</td><td>" + esc(r.first) + "</td><td>" + esc(prettyDate(r.checkIn)) + "</td><td>" + esc(prettyDate(r.checkOut)) + "</td><td>" + esc(r.roomType) + "</td><td>" + esc(r.nights) + "</td><td>" + esc(r.conf) + "</td></tr>"; });
+    rows.forEach((r) => { bodyRows += "<tr><td>" + esc(r.last) + "</td><td>" + esc(r.first) + "</td><td>" + esc(r.shareWith) + "</td><td>" + esc(prettyDate(r.checkIn)) + "</td><td>" + esc(prettyDate(r.checkOut)) + "</td><td>" + esc(r.roomType) + "</td><td>" + esc(r.dietary) + "</td><td>" + esc(r.nights) + "</td><td>" + esc(r.conf) + "</td></tr>"; });
     const html = "<!doctype html><html><head><meta charset='utf-8'><title>" + esc(title) + "</title><style>" +
       "body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:32px;}h1{font-size:20px;margin:0 0 4px;}.sub{color:#555;margin:0 0 18px;font-size:13px;}" +
       "table{border-collapse:collapse;width:100%;font-size:13px;}th,td{border:1px solid #999;padding:7px 10px;text-align:left;}" +
@@ -3868,15 +3874,15 @@ function ItineraryTab({ event, update }) {
       "@media print{body{margin:0;}.noprint{display:none;}}.noprint{margin:16px 0;}.noprint button{font-size:14px;padding:8px 16px;cursor:pointer;}" +
       "</style></head><body><h1>" + esc(title) + "</h1><p class='sub'>" + esc(it.hotelName || "") + (it.hotelAddress ? " · " + esc(it.hotelAddress) : "") + "</p>" +
       "<div class='noprint'><button onclick='window.print()'>Print / Save PDF</button></div>" +
-      "<table><thead><tr><th>Last Name</th><th>First Name</th><th>Check-in</th><th>Check-out</th><th>Room Type</th><th>Nights</th><th>Confirmation</th></tr></thead><tbody>" + bodyRows +
+      "<table><thead><tr><th>Last Name</th><th>First Name</th><th>Sharing With</th><th>Check-in</th><th>Check-out</th><th>Room Type</th><th>Dietary</th><th>Nights</th><th>Confirmation</th></tr></thead><tbody>" + bodyRows +
       "</tbody></table><p class='sub' style='margin-top:14px'>" + rows.length + " room" + (rows.length === 1 ? "" : "s") + "</p></body></html>";
     const w = window.open("", "_blank");
     if (w) { w.document.write(html); w.document.close(); } else { window.alert("Please allow pop-ups to open the rooming list."); }
   };
   const roomingCsv = () => {
-    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return [nm.last, nm.first, st.checkIn || "", st.checkOut || "", st.roomType || "", st.confirmation || ""]; });
+    const rows = roomStays().map((st) => { const nm = splitName(st.crewName); return [nm.last, nm.first, st.shareWith || "", st.checkIn || "", st.checkOut || "", st.roomType || "", roomDietary(st), st.confirmation || ""]; });
     rows.sort((a, b) => (a[0] || "").localeCompare(b[0] || ""));
-    const all = [["Last Name", "First Name", "Check-in", "Check-out", "Room Type", "Confirmation"]].concat(rows);
+    const all = [["Last Name", "First Name", "Sharing With", "Check-in", "Check-out", "Room Type", "Dietary", "Confirmation"]].concat(rows);
     const csv = all.map((r) => r.map((c) => '"' + String(c == null ? "" : c).split('"').join('""') + '"').join(",")).join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -3916,11 +3922,12 @@ function ItineraryTab({ event, update }) {
       >
         <div className="rows">
           <div className="rowhead stay-grid">
-            <span>Name</span><span>Check-in</span><span>Check-out</span><span>Room type</span><span>Conf #</span><span>Notes</span><span />
+            <span>Name</span><span>Sharing with</span><span>Check-in</span><span>Check-out</span><span>Room type</span><span>Conf #</span><span>Notes</span><span />
           </div>
           {it.stays.map((s, i) => (
             <div className="row stay-grid" key={s.id}>
               <CrewSelect crew={event.crew} value={s.crewName} onChange={(e) => update((ev) => (ev.itinerary.stays[i].crewName = e.target.value))} />
+              <CrewSelect crew={event.crew} value={s.shareWith || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].shareWith = e.target.value))} />
               <input type="date" value={s.checkIn || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkIn = e.target.value))} />
               <input type="date" value={s.checkOut || ""} onChange={(e) => update((ev) => (ev.itinerary.stays[i].checkOut = e.target.value))} />
               <input value={s.roomType || ""} placeholder="King / Double" onChange={(e) => update((ev) => (ev.itinerary.stays[i].roomType = e.target.value))} />
@@ -7875,7 +7882,7 @@ const CSS = `
 .cb .row.sched-grid{padding:5px 6px; border-radius:0 6px 6px 0;}
 .cb .sched-ro-room{color:var(--amber); font-weight:700; font-style:normal;}
 .cb .sched-ro-notes{color:var(--faint); font-size:12.5px;}
-.cb .stay-grid{grid-template-columns:1.1fr 120px 120px .9fr .8fr 1.1fr 28px;}
+.cb .stay-grid{grid-template-columns:.95fr .95fr 112px 112px .85fr .75fr .9fr 28px;}
 .cb .flight-grid{grid-template-columns:1.1fr 130px 1fr .8fr 100px 100px .8fr 1fr 28px; min-width:900px;}
 .cb .meal-grid{grid-template-columns:140px 100px 1.2fr 1.2fr 28px;}
 .cb .note-grid{grid-template-columns:140px 1fr 28px;}
