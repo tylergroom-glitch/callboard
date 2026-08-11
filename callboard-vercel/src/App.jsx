@@ -6300,6 +6300,85 @@ function DrawerNameInput({ value, onCommit }) {
   return <input className="pl-inp pl-drawername" value={v} onChange={(e) => setV(e.target.value)} onBlur={() => { if (v !== value) onCommit(v); }} onKeyDown={(e) => { if (e.key === "Enter") e.currentTarget.blur(); }} />;
 }
 
+function TruckPack({ cases }) {
+  const TRUCKS = {
+    "Sprinter van": { w: 54, len: 144, payload: 3500 },
+    "24' box truck": { w: 96, len: 288, payload: 9000 },
+    "26' box truck": { w: 96, len: 312, payload: 10000 },
+    "53' trailer": { w: 100, len: 636, payload: 44000 },
+  };
+  const [truckKey, setTruckKey] = React.useState("26' box truck");
+  const truck = TRUCKS[truckKey];
+  const num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const totalWeight = cases.reduce((sum, c) => sum + num(c.weight), 0);
+  const totalCube = cases.reduce((sum, c) => { const v = num(c.dimL) * num(c.dimW) * num(c.dimH); return sum + (v > 0 ? v / 1728 : 0); }, 0);
+  const withDims = cases.filter((c) => num(c.dimL) > 0 && num(c.dimW) > 0);
+  const sorted = withDims.slice().sort((a, b) => (num(b.dimL) * num(b.dimW)) - (num(a.dimL) * num(a.dimW)));
+  let x = 0, y = 0, rowDepth = 0;
+  const placed = [];
+  sorted.forEach((c) => {
+    let across = num(c.dimW), depth = num(c.dimL);
+    if (across > truck.w && depth <= truck.w) { const t = across; across = depth; depth = t; }
+    across = Math.min(across, truck.w);
+    if (x + across > truck.w + 0.01) { y += rowDepth; x = 0; rowDepth = 0; }
+    placed.push({ c: c, x: x, y: y, across: across, depth: depth });
+    x += across; rowDepth = Math.max(rowDepth, depth);
+  });
+  const usedLen = y + rowDepth;
+  const usedFt = usedLen / 12;
+  const trucksNeeded = Math.max(1, truck.len > 0 ? Math.ceil(usedLen / truck.len) : 1, truck.payload > 0 ? Math.ceil(totalWeight / truck.payload) : 1);
+  const svgW = 640;
+  const scale = svgW / truck.w;
+  const planLen = Math.max(usedLen, truck.len);
+  const svgH = planLen * scale;
+  const palette = ["#0077B6", "#E8683D", "#2E9E7B", "#7B5EA7", "#D97CC0", "#F3B24A", "#46C5B8", "#C77DA0"];
+  const colorFor = (c) => { let h = 0; const str = String(c.id || ""); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0; return palette[h % palette.length]; };
+  const marks = [];
+  for (let ft = 0; ft * 12 <= planLen; ft++) marks.push(ft);
+  return (
+    <div className="tp-panel">
+      <div className="tp-stats">
+        <div className="tp-stat"><span className="tp-statnum">{Math.round(totalWeight).toLocaleString()}</span><span className="tp-statlbl">lb total</span></div>
+        <div className="tp-stat"><span className="tp-statnum">{Math.round(totalCube).toLocaleString()}</span><span className="tp-statlbl">cu ft</span></div>
+        <div className="tp-stat"><span className="tp-statnum">{usedFt.toFixed(1)}'</span><span className="tp-statlbl">floor used</span></div>
+        <div className="tp-stat"><span className="tp-statnum">{trucksNeeded}</span><span className="tp-statlbl">{trucksNeeded === 1 ? "truck" : "trucks"}</span></div>
+      </div>
+      <div className="tp-truckrow">
+        <label>Truck <select value={truckKey} onChange={(e) => setTruckKey(e.target.value)}>{Object.keys(TRUCKS).map((k) => <option key={k}>{k}</option>)}</select></label>
+        <span className="tp-cap">{truck.w}&quot; wide &middot; {(truck.len / 12).toFixed(0)}' long &middot; {truck.payload.toLocaleString()} lb payload</span>
+        {totalWeight > truck.payload && <span className="tp-warn">Over one truck’s payload</span>}
+      </div>
+      {placed.length ? (
+        <div className="tp-plan">
+          <svg viewBox={"0 0 " + svgW + " " + svgH} width="100%" style={{ maxHeight: "58vh", background: "#0e1420", borderRadius: 8 }}>
+            {marks.map((ft) => (<line key={ft} x1={0} y1={ft * 12 * scale} x2={svgW} y2={ft * 12 * scale} stroke="#20304a" strokeWidth={ft % 5 === 0 ? 1.4 : 0.5} />))}
+            {truck.len < planLen && <line x1={0} y1={truck.len * scale} x2={svgW} y2={truck.len * scale} stroke="#f87171" strokeWidth={1.6} strokeDasharray="6 4" />}
+            {placed.map((pp, i) => (
+              <g key={i}>
+                <rect x={pp.x * scale + 1} y={pp.y * scale + 1} width={Math.max(0, pp.across * scale - 2)} height={Math.max(0, pp.depth * scale - 2)} fill={colorFor(pp.c)} opacity="0.88" rx="3" />
+                <text x={pp.x * scale + (pp.across * scale) / 2} y={pp.y * scale + (pp.depth * scale) / 2} fill="#fff" fontSize="11" fontWeight="700" textAnchor="middle" dominantBaseline="middle">{pp.c.case || ("#" + pp.c.caseNo)}</text>
+              </g>
+            ))}
+          </svg>
+          <div className="tp-planhint">Top-down floor plan, single layer. The red dashed line marks the end of one truck; stacking cases will shorten the floor length needed.</div>
+        </div>
+      ) : (
+        <div className="tp-empty">Add Length &times; Width to your cases (in edit mode) to see a floor plan.</div>
+      )}
+      <div className="tp-list">
+        <div className="tp-list-h">Pack order — heaviest first</div>
+        {cases.slice().sort((a, b) => num(b.weight) - num(a.weight)).map((c) => (
+          <div key={c.id} className="tp-row">
+            <span className="tp-rowname">{c.case || ("Case #" + c.caseNo)}</span>
+            <span className="tp-rowdim">{num(c.dimL) ? num(c.dimL) + "×" + num(c.dimW) + "×" + num(c.dimH) + "\"" : "—"}</span>
+            <span className="tp-rowwt">{num(c.weight) ? num(c.weight).toLocaleString() + " lb" : "—"}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function PullTab({ event, update, isAdmin, editor }) {
   const cases = event.pull.cases;
   const loose = event.pull.loose || [];
@@ -6308,6 +6387,7 @@ function PullTab({ event, update, isAdmin, editor }) {
   const [editing, setEditing] = useState(false);
   const [open, setOpen] = useState(() => new Set());
   const [dragIt, setDragIt] = useState(null);
+  const [truckOpen, setTruckOpen] = useState(false);
   const prevOpenRef = useRef(null);
 
   // Expand all cases before printing, restore after
@@ -6917,6 +6997,16 @@ function PullTab({ event, update, isAdmin, editor }) {
           )}
           <span className="pl-cv-hint">Applies to every item in this case, unless an item has its own vendor set.</span>
         </div>
+        <div className="pl-casedims">
+          <span className="pl-cv-lbl">Dimensions (in)</span>
+          <input className="pl-inp pl-dim" type="number" value={c.dimL || ""} placeholder="L" onChange={(e) => patchCase(c.id, { dimL: e.target.value })} />
+          <span className="pl-dimx">&times;</span>
+          <input className="pl-inp pl-dim" type="number" value={c.dimW || ""} placeholder="W" onChange={(e) => patchCase(c.id, { dimW: e.target.value })} />
+          <span className="pl-dimx">&times;</span>
+          <input className="pl-inp pl-dim" type="number" value={c.dimH || ""} placeholder="H" onChange={(e) => patchCase(c.id, { dimH: e.target.value })} />
+          <span className="pl-cv-lbl" style={{ marginLeft: "12px" }}>Weight (lb)</span>
+          <input className="pl-inp pl-dim" type="number" value={c.weight || ""} placeholder="lb" onChange={(e) => patchCase(c.id, { weight: e.target.value })} />
+        </div>
         {noDrawer.map((it, idx) => itemEdit(c.id, it, idx, noDrawer.length))}
         <div className="pl-addrow">
           <button className="pl-additem" onClick={() => addItem(c.id)}>+ Add item</button>
@@ -7013,6 +7103,7 @@ function PullTab({ event, update, isAdmin, editor }) {
         )}
         {!editOn && <button className="pl-vendorbtn" onClick={expandAll} title="Open every case">Expand all</button>}
         {!editOn && <button className="pl-vendorbtn" onClick={collapseAll} title="Collapse every case">Collapse all</button>}
+        <button className={"pl-vendorbtn" + (truckOpen ? " on" : "")} onClick={() => setTruckOpen((v) => !v)} title="Truck pack & total weight">🚚 Truck pack</button>
         <button className="pl-vendorbtn" onClick={exportByVendor} title="Print / save a pull list grouped by vendor (rental house)">Export by vendor</button>
       </div>
 
@@ -7293,6 +7384,7 @@ function PullTab({ event, update, isAdmin, editor }) {
         </div>
       )}
 
+      {truckOpen && <TruckPack cases={cases} />}
       {/* cases */}
       <div className="pl-cases">
         {editOn && (
@@ -8140,6 +8232,25 @@ const CSS = `
 .cb .pl-headrow{display:flex; align-items:stretch; border-radius:inherit;}
 .cb .pl-grip{cursor:grab; color:#aab0be; font-size:14px; line-height:1; user-select:none; padding:1px 2px; text-align:center;}
 .cb .pl-toolbar-bottom{margin-top:12px;}
+.cb .pl-casedims{display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:8px 12px; margin:0 0 6px; background:var(--panel2); border:1px dashed var(--line); border-radius:8px;}
+.cb .pl-dim{width:60px; text-align:center;}
+.cb .pl-dimx{color:var(--dim);}
+.cb .tp-panel{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;}
+.cb .tp-stats{display:flex; gap:24px; flex-wrap:wrap; margin-bottom:14px;}
+.cb .tp-stat{display:flex; flex-direction:column;}
+.cb .tp-statnum{font-size:28px; font-weight:800; line-height:1; font-variant-numeric:tabular-nums;}
+.cb .tp-statlbl{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); margin-top:3px;}
+.cb .tp-truckrow{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; font-size:13px;}
+.cb .tp-truckrow select{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:6px 8px; font-family:inherit; font-weight:600;}
+.cb .tp-cap{color:var(--dim); font-size:12px;}
+.cb .tp-warn{color:#f87171; font-weight:700; font-size:12px; background:rgba(248,113,113,.12); padding:3px 8px; border-radius:6px;}
+.cb .tp-planhint{font-size:11px; color:var(--dim); margin-top:6px;}
+.cb .tp-empty{color:var(--dim); padding:20px; text-align:center; background:var(--panel2); border-radius:8px; margin-bottom:12px;}
+.cb .tp-list-h{font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; margin:14px 0 8px;}
+.cb .tp-row{display:flex; align-items:center; gap:12px; padding:7px 10px; border-bottom:1px solid var(--line);}
+.cb .tp-rowname{flex:1; font-weight:600; font-size:14px;}
+.cb .tp-rowdim{color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums;}
+.cb .tp-rowwt{color:var(--ink); font-size:13px; font-weight:700; min-width:66px; text-align:right; font-variant-numeric:tabular-nums;}
 .cb .pl-casevendor{display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:8px 12px; margin:0 0 6px; background:var(--panel2); border:1px dashed var(--line); border-radius:8px;}
 .cb .pl-cv-lbl{font-size:12px; font-weight:700; color:var(--dim);}
 .cb .pl-cv-src{min-width:110px;}
