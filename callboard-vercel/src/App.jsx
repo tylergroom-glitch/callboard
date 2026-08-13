@@ -15,6 +15,7 @@ import {
   generateRundownShareLink,
   generateRundownOutputLink,
   generateScheduleFillLink,
+  generateCalendarLink,
   importAgenda,
   listTemplates,
   createTemplate,
@@ -1410,6 +1411,9 @@ function LockWrapper({ canEdit, label, children }) {
 function ShowsCalendar({ events, onOpen, onNew, onDemo }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
+  const [subUrl, setSubUrl] = useState(null);
+  const [subBusy, setSubBusy] = useState(false);
+  const doSubscribe = async () => { setSubBusy(true); try { const r = await generateCalendarLink(); setSubUrl(r); } catch (e) { window.alert("Couldn't generate the calendar link. Try again in a moment."); } setSubBusy(false); };
   const two = (n) => (n < 10 ? "0" : "") + n;
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const startDow = new Date(ym.y, ym.m, 1).getDay();
@@ -1429,10 +1433,23 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo }) {
       <div className="cal-top">
         <h1 className="cal-h1">Shows</h1>
         <div className="cal-top-actions">
+          <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>
           <button className="btn" onClick={onNew}>+ New show</button>
           <button className="btn ghost" onClick={onDemo}>Demo</button>
         </div>
       </div>
+      {subUrl && (
+        <div className="cal-sub">
+          <div className="cal-sub-title">Calendar subscription</div>
+          <p className="cal-sub-hint">Subscribe in Apple, Google or Outlook Calendar and every show appears with its full brief (venue, hotel, crew &amp; schedule), staying in sync as you add or edit shows. This link is private — anyone with it can see all show briefs.</p>
+          <div className="cal-sub-row">
+            <a className="btn" href={subUrl.webcal}>Add to calendar</a>
+            <button className="btn ghost" onClick={() => { if (navigator.clipboard) navigator.clipboard.writeText(subUrl.url); }}>Copy link</button>
+            <span className="cal-sub-url">{subUrl.url}</span>
+          </div>
+          <p className="cal-sub-note">Apple/Outlook: use “Add to calendar”. Google Calendar: Other calendars → From URL → paste the copied link.</p>
+        </div>
+      )}
       <div className="cal-nav">
         <button className="cal-navbtn" onClick={() => setYm((v) => ({ y: v.m === 0 ? v.y - 1 : v.y, m: v.m === 0 ? 11 : v.m - 1 }))}>‹</button>
         <span className="cal-month">{monthNames[ym.m]} {ym.y}</span>
@@ -7812,6 +7829,12 @@ const CSS = `
 .cb .cal-listname{font-size:15px; font-weight:700; color:var(--ink);}
 .cb .cal-listclient{font-size:13px; color:var(--dim); margin-left:auto;}
 .cb .cal-empty{color:var(--dim); padding:24px; text-align:center;}
+.cb .cal-sub{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:18px;}
+.cb .cal-sub-title{font-size:14px; font-weight:800; margin-bottom:6px;}
+.cb .cal-sub-hint{font-size:12px; color:var(--dim); margin-bottom:10px; line-height:1.5;}
+.cb .cal-sub-row{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.cb .cal-sub-url{font-size:11px; color:var(--accent); word-break:break-all;}
+.cb .cal-sub-note{font-size:11px; color:var(--dim); margin-top:10px;}
 @media (max-width:640px){ .cb .cal-cell{min-height:62px;} .cb .cal-chip{font-size:9px; padding:2px 4px;} .cb .cal-listdate{min-width:0;} .cb .cal-listclient{display:none;} }
 
 /* topbar */
