@@ -16,6 +16,7 @@ import {
   generateRundownOutputLink,
   generateScheduleFillLink,
   generateCalendarLink,
+  generateShowCalendarLink,
   importAgenda,
   listTemplates,
   createTemplate,
@@ -282,6 +283,7 @@ function normalize(e) {
   if (!Array.isArray(e.commPatch)) e.commPatch = [];
   if (!Array.isArray(e.commChannels)) e.commChannels = [];
   if (!Array.isArray(e.commHidden)) e.commHidden = [];
+  if (!e.pipeline || typeof e.pipeline !== "object") e.pipeline = { milestones: {}, quotes: [], invoices: [], notes: "" };
   if (!e.commData || typeof e.commData !== "object") e.commData = {};
   e.rundown = e.rundown || { start: "", date: "", rows: [], run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   if (!Array.isArray(e.rundown.rows)) e.rundown.rows = [];
@@ -832,6 +834,7 @@ function Callboard({ auth, onLogout }) {
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
   const [atLanding, setAtLanding] = useState(false);
+  const [pipelineOpen, setPipelineOpen] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -841,6 +844,11 @@ function Callboard({ auth, onLogout }) {
   const [loadError, setLoadError] = useState("");
   const loadingRef = useRef(false);
   const saveTimer = useRef(null);
+  const undoStack = useRef([]);
+  const redoStack = useRef([]);
+  const lastSnap = useRef(0);
+  const eventRef = useRef(null);
+  const [histVer, setHistVer] = useState(0);
   const statusTimer = useRef(null);
 
   /* initial load — admin lists every show; crew get only their unlocked show */
@@ -906,17 +914,57 @@ function Callboard({ auth, onLogout }) {
   }, [event]);
 
   useEffect(() => { setNavOpen(false); }, [tab]);
+  useEffect(() => { eventRef.current = event; }, [event]);
+  useEffect(() => { undoStack.current = []; redoStack.current = []; lastSnap.current = 0; setHistVer((v) => v + 1); }, [currentId]);
 
   function summary(e) {
     return { id: e.id, name: e.name, client: e.client, startDate: e.startDate, endDate: e.endDate };
   }
 
-  const update = (fn) =>
+  const update = (fn) => {
+    const cur = eventRef.current;
+    if (cur) {
+      const now = Date.now();
+      if (now - lastSnap.current > 700) {
+        undoStack.current.push(cur);
+        if (undoStack.current.length > 40) undoStack.current.shift();
+        redoStack.current = [];
+        lastSnap.current = now;
+        setHistVer((v) => v + 1);
+      }
+    }
     setEvent((prev) => {
       const e = clone(prev);
       fn(e);
       return e;
     });
+  };
+  const undo = () => {
+    if (!undoStack.current.length) return;
+    const prevState = undoStack.current.pop();
+    if (eventRef.current) redoStack.current.push(eventRef.current);
+    lastSnap.current = 0;
+    setEvent(prevState);
+    setHistVer((v) => v + 1);
+  };
+  const redo = () => {
+    if (!redoStack.current.length) return;
+    const nextState = redoStack.current.pop();
+    if (eventRef.current) undoStack.current.push(eventRef.current);
+    lastSnap.current = 0;
+    setEvent(nextState);
+    setHistVer((v) => v + 1);
+  };
+  useEffect(() => {
+    const onKey = (e) => {
+      const t = e.target;
+      const editable = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+      const mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === "z" || e.key === "Z") && !editable) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   const flash = (msg) => {
     setToast(msg);
@@ -1074,11 +1122,18 @@ function Callboard({ auth, onLogout }) {
         <div className="loading">Loading the callboard…</div>
       </div>
     );
+  if (isSuperAdmin && pipelineOpen)
+    return (
+      <div className="cb">
+        <style>{CSS}</style>
+        <PipelineBoard onClose={() => setPipelineOpen(false)} onOpenShow={openLandingShow} />
+      </div>
+    );
   if (isSuperAdmin && atLanding)
     return (
       <div className="cb">
         <style>{CSS}</style>
-        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} />
+        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} />
       </div>
     );
 
@@ -1135,6 +1190,8 @@ function Callboard({ auth, onLogout }) {
           </div>
         )}
         <div className="top-right">
+          {event && <button className="btn ghost undo-btn" onClick={undo} disabled={!undoStack.current.length} title="Undo (⌘Z)">↶</button>}
+          {event && <button className="btn ghost undo-btn" onClick={redo} disabled={!redoStack.current.length} title="Redo (⌘⇧Z)">↷</button>}
           <div className={"savechip " + status}>
             {status === "saving"
               ? "Saving…"
@@ -1181,7 +1238,7 @@ function Callboard({ auth, onLogout }) {
           </div>
           <main className={"content" + (tab === "rundown" ? " content-wide" : "")} data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
-            {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} /></LockWrapper>}
+            {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} showId={currentId} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
             {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
             {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
@@ -1408,7 +1465,201 @@ function LockWrapper({ canEdit, label, children }) {
   );
 }
 
-function ShowsCalendar({ events, onOpen, onNew, onDemo }) {
+const PIPE_MILESTONES = [
+  ["datesHeld", "Dates Held"],
+  ["siteVisit", "Site Visit"],
+  ["prelimQuote", "Prelim Quote"],
+  ["quoteAccepted", "Quote Accepted"],
+  ["crewBooked", "Crew Booked"],
+  ["gearReserved", "Gear Reserved"],
+  ["logistics", "Logistics"],
+  ["show", "Show"],
+  ["finalBilling", "Final Billing"],
+];
+function normPipe(p) {
+  const out = { milestones: {}, quotes: [], invoices: [], notes: "" };
+  if (p && typeof p === "object") {
+    if (p.milestones && typeof p.milestones === "object") out.milestones = p.milestones;
+    if (Array.isArray(p.quotes)) out.quotes = p.quotes;
+    if (Array.isArray(p.invoices)) out.invoices = p.invoices;
+    if (typeof p.notes === "string") out.notes = p.notes;
+  }
+  PIPE_MILESTONES.forEach(([k]) => { if (!out.milestones[k] || typeof out.milestones[k] !== "object") out.milestones[k] = { done: false, date: "" }; });
+  return out;
+}
+function PipelineBoard({ onClose, onOpenShow }) {
+  const [rows, setRows] = useState(null);
+  const [expand, setExpand] = useState(null);
+  const [busy, setBusy] = useState({});
+  const [filter, setFilter] = useState("all");
+  const [q, setQ] = useState("");
+  useEffect(() => {
+    (async () => {
+      try {
+        const list = await listEvents();
+        const full = await Promise.all((list || []).map((sm) => getEvent(sm.id).then((d) => ({ sm, d })).catch(() => ({ sm, d: null }))));
+        const mapped = full.map(({ sm, d }) => ({ id: sm.id, name: sm.name, client: sm.client || "", start: sm.startDate || "", end: sm.endDate || "", data: d || {}, pipe: normPipe(d && d.pipeline) }));
+        mapped.sort((a, b) => (a.start || "9999-99-99").localeCompare(b.start || "9999-99-99"));
+        setRows(mapped);
+      } catch (e) { setRows([]); }
+    })();
+  }, []);
+  const money = (v) => { const n = parseFloat(v); return isFinite(n) ? n : 0; };
+  const fmt$ = (n) => "$" + Math.round(n).toLocaleString();
+  const persist = async (row, patchSummary) => {
+    setBusy((b) => ({ ...b, [row.id]: true }));
+    const payload = { data: { ...(row.data || {}), pipeline: row.pipe } };
+    if (patchSummary) Object.assign(payload, patchSummary);
+    try { await updateEvent(row.id, payload); } catch (e) {}
+    setBusy((b) => ({ ...b, [row.id]: false }));
+  };
+  const mut = (id, fn, patchSummary) => setRows((rs) => rs.map((r) => {
+    if (r.id !== id) return r;
+    const nr = { ...r, pipe: JSON.parse(JSON.stringify(r.pipe)), data: { ...r.data } };
+    fn(nr);
+    persist(nr, patchSummary && patchSummary(nr));
+    return nr;
+  }));
+  const toggleMs = (id, key) => mut(id, (r) => { const m = r.pipe.milestones[key]; m.done = !m.done; if (m.done && !m.date) m.date = new Date().toISOString().slice(0, 10); });
+  const setMsDate = (id, key, v) => mut(id, (r) => { r.pipe.milestones[key].date = v; });
+  const setNotes = (id, v) => mut(id, (r) => { r.pipe.notes = v; });
+  const setDates = (id, which, v) => mut(id, (r) => { if (which === "start") r.start = v; else r.end = v; }, (nr) => ({ startDate: nr.start, endDate: nr.end }));
+  const addQuote = (id) => mut(id, (r) => r.pipe.quotes.push({ id: uid(), label: "", amount: "", date: "", status: "Sent", link: "" }));
+  const setQuote = (id, i, k, v) => mut(id, (r) => { r.pipe.quotes[i][k] = v; });
+  const rmQuote = (id, i) => mut(id, (r) => r.pipe.quotes.splice(i, 1));
+  const addInvoice = (id) => mut(id, (r) => r.pipe.invoices.push({ id: uid(), label: "", amount: "", date: "", dueDate: "", status: "Sent", link: "" }));
+  const setInvoice = (id, i, k, v) => mut(id, (r) => { r.pipe.invoices[i][k] = v; });
+  const rmInvoice = (id, i) => mut(id, (r) => r.pipe.invoices.splice(i, 1));
+  const newShow = async () => {
+    const name = window.prompt("New show / lead name?");
+    if (!name || !name.trim()) return;
+    try {
+      const created = await createEvent({ name: name.trim(), client: "", startDate: "", endDate: "", data: { pipeline: normPipe(null) } });
+      const nid = created && (created.id || created.recordId || (created.fields && created.id));
+      setRows((rs) => [{ id: (created && created.id) || nid, name: name.trim(), client: "", start: "", end: "", data: { pipeline: normPipe(null) }, pipe: normPipe(null) }, ...(rs || [])]);
+    } catch (e) { window.alert("Could not create the show."); }
+  };
+  const doneCount = (r) => PIPE_MILESTONES.reduce((n, [k]) => n + (r.pipe.milestones[k] && r.pipe.milestones[k].done ? 1 : 0), 0);
+  const stageOf = (r) => { const m = r.pipe.milestones; if (m.finalBilling && m.finalBilling.done) return "done"; if (m.quoteAccepted && m.quoteAccepted.done) return "confirmed"; return "lead"; };
+  const filtered = (rows || []).filter((r) => { if (filter !== "all" && stageOf(r) !== filter) return false; if (q) { const hay = ((r.name || "") + " " + (r.client || "")).toLowerCase(); if (hay.indexOf(q.toLowerCase()) < 0) return false; } return true; });
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const dueList = [];
+  (rows || []).forEach((r) => (r.pipe.invoices || []).forEach((x) => { if ((x.status === "Sent" || x.status === "Overdue") && money(x.amount) > 0) dueList.push({ show: r.name || "Untitled", label: x.label || "", amount: money(x.amount), due: x.dueDate || "", overdue: !!(x.dueDate && x.dueDate < todayStr) }); }));
+  dueList.sort((a, b) => (a.due || "9999-99-99").localeCompare(b.due || "9999-99-99"));
+  const dueTotal = dueList.reduce((s2, d) => s2 + d.amount, 0);
+  return (
+    <div className="pipe-wrap">
+      <div className="pipe-top">
+        <h1 className="pipe-h1">Pipeline</h1>
+        <div className="pipe-top-actions">
+          <button className="btn" onClick={newShow}>+ New show</button>
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+      </div>
+      {rows === null ? (
+        <div className="pipe-loading">Loading shows…</div>
+      ) : rows.length === 0 ? (
+        <div className="pipe-loading">No shows yet — add one to start tracking.</div>
+      ) : (
+        <>
+        {dueList.length > 0 && (
+          <div className="pipe-due">
+            <div className="pipe-due-h">Invoices out ({dueList.length}) <span className="pipe-tot">{fmt$(dueTotal)} outstanding</span></div>
+            {dueList.map((d, i) => (
+              <div className={"pipe-due-row" + (d.overdue ? " overdue" : "")} key={i}>
+                <span className="pipe-due-show">{d.show}{d.label ? " — " + d.label : ""}</span>
+                <span className="pipe-due-amt">{fmt$(d.amount)}</span>
+                <span className="pipe-due-date">{d.due ? (d.overdue ? "Overdue " : "Due ") + d.due : "No due date"}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="pipe-filters">
+          {[["all", "All"], ["lead", "Leads"], ["confirmed", "Confirmed"], ["done", "Completed"]].map(([k, label]) => (
+            <button key={k} className={"pipe-fchip" + (filter === k ? " on" : "")} onClick={() => setFilter(k)}>{label}</button>
+          ))}
+          <input className="pipe-search" value={q} placeholder="Search shows…" onChange={(e) => setQ(e.target.value)} />
+        </div>
+        {filtered.length === 0 ? (
+          <div className="pipe-loading">No shows match that filter.</div>
+        ) : (
+        <div className="pipe-list">
+          {filtered.map((r) => {
+            const open = expand === r.id;
+            const qTotal = r.pipe.quotes.reduce((s2, q) => s2 + money(q.amount), 0);
+            const iTotal = r.pipe.invoices.reduce((s2, x) => s2 + money(x.amount), 0);
+            return (
+              <div className="pipe-card" key={r.id}>
+                <div className="pipe-cardhead" onClick={() => setExpand(open ? null : r.id)}>
+                  <div className="pipe-cardname"><span className="pipe-nm">{r.name || "Untitled"}</span>{r.client ? <span className="pipe-cl">{r.client}</span> : null}</div>
+                  <div className="pipe-strip">
+                    {PIPE_MILESTONES.map(([k, label]) => (
+                      <span key={k} className={"pipe-pill" + (r.pipe.milestones[k].done ? " done" : "")} title={label} onClick={(e) => { e.stopPropagation(); toggleMs(r.id, k); }}>{label}</span>
+                    ))}
+                  </div>
+                  <div className="pipe-meta">{doneCount(r)}/{PIPE_MILESTONES.length}{busy[r.id] ? " · saving…" : ""}</div>
+                </div>
+                {open && (
+                  <div className="pipe-detail">
+                    <div className="pipe-dates">
+                      <label>Held dates <input type="date" value={r.start} onChange={(e) => setDates(r.id, "start", e.target.value)} /> <span>to</span> <input type="date" value={r.end} onChange={(e) => setDates(r.id, "end", e.target.value)} /></label>
+                      <button className="btn ghost pipe-open" onClick={() => onOpenShow(r.id)}>Open show →</button>
+                    </div>
+                    <div className="pipe-cols">
+                      <div className="pipe-col">
+                        <div className="pipe-col-h">Milestones</div>
+                        {PIPE_MILESTONES.map(([k, label]) => (
+                          <div className="pipe-ms" key={k}>
+                            <label className="pipe-ms-l"><input type="checkbox" checked={!!r.pipe.milestones[k].done} onChange={() => toggleMs(r.id, k)} /> {label}</label>
+                            <input className="pipe-ms-d" type="date" value={r.pipe.milestones[k].date || ""} onChange={(e) => setMsDate(r.id, k, e.target.value)} />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="pipe-col">
+                        <div className="pipe-col-h">Quotes {qTotal > 0 ? <span className="pipe-tot">{fmt$(qTotal)}</span> : null}</div>
+                        {r.pipe.quotes.map((q, i) => (
+                          <div className="pipe-fin" key={q.id}>
+                            <input className="pipe-fin-l" value={q.label} placeholder="Label" onChange={(e) => setQuote(r.id, i, "label", e.target.value)} />
+                            <input className="pipe-fin-a" value={q.amount} placeholder="$" onChange={(e) => setQuote(r.id, i, "amount", e.target.value)} />
+                            <input className="pipe-fin-dt" type="date" value={q.date} onChange={(e) => setQuote(r.id, i, "date", e.target.value)} />
+                            <select className="pipe-fin-s" value={q.status} onChange={(e) => setQuote(r.id, i, "status", e.target.value)}><option>Draft</option><option>Sent</option><option>Accepted</option><option>Declined</option></select>
+                            <input className="pipe-fin-lk" value={q.link || ""} placeholder="PDF link" onChange={(e) => setQuote(r.id, i, "link", e.target.value)} />
+                            {q.link ? <a className="pipe-fin-go" href={q.link} target="_blank" rel="noreferrer">open</a> : null}
+                            <button className="pipe-rm" onClick={() => rmQuote(r.id, i)}>&times;</button>
+                          </div>
+                        ))}
+                        <button className="pipe-add" onClick={() => addQuote(r.id)}>+ Quote</button>
+                        <div className="pipe-col-h" style={{ marginTop: 14 }}>Invoices {iTotal > 0 ? <span className="pipe-tot">{fmt$(iTotal)}</span> : null}</div>
+                        {r.pipe.invoices.map((x, i) => (
+                          <div className="pipe-fin" key={x.id}>
+                            <input className="pipe-fin-l" value={x.label} placeholder="Label" onChange={(e) => setInvoice(r.id, i, "label", e.target.value)} />
+                            <input className="pipe-fin-a" value={x.amount} placeholder="$" onChange={(e) => setInvoice(r.id, i, "amount", e.target.value)} />
+                            <input className="pipe-fin-dt" type="date" value={x.date} title="Sent date" onChange={(e) => setInvoice(r.id, i, "date", e.target.value)} />
+                            <input className="pipe-fin-dt" type="date" value={x.dueDate || ""} title="Due date" onChange={(e) => setInvoice(r.id, i, "dueDate", e.target.value)} />
+                            <select className="pipe-fin-s" value={x.status} onChange={(e) => setInvoice(r.id, i, "status", e.target.value)}><option>Draft</option><option>Sent</option><option>Paid</option><option>Overdue</option></select>
+                            <input className="pipe-fin-lk" value={x.link || ""} placeholder="PDF link" onChange={(e) => setInvoice(r.id, i, "link", e.target.value)} />
+                            {x.link ? <a className="pipe-fin-go" href={x.link} target="_blank" rel="noreferrer">open</a> : null}
+                            <button className="pipe-rm" onClick={() => rmInvoice(r.id, i)}>&times;</button>
+                          </div>
+                        ))}
+                        <button className="pipe-add" onClick={() => addInvoice(r.id)}>+ Invoice</button>
+                      </div>
+                    </div>
+                    <div className="pipe-notes"><label>Notes<textarea value={r.pipe.notes} placeholder="Anything else about this show…" onChange={(e) => setNotes(r.id, e.target.value)} /></label></div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
@@ -1433,6 +1684,7 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo }) {
       <div className="cal-top">
         <h1 className="cal-h1">Shows</h1>
         <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onPipeline}>Pipeline</button>
           <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>
           <button className="btn" onClick={onNew}>+ New show</button>
           <button className="btn ghost" onClick={onDemo}>Demo</button>
@@ -2033,7 +2285,7 @@ function MyCallTab({ event, showId, update }) {
 }
 
 
-function BriefTab({ event, update, isAdmin }) {
+function BriefTab({ event, update, isAdmin, showId }) {
   const [emailsCopied, setEmailsCopied] = useState(false);
   const [phonesCopied, setPhonesCopied] = useState(false);
   const copyEmails = () => {
@@ -2228,6 +2480,10 @@ function BriefTab({ event, update, isAdmin }) {
     }
   };
 
+  const [calOpen, setCalOpen] = useState(false);
+  const [calUrl, setCalUrl] = useState(null);
+  const [calBusy, setCalBusy] = useState(false);
+  const genShowCal = async () => { setCalBusy(true); try { const r = await generateShowCalendarLink(showId); setCalUrl(r); setCalOpen(true); } catch (e) { window.alert("Couldn't generate the calendar link. Give the show a moment to save, then try again."); } setCalBusy(false); };
   return (
     <div className="stack">
       <div className="brief-export-bar">
@@ -2237,7 +2493,20 @@ function BriefTab({ event, update, isAdmin }) {
           📄 Export Production Brief PDF
         </button>
         <span className="brief-export-hint">Includes venue, hotel, crew, and schedule overview</span>
+        {isAdmin && <button className="brief-export-btn alt" onClick={genShowCal} disabled={calBusy}>{calBusy ? "…" : "Calendar link"}</button>}
       </div>
+      {isAdmin && calOpen && calUrl && (
+        <div className="cal-sub">
+          <div className="cal-sub-title">Share this show’s calendar</div>
+          <p className="cal-sub-hint">Send this to your client or crew — they add this one show to their calendar and it stays updated with the live brief (venue, hotel, crew &amp; schedule) as you make changes.</p>
+          <div className="cal-sub-row">
+            <a className="btn" href={calUrl.webcal}>Add to calendar</a>
+            <button className="btn ghost" onClick={() => { if (navigator.clipboard) navigator.clipboard.writeText(calUrl.url); }}>Copy link</button>
+            <span className="cal-sub-url">{calUrl.url}</span>
+          </div>
+          <p className="cal-sub-note">Apple/Outlook: use “Add to calendar”. Google Calendar: Other calendars → From URL → paste the copied link.</p>
+        </div>
+      )}
 
       <Panel title="Event details">
         <div className="grid2">
@@ -7829,6 +8098,60 @@ const CSS = `
 .cb .cal-listname{font-size:15px; font-weight:700; color:var(--ink);}
 .cb .cal-listclient{font-size:13px; color:var(--dim); margin-left:auto;}
 .cb .cal-empty{color:var(--dim); padding:24px; text-align:center;}
+.cb .pipe-wrap{max-width:1150px; margin:0 auto; padding:24px 20px 60px;}
+.cb .pipe-top{display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:18px;}
+.cb .pipe-h1{font-size:26px; font-weight:800;}
+.cb .pipe-top-actions{display:flex; gap:8px;}
+.cb .pipe-loading{color:var(--dim); padding:40px; text-align:center;}
+.cb .pipe-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; margin-bottom:10px; overflow:hidden;}
+.cb .pipe-cardhead{display:flex; align-items:center; gap:16px; padding:12px 14px; cursor:pointer; flex-wrap:wrap;}
+.cb .pipe-cardhead:hover{background:var(--panel2);}
+.cb .pipe-cardname{min-width:150px; display:flex; flex-direction:column; gap:2px;}
+.cb .pipe-nm{font-size:15px; font-weight:700;}
+.cb .pipe-cl{font-size:12px; color:var(--dim);}
+.cb .pipe-strip{display:flex; gap:4px; flex:1; flex-wrap:wrap;}
+.cb .pipe-pill{font-size:10px; font-weight:700; padding:4px 8px; border-radius:20px; border:1px solid var(--line); color:var(--dim); background:var(--panel2); white-space:nowrap; cursor:pointer; user-select:none;}
+.cb .pipe-pill:hover{border-color:var(--accent);}
+.cb .pipe-pill.done{background:var(--green); border-color:var(--green); color:#062012;}
+.cb .pipe-meta{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; min-width:60px; text-align:right;}
+.cb .pipe-detail{padding:14px; border-top:1px solid var(--line); background:var(--panel2);}
+.cb .pipe-dates{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; font-size:13px; color:var(--dim);}
+.cb .pipe-dates input{background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:6px 8px; font-family:inherit;}
+.cb .pipe-open{margin-left:auto;}
+.cb .pipe-cols{display:grid; grid-template-columns:1fr 1.3fr; gap:22px;}
+.cb .pipe-col-h{font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); font-weight:700; margin-bottom:8px; display:flex; align-items:center; gap:8px;}
+.cb .pipe-tot{color:var(--ink); font-weight:800; letter-spacing:0; text-transform:none;}
+.cb .pipe-ms{display:flex; align-items:center; gap:10px; margin-bottom:5px;}
+.cb .pipe-ms-l{flex:1; display:flex; align-items:center; gap:8px; font-size:13px; cursor:pointer;}
+.cb .pipe-ms-d{background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:4px 6px; font-family:inherit; font-size:12px;}
+.cb .pipe-fin{display:flex; gap:6px; align-items:center; margin-bottom:5px;}
+.cb .pipe-fin input, .cb .pipe-fin select{background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:6px; padding:6px 7px; font-family:inherit; font-size:12px; min-width:0;}
+.cb .pipe-fin-l{flex:1;}
+.cb .pipe-fin-a{width:70px;}
+.cb .pipe-fin-dt{width:130px;}
+.cb .pipe-fin-s{width:96px;}
+.cb .pipe-fin{flex-wrap:wrap;}
+.cb .pipe-fin-lk{width:120px;}
+.cb .pipe-fin-go{font-size:11px; color:var(--accent); text-decoration:none; align-self:center;}
+.cb .pipe-due{background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--amber); border-radius:12px; padding:14px; margin-bottom:16px;}
+.cb .pipe-due-h{font-size:13px; font-weight:800; margin-bottom:8px; display:flex; align-items:center; gap:10px;}
+.cb .pipe-due-row{display:flex; align-items:center; gap:12px; padding:6px 0; border-top:1px solid var(--line); font-size:13px;}
+.cb .pipe-due-show{flex:1; min-width:0;}
+.cb .pipe-due-amt{font-weight:700; font-variant-numeric:tabular-nums; min-width:80px; text-align:right;}
+.cb .pipe-due-date{color:var(--dim); font-size:12px; min-width:130px; text-align:right;}
+.cb .pipe-due-row.overdue .pipe-due-date{color:#f87171; font-weight:700;}
+.cb .pipe-filters{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:14px;}
+.cb .pipe-fchip{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:18px; padding:6px 14px; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .pipe-fchip.on{background:var(--accent); border-color:var(--accent); color:#fff;}
+.cb .pipe-search{margin-left:auto; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:7px 11px; font-family:inherit; font-size:13px; min-width:180px;}
+.cb .pipe-rm{background:transparent; border:0; color:var(--dim); cursor:pointer; font-size:16px; flex:0 0 auto;}
+.cb .pipe-rm:hover{color:#f87171;}
+.cb .pipe-add{background:transparent; border:1px dashed var(--line); color:var(--dim); border-radius:7px; padding:5px 11px; font-size:12px; font-weight:600; cursor:pointer; margin-top:4px;}
+.cb .pipe-add:hover{border-color:var(--accent); color:var(--accent);}
+.cb .pipe-notes{margin-top:14px;}
+.cb .pipe-notes label{font-size:12px; color:var(--dim); display:block;}
+.cb .pipe-notes textarea{width:100%; margin-top:5px; min-height:60px; background:var(--panel); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13px; resize:vertical;}
+@media (max-width:760px){ .cb .pipe-cols{grid-template-columns:1fr;} }
 .cb .cal-sub{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:18px;}
 .cb .cal-sub-title{font-size:14px; font-weight:800; margin-bottom:6px;}
 .cb .cal-sub-hint{font-size:12px; color:var(--dim); margin-bottom:10px; line-height:1.5;}
@@ -7864,6 +8187,8 @@ const CSS = `
 .cb .btn.amber:hover{background:var(--amber-deep);}
 .cb .btn.danger{color:var(--danger); border-color:#4a2a2e;}
 .cb .btn.danger:hover{background:#2a1a1d;}
+.cb .undo-btn{padding:6px 11px; font-size:16px; line-height:1; min-width:36px;}
+.cb .undo-btn:disabled{opacity:.35; cursor:default;}
 .cb .savechip{
   font-size:11px; letter-spacing:.05em; color:var(--faint); font-weight:600;
   padding:4px 8px; border-radius:20px; white-space:nowrap;
@@ -9058,6 +9383,7 @@ const CSS = `
 .cb .brief-export-bar { display:flex; align-items:center; gap:12px; padding:12px 14px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
 .cb .brief-export-btn { border:none; background:var(--amber); color:#000; border-radius:8px; padding:8px 16px; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap; }
 .cb .brief-export-btn:hover { background:var(--amber-deep); }
+.cb .brief-export-btn.alt{background:var(--panel2); color:var(--ink); border:1px solid var(--line);}
 .cb .brief-export-hint { font-size:12px; color:var(--faint); }
 .cb .crew-ac-row { display:flex; align-items:center; justify-content:space-between; width:100%; border:none; background:none; padding:9px 12px; cursor:pointer; text-align:left; gap:10px; }
 .cb .crew-ac-row:hover { background:var(--panel2); }
