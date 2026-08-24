@@ -50,6 +50,11 @@ export async function loginShow(password) {
   setAuth({ scope: r.scope, token: r.token, showId: r.show.id, showName: r.show.name, level: r.level || "crew" });
   return r;
 }
+export async function loginSupabase(supabaseToken) {
+  const r = await api("POST", "/api/auth", { mode: "supabase", supabaseToken });
+  setAuth({ scope: r.scope, token: r.token });
+  return { scope: r.scope, token: r.token };
+}
 
 export const listEvents = () => api("GET", "/api/events");
 export const getEvent = (id) => api("GET", "/api/events?id=" + encodeURIComponent(id));
