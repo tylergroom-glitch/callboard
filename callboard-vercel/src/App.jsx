@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { supabase, hasSupabaseConfig } from "./supabase.js";
 import {
   currentAuth,
   logout as dbLogout,
@@ -9585,7 +9586,79 @@ function Login({ onDone }) {
   );
 }
 
+function SupabaseAuthShell() {
+  const [session, setSession] = useState(undefined);
+  const [profile, setProfile] = useState(null);
+  const [mode, setMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [name, setName] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!supabase) { setSession(null); return; }
+    supabase.auth.getSession().then(({ data }) => setSession((data && data.session) || null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, sesh) => setSession(sesh || null));
+    return () => { try { sub.subscription.unsubscribe(); } catch (e) {} };
+  }, []);
+  useEffect(() => {
+    if (supabase && session && session.user) {
+      supabase.from("profiles").select("email, name, is_tcg").eq("id", session.user.id).single().then(({ data }) => setProfile(data || null));
+    } else { setProfile(null); }
+  }, [session]);
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      if (mode === "signup") {
+        const { error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { name: name.trim() } } });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+      }
+    } catch (e) { setErr((e && e.message) || "Something went wrong."); }
+    setBusy(false);
+  };
+  const signOut = async () => { try { await supabase.auth.signOut(); } catch (e) {} setSession(null); setProfile(null); };
+  const wrap = { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0b1020", color: "#e7ecf3", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", padding: 20 };
+  const card = { width: "100%", maxWidth: 380, background: "#141b2e", border: "1px solid #263149", borderRadius: 14, padding: 26 };
+  const inp = { width: "100%", boxSizing: "border-box", marginBottom: 10, padding: "11px 12px", borderRadius: 9, border: "1px solid #2d3a55", background: "#0e1424", color: "#e7ecf3", fontSize: 14, fontFamily: "inherit" };
+  const btn = { width: "100%", padding: "12px", borderRadius: 9, border: "none", background: "#0077B6", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" };
+  const link = { background: "none", border: 0, color: "#5aa9e6", cursor: "pointer", fontSize: 13, marginTop: 14, width: "100%" };
+  if (!hasSupabaseConfig || !supabase) {
+    return (<div style={wrap}><div style={card}><h2 style={{ marginTop: 0 }}>Backend not configured</h2><p style={{ color: "#9fb0c8", fontSize: 14, lineHeight: 1.5 }}>Add <b>VITE_SUPABASE_URL</b> and <b>VITE_SUPABASE_ANON_KEY</b> in Vercel (Preview) and redeploy this branch.</p></div></div>);
+  }
+  if (session === undefined) return (<div style={wrap}><div style={card}>Loading…</div></div>);
+  if (session) {
+    return (<div style={wrap}><div style={card}>
+      <h2 style={{ marginTop: 0 }}>Callboard — Accounts preview</h2>
+      <p style={{ color: "#4ade80", fontWeight: 700 }}>✓ Signed in</p>
+      <div style={{ fontSize: 14, lineHeight: 1.9, background: "#0e1424", border: "1px solid #2d3a55", borderRadius: 9, padding: "10px 14px", marginBottom: 14 }}>
+        <div><b>Email:</b> {profile ? profile.email : session.user.email}</div>
+        <div><b>Name:</b> {profile ? (profile.name || "\u2014") : "\u2014"}</div>
+        <div><b>TCG employee:</b> {profile ? (profile.is_tcg ? "Yes" : "No") : "\u2026"}</div>
+      </div>
+      <p style={{ color: "#9fb0c8", fontSize: 12.5, lineHeight: 1.5 }}>Stage-2 auth test. If you see your email and the TCG flag, the whole chain works: signup → profile row → security rules. The full app gets wired behind this in Stage 3.</p>
+      <button style={btn} onClick={signOut}>Sign out</button>
+    </div></div>);
+  }
+  return (<div style={wrap}><div style={card}>
+    <h2 style={{ marginTop: 0 }}>Callboard</h2>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>{mode === "signup" ? "Create your account" : "Sign in"}</p>
+    {mode === "signup" && <input style={inp} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />}
+    <input style={inp} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+    <input style={inp} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+    {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 10 }}>{err}</div> : null}
+    <button style={btn} onClick={submit} disabled={busy}>{busy ? "\u2026" : (mode === "signup" ? "Create account" : "Sign in")}</button>
+    <button style={link} onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setErr(""); }}>{mode === "signup" ? "Have an account? Sign in" : "Need an account? Sign up"}</button>
+  </div></div>);
+}
+
 export default function Root() {
+  return <SupabaseAuthShell />;
+}
+
+function RootAirtable() {
   const [auth, setAuth] = useState(() => currentAuth());
   if (!auth) return <Login onDone={(a) => setAuth(a)} />;
   return (
