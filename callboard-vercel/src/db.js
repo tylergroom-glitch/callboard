@@ -56,6 +56,7 @@ export async function loginSupabase(supabaseToken) {
   return { scope: r.scope, token: r.token };
 }
 
+export const runMigration = () => api("POST", "/api/migrate");
 export const listEvents = () => api("GET", "/api/events");
 export const getEvent = (id) => api("GET", "/api/events?id=" + encodeURIComponent(id));
 export const createEvent = (payload) => api("POST", "/api/events", payload);

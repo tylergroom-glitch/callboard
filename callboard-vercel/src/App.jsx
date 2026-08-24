@@ -5,6 +5,7 @@ import {
   logout as dbLogout,
   loginAdmin,
   loginSupabase,
+  runMigration,
   loginShow,
   listEvents,
   getEvent,
@@ -1666,6 +1667,8 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) 
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
   const [subBusy, setSubBusy] = useState(false);
+  const [migrating, setMigrating] = useState(false);
+  const doMigrate = async () => { if (!window.confirm("Copy all shows from Airtable into Supabase? Airtable is only read, never changed. Safe to run more than once.")) return; setMigrating(true); try { const r = await runMigration(); window.alert("Migrated " + r.migrated + " of " + r.total + " shows from Airtable. Reload to see them."); } catch (e) { window.alert("Migration failed: " + ((e && e.message) || e)); } setMigrating(false); };
   const doSubscribe = async () => { setSubBusy(true); try { const r = await generateCalendarLink(); setSubUrl(r); } catch (e) { window.alert("Couldn't generate the calendar link. Try again in a moment."); } setSubBusy(false); };
   const two = (n) => (n < 10 ? "0" : "") + n;
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -1690,6 +1693,7 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) 
           <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>
           <button className="btn" onClick={onNew}>+ New show</button>
           <button className="btn ghost" onClick={onDemo}>Demo</button>
+          <button className="btn ghost" onClick={doMigrate} disabled={migrating} title="One-time copy of Airtable shows into Supabase">{migrating ? "Migrating\u2026" : "Migrate from Airtable"}</button>
           {onLogout && <button className="btn ghost" onClick={onLogout}>Sign out</button>}
         </div>
       </div>
