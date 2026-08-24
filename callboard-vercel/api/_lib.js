@@ -294,3 +294,18 @@ export async function supabaseRest(method, path, body, prefer) {
   }
   return data;
 }
+
+// Invite a brand-new user by email: creates the auth account (unconfirmed) and
+// sends them a link to set their password. Returns the created user (has id).
+export async function inviteUser(email, redirectTo) {
+  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY || !email) return null;
+  const url = SUPABASE_URL + "/auth/v1/invite" + (redirectTo ? "?redirect_to=" + encodeURIComponent(redirectTo) : "");
+  const r = await fetch(url, {
+    method: "POST",
+    headers: { apikey: SUPABASE_SECRET_KEY, Authorization: "Bearer " + SUPABASE_SECRET_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(data.msg || data.error_description || data.error || "Invite failed"); e.status = r.status; throw e; }
+  return data;
+}

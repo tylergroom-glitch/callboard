@@ -3,7 +3,7 @@
 // GET ?showId=<id>       list members of a show
 // POST { showId, email|userId, role, areas }   add/update a member
 // DELETE ?showId=&userId=                       remove a member
-import { json, readBody, auth, isAdmin, memberRole, supabaseRest, supabaseProfile } from "./_lib.js";
+import { json, readBody, auth, isAdmin, memberRole, supabaseRest, supabaseProfile, inviteUser } from "./_lib.js";
 
 async function canManageMembers(p, showId) {
   if (isAdmin(p)) return true;
@@ -42,15 +42,25 @@ export default async function handler(req, res) {
       if (!showId) return json(res, 400, { error: "showId required" });
       if (!(await canManageMembers(p, showId))) return json(res, 403, { error: "Not allowed" });
       let userId = b.userId;
+      let invited = false;
       if (!userId && b.email) {
         const rows = await supabaseRest("GET", "/profiles?email=eq." + encodeURIComponent(String(b.email).trim()) + "&select=id&limit=1", null);
         userId = rows && rows[0] ? rows[0].id : null;
+        if (!userId) {
+          try {
+            const u = await inviteUser(String(b.email).trim(), b.redirectTo);
+            userId = u && u.id ? u.id : null;
+            invited = !!userId;
+          } catch (e) {
+            return json(res, e.status || 500, { error: "Could not invite " + b.email + ": " + (e.message || "error") });
+          }
+        }
       }
-      if (!userId) return json(res, 404, { error: "No account with that email yet. Ask them to sign up first, then assign them." });
+      if (!userId) return json(res, 400, { error: "An email is required to add someone." });
       const role = ["producer", "dept_editor", "crew"].includes(b.role) ? b.role : "crew";
       const rec = { show_id: showId, user_id: userId, role, areas: b.areas || {} };
       await supabaseRest("POST", "/show_members?on_conflict=show_id,user_id", rec, "return=minimal,resolution=merge-duplicates");
-      return json(res, 200, { ok: true, userId });
+      return json(res, 200, { ok: true, userId, invited });
     }
 
     if (req.method === "DELETE") {
