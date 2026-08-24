@@ -1668,7 +1668,7 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) 
   const [subUrl, setSubUrl] = useState(null);
   const [subBusy, setSubBusy] = useState(false);
   const [migrating, setMigrating] = useState(false);
-  const doMigrate = async () => { if (!window.confirm("Copy all shows from Airtable into Supabase? Airtable is only read, never changed. Safe to run more than once.")) return; setMigrating(true); try { const r = await runMigration(); window.alert("Migrated " + r.migrated + " of " + r.total + " shows from Airtable. Reload to see them."); } catch (e) { window.alert("Migration failed: " + ((e && e.message) || e)); } setMigrating(false); };
+  const doMigrate = async () => { if (!window.confirm("Copy all shows from Airtable into Supabase? Airtable is only read, never changed. Safe to run more than once.")) return; setMigrating(true); try { const r = await runMigration(); window.alert("Migrated from Airtable:\n" + r.shows + " shows\n" + r.roster + " roster\n" + (r.templates || 0) + " templates\n" + (r.inventory || 0) + " inventory\n\nReload to see them."); } catch (e) { window.alert("Migration failed: " + ((e && e.message) || e)); } setMigrating(false); };
   const doSubscribe = async () => { setSubBusy(true); try { const r = await generateCalendarLink(); setSubUrl(r); } catch (e) { window.alert("Couldn't generate the calendar link. Try again in a moment."); } setSubBusy(false); };
   const two = (n) => (n < 10 ? "0" : "") + n;
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
