@@ -151,3 +151,28 @@ export async function supabaseProfile(uid) {
     return null;
   }
 }
+
+// PostgREST data access (service key -> bypasses RLS; the serverless is the gate).
+export async function supabaseRest(method, path, body, prefer) {
+  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Supabase not configured");
+  const headers = {
+    apikey: SUPABASE_SECRET_KEY,
+    Authorization: "Bearer " + SUPABASE_SECRET_KEY,
+    "Content-Type": "application/json",
+  };
+  if (prefer) headers.Prefer = prefer;
+  const r = await fetch(SUPABASE_URL + "/rest/v1" + path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const txt = await r.text();
+  let data = null;
+  try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
+  if (!r.ok) {
+    const e = new Error((data && data.message) || "Supabase error");
+    e.status = r.status; e.detail = data;
+    throw e;
+  }
+  return data;
+}

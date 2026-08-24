@@ -1,10 +1,22 @@
-// /api/events  — all reads/writes go through here so the Airtable key stays server-side.
+// /api/events  — now backed by the Supabase `shows` table (Stage 3b).
+// Same request/response shape the app already expects; the frontend didn't change.
 // GET            list summaries (admin only)
 // GET ?id=       full show JSON (admin, or the show's own token)
-// POST           create show (admin only)      body: { name, client, startDate, endDate, data, password }
-// PATCH ?id=     update show (admin, or the show's own token)  body: { data, name, client, startDate, endDate }
+// POST           create show (admin only)
+// PATCH ?id=     update show (admin, or the show's own token)
 // DELETE ?id=    delete show (admin only)
-import { json, readBody, auth, isAdmin, canAccessShow, airtable, summary, hashPassword } from "./_lib.js";
+import { json, readBody, auth, isAdmin, canAccessShow, supabaseRest, hashPassword } from "./_lib.js";
+
+const summary = (row) => ({
+  id: row.id,
+  name: row.name || "",
+  client: row.client || "",
+  startDate: row.start_date || "",
+  endDate: row.end_date || "",
+  hasPassword: !!row.pass_hash,
+  hasEditor: false,
+  hasAdmin: false,
+});
 
 export default async function handler(req, res) {
   const p = auth(req);
@@ -15,66 +27,59 @@ export default async function handler(req, res) {
     if (req.method === "GET") {
       if (id) {
         if (!canAccessShow(p, id)) return json(res, 403, { error: "No access to this show" });
-        const rec = await airtable("GET", "/" + id);
-        const f = rec.fields || {};
-        let data = {};
-        try {
-          data = f.Data ? JSON.parse(f.Data) : {};
-        } catch {
-          data = {};
-        }
-        data.id = rec.id;
-        data.name = f.Name ?? data.name ?? "";
-        data.client = f.Client ?? data.client ?? "";
-        data.startDate = f.StartDate ?? data.startDate ?? "";
-        data.endDate = f.EndDate ?? data.endDate ?? "";
+        const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=*", null);
+        const row = rows && rows[0];
+        if (!row) return json(res, 404, { error: "Show not found" });
+        const data = row.data && typeof row.data === "object" ? row.data : {};
+        data.id = row.id;
+        data.name = row.name ?? data.name ?? "";
+        data.client = row.client ?? data.client ?? "";
+        data.startDate = row.start_date ?? data.startDate ?? "";
+        data.endDate = row.end_date ?? data.endDate ?? "";
         return json(res, 200, data);
       }
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
-      const out = [];
-      let offset;
-      do {
-        const d = await airtable("GET", offset ? `?offset=${offset}` : "");
-        for (const r of d.records) out.push(summary(r));
-        offset = d.offset;
-      } while (offset);
-      return json(res, 200, out);
+      const rows = await supabaseRest(
+        "GET",
+        "/shows?select=id,name,client,start_date,end_date,pass_hash&order=start_date.asc.nullslast",
+        null
+      );
+      return json(res, 200, (rows || []).map(summary));
     }
 
     if (req.method === "POST") {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       const b = await readBody(req);
-      const fields = {
-        Name: b.name || "New Event",
-        Client: b.client || "",
-        StartDate: b.startDate || "",
-        EndDate: b.endDate || "",
-        Data: JSON.stringify(b.data || {}),
-        UpdatedAt: new Date().toISOString(),
+      const rec = {
+        name: b.name || "New Event",
+        client: b.client || "",
+        start_date: b.startDate || null,
+        end_date: b.endDate || null,
+        data: b.data || {},
       };
-      if (b.password) fields.PassHash = hashPassword(b.password);
-      const rec = await airtable("POST", "", { fields });
-      return json(res, 200, summary(rec));
+      if (b.password) rec.pass_hash = hashPassword(b.password);
+      const rows = await supabaseRest("POST", "/shows", rec, "return=representation");
+      return json(res, 200, summary(rows[0]));
     }
 
     if (req.method === "PATCH") {
       if (!id) return json(res, 400, { error: "id required" });
       if (!canAccessShow(p, id)) return json(res, 403, { error: "No access to this show" });
       const b = await readBody(req);
-      const fields = { UpdatedAt: new Date().toISOString() };
-      if (b.data !== undefined) fields.Data = JSON.stringify(b.data);
-      if (b.name !== undefined) fields.Name = b.name;
-      if (b.client !== undefined) fields.Client = b.client;
-      if (b.startDate !== undefined) fields.StartDate = b.startDate;
-      if (b.endDate !== undefined) fields.EndDate = b.endDate;
-      await airtable("PATCH", "/" + id, { fields });
+      const patch = { updated_at: new Date().toISOString() };
+      if (b.data !== undefined) patch.data = b.data;
+      if (b.name !== undefined) patch.name = b.name;
+      if (b.client !== undefined) patch.client = b.client;
+      if (b.startDate !== undefined) patch.start_date = b.startDate || null;
+      if (b.endDate !== undefined) patch.end_date = b.endDate || null;
+      await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), patch);
       return json(res, 200, { ok: true });
     }
 
     if (req.method === "DELETE") {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       if (!id) return json(res, 400, { error: "id required" });
-      await airtable("DELETE", "/" + id);
+      await supabaseRest("DELETE", "/shows?id=eq." + encodeURIComponent(id), null);
       return json(res, 200, { ok: true });
     }
 
