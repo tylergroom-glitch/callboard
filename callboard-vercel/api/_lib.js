@@ -86,7 +86,7 @@ export function canManageShow(p, id) {
 }
 
 const AT_BASE = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
-export async function airtableTable(table, method, path = "", body) {
+export async function airtableRaw(table, method, path = "", body) {
   const url = `${AT_BASE}/${encodeURIComponent(table)}` + path;
   const res = await fetch(url, {
     method,
@@ -103,6 +103,59 @@ export async function airtableTable(table, method, path = "", body) {
     throw e;
   }
   return data;
+}
+// Roster / Templates / Inventory now live in Supabase tables. This shim keeps the
+// old Airtable-shaped interface so roster.js / templates.js / inventory.js work unchanged.
+const SB_TABLE_MAP = { Roster: "roster", Templates: "templates", Inventory: "inventory" };
+function rowToRec(row) {
+  const fields = { Name: row.name || "" };
+  if (row.data !== undefined) fields.Data = typeof row.data === "string" ? row.data : JSON.stringify(row.data || {});
+  if (row.category !== undefined && row.category !== null) fields.Category = row.category;
+  return { id: row.id, fields };
+}
+function fieldsToRow(f) {
+  f = f || {};
+  const row = {};
+  if (f.Name !== undefined) row.name = f.Name;
+  if (f.Data !== undefined) { try { row.data = JSON.parse(f.Data); } catch { row.data = {}; } }
+  if (f.Category !== undefined) row.category = f.Category;
+  return row;
+}
+function colOf(field) { return field === "Name" ? "name" : field === "Category" ? "category" : String(field).toLowerCase(); }
+export async function airtableTable(table, method, path = "", body) {
+  const sb = SB_TABLE_MAP[table] || String(table).toLowerCase();
+  if (method === "GET" && path.startsWith("/")) {
+    const id = path.slice(1).split("?")[0];
+    const rows = await supabaseRest("GET", "/" + sb + "?id=eq." + encodeURIComponent(id) + "&select=*", null);
+    if (!rows || !rows[0]) { const e = new Error("Not found"); e.status = 404; throw e; }
+    return rowToRec(rows[0]);
+  }
+  if (method === "GET") {
+    let q = "/" + sb + "?select=*";
+    const m = path.match(/filterByFormula=([^&]+)/);
+    if (m) {
+      const formula = decodeURIComponent(m[1]);
+      const nm = formula.match(/\{(\w+)\}='([^']*)'/);
+      if (nm) q += "&" + colOf(nm[1]) + "=eq." + encodeURIComponent(nm[2]);
+    }
+    const rows = await supabaseRest("GET", q, null);
+    return { records: (rows || []).map(rowToRec) };
+  }
+  if (method === "POST") {
+    const rows = await supabaseRest("POST", "/" + sb, fieldsToRow(body && body.fields), "return=representation");
+    return rowToRec(rows[0]);
+  }
+  if (method === "PATCH") {
+    const id = path.slice(1).split("?")[0];
+    await supabaseRest("PATCH", "/" + sb + "?id=eq." + encodeURIComponent(id), fieldsToRow(body && body.fields));
+    return {};
+  }
+  if (method === "DELETE") {
+    const id = path.slice(1).split("?")[0];
+    await supabaseRest("DELETE", "/" + sb + "?id=eq." + encodeURIComponent(id), null);
+    return {};
+  }
+  return {};
 }
 // Events table calls now go to the Supabase `shows` table. This shim keeps the
 // old Airtable-shaped interface so every existing caller works unchanged.
