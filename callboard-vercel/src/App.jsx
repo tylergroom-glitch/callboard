@@ -1673,13 +1673,16 @@ function PipelineBoard({ onClose, onOpenShow }) {
 }
 
 function PeopleAccess({ events, onClose }) {
+  const { roster } = React.useContext(RosterCtx);
   const [showId, setShowId] = useState((events[0] && events[0].id) || "");
   const [members, setMembers] = useState([]);
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("crew");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const rosterWithEmail = (roster || []).filter((m) => m.name && m.name !== "__positions__" && (m.data || {}).email);
   const load = async (sid) => {
     if (!sid) { setMembers([]); return; }
     setLoading(true);
@@ -1689,15 +1692,18 @@ function PeopleAccess({ events, onClose }) {
   useEffect(() => { load(showId); }, [showId]);
   const add = async () => {
     if (!email.trim()) return;
-    setErr(""); setBusy(true);
-    try { await saveShowMember({ showId, email: email.trim(), role }); setEmail(""); await load(showId); }
-    catch (e) { setErr((e && e.message) || "Could not add that person."); }
+    setErr(""); setNotice(""); setBusy(true);
+    try {
+      const r = await saveShowMember({ showId, email: email.trim(), role, redirectTo: window.location.origin + "?setpw=1" });
+      setNotice(r && r.invited ? ("Invited " + email.trim() + " — they’ll get an email to set a password.") : ("Added " + email.trim() + "."));
+      setEmail(""); await load(showId);
+    } catch (e) { setErr((e && e.message) || "Could not add that person."); }
     setBusy(false);
   };
   const changeRole = async (m, r) => { try { await saveShowMember({ showId, userId: m.userId, role: r }); await load(showId); } catch (e) {} };
   const remove = async (m) => { if (!window.confirm("Remove " + (m.email || "this person") + " from this show?")) return; try { await removeShowMember(showId, m.userId); await load(showId); } catch (e) {} };
   const ov = { position: "fixed", inset: 0, background: "rgba(4,8,18,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 2000, overflowY: "auto" };
-  const card = { width: "100%", maxWidth: 620, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: 22 };
+  const card = { width: "100%", maxWidth: 680, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: 22 };
   const rowS = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" };
   const inp = { flex: 1, minWidth: 160, background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "9px 11px", fontFamily: "inherit", fontSize: 14 };
   const sel = { background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "9px 11px", fontFamily: "inherit", fontSize: 14 };
@@ -1715,6 +1721,15 @@ function PeopleAccess({ events, onClose }) {
             {events.map((ev) => <option key={ev.id} value={ev.id}>{ev.name || "Untitled"}{ev.client ? " \u2014 " + ev.client : ""}</option>)}
           </select>
         </div>
+        {rosterWithEmail.length > 0 && (
+          <div style={{ ...rowS, marginBottom: 8 }}>
+            <span style={{ color: "var(--dim)", fontSize: 13 }}>From roster:</span>
+            <select style={{ ...sel, flex: 1 }} value="" onChange={(e) => { if (e.target.value) setEmail(e.target.value); }}>
+              <option value="">— pick a crew member —</option>
+              {rosterWithEmail.map((m) => <option key={m.id} value={m.data.email}>{m.name}{m.data.email ? " (" + m.data.email + ")" : ""}</option>)}
+            </select>
+          </div>
+        )}
         <div style={{ ...rowS, marginBottom: 6 }}>
           <input style={inp} type="email" placeholder="person@email.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
           <select style={sel} value={role} onChange={(e) => setRole(e.target.value)}>
@@ -1725,21 +1740,22 @@ function PeopleAccess({ events, onClose }) {
           <button className="btn" onClick={add} disabled={busy}>{busy ? "\u2026" : "Add"}</button>
         </div>
         {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 8 }}>{err}</div> : null}
+        {notice ? <div style={{ color: "#4ade80", fontSize: 13, marginBottom: 8 }}>{notice}</div> : null}
         <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
           {loading ? <div style={{ color: "var(--dim)", fontSize: 13 }}>{"Loading\u2026"}</div>
             : members.length === 0 ? <div style={{ color: "var(--dim)", fontSize: 13 }}>No one assigned yet.</div>
             : members.map((m) => (
-              <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, fontWeight: 600 }}>{m.name || m.email || m.userId}</div>
-                  {m.email ? <div style={{ fontSize: 12, color: "var(--dim)" }}>{m.email}</div> : null}
+              <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ flex: "1 1 220px", minWidth: 150, overflow: "hidden" }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name || m.email || m.userId}</div>
+                  {m.email && m.name ? <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</div> : null}
                 </div>
-                <select style={sel} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
+                <select style={{ ...sel, width: 165, flexShrink: 0 }} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
                   <option value="producer">Producer / Lead</option>
                   <option value="dept_editor">Department editor</option>
                   <option value="crew">Crew</option>
                 </select>
-                <button className="btn ghost" onClick={() => remove(m)}>Remove</button>
+                <button className="btn ghost" style={{ flexShrink: 0 }} onClick={() => remove(m)}>Remove</button>
               </div>
             ))}
         </div>
@@ -9673,7 +9689,7 @@ function Login({ onDone }) {
             {busy ? "Checking…" : mode === "show" ? "Open show" : "Sign in"}
           </button>
         </div>
-        <div className="login-foot">Callboard · production hub</div>
+        <div className="login-foot">Crew Call · production hub</div>
       </div>
     </div>
   );
@@ -9707,7 +9723,7 @@ function SupabaseLogin() {
     setBusy(false);
   };
   return (<div style={wrap}><div style={card}>
-    <h2 style={{ marginTop: 0 }}>Callboard</h2>
+    <h2 style={{ marginTop: 0 }}>Crew Call</h2>
     <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>{mode === "signup" ? "Create your account" : "Sign in"}</p>
     {mode === "signup" && <input style={inp} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />}
     <input style={inp} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -9724,10 +9740,46 @@ function CenterMsg({ children }) {
   return <div style={wrap}><div>{children}</div></div>;
 }
 
+function SetPassword({ onDone }) {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const wrap = { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0b1020", color: "#e7ecf3", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif", padding: 20 };
+  const card = { width: "100%", maxWidth: 380, background: "#141b2e", border: "1px solid #263149", borderRadius: 14, padding: 26 };
+  const inp = { width: "100%", boxSizing: "border-box", marginBottom: 10, padding: "11px 12px", borderRadius: 9, border: "1px solid #2d3a55", background: "#0e1424", color: "#e7ecf3", fontSize: 14, fontFamily: "inherit" };
+  const btn = { width: "100%", padding: "12px", borderRadius: 9, border: "none", background: "#0077B6", color: "#fff", fontSize: 15, fontWeight: 700, cursor: "pointer" };
+  const submit = async () => {
+    setErr("");
+    if (pw.length < 8) { setErr("Use at least 8 characters."); return; }
+    if (pw !== pw2) { setErr("Passwords don't match."); return; }
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: pw });
+      if (error) throw error;
+      setDone(true);
+      setTimeout(onDone, 700);
+    } catch (e) { setErr((e && e.message) || "Could not set your password."); }
+    setBusy(false);
+  };
+  return (<div style={wrap}><div style={card}>
+    <h2 style={{ marginTop: 0 }}>Set your password</h2>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Welcome to Crew Call — choose a password to finish setting up your account.</p>
+    {done ? <p style={{ color: "#4ade80", fontWeight: 700 }}>✓ All set — signing you in…</p> : (<>
+      <input style={inp} type="password" placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
+      <input style={inp} type="password" placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
+      {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 10 }}>{err}</div> : null}
+      <button style={btn} onClick={submit} disabled={busy}>{busy ? "\u2026" : "Set password"}</button>
+    </>)}
+  </div></div>);
+}
+
 export default function Root() {
   const [session, setSession] = useState(undefined);
   const [auth, setAuth] = useState(null);
   const [authErr, setAuthErr] = useState("");
+  const [inviteMode, setInviteMode] = useState(() => (typeof window !== "undefined" && (window.location.search || "").includes("setpw=1")));
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession((data && data.session) || null));
@@ -9748,6 +9800,7 @@ export default function Root() {
 
   if (!hasSupabaseConfig || !supabase) return <CenterMsg><b>Backend not configured.</b><br />Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel (Preview) and redeploy.</CenterMsg>;
   if (session === undefined) return <CenterMsg>Loading…</CenterMsg>;
+  if (inviteMode && session) return <SetPassword onDone={() => { try { window.history.replaceState({}, "", window.location.pathname); } catch (e) {} setInviteMode(false); }} />;
   if (!session) return <SupabaseLogin />;
   if (authErr) return <CenterMsg><b style={{ color: "#f87171" }}>{authErr}</b><br /><br /><button onClick={signOutAll} style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid #2d3a55", background: "#141b2e", color: "#e7ecf3", cursor: "pointer" }}>Sign out</button></CenterMsg>;
   if (!auth) return <CenterMsg>Signing in…</CenterMsg>;
