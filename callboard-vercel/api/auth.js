@@ -1,7 +1,7 @@
 // POST /api/auth  { mode: "admin" | "show", password }
 // admin  -> token that can list/manage every show
 // show   -> token scoped to the ONE show whose password matches (crew never see others)
-import { json, readBody, hashPassword, signToken, airtable, summary, TOKEN_TTL, env } from "./_lib.js";
+import { json, readBody, hashPassword, signToken, airtable, summary, TOKEN_TTL, env, supabaseUser, supabaseProfile } from "./_lib.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
@@ -15,7 +15,7 @@ export default async function handler(req, res) {
     return json(res, 400, { error: "Bad request" });
   }
   const { mode, password } = body || {};
-  if (!password) return json(res, 400, { error: "Password required" });
+  if (mode !== "supabase" && !password) return json(res, 400, { error: "Password required" });
 
   try {
     if (mode === "admin") {
@@ -44,6 +44,16 @@ export default async function handler(req, res) {
         show: summary(rec),
         token: signToken({ scope: "show", id: rec.id, level, exp: Date.now() + TOKEN_TTL }),
       });
+    }
+
+    if (mode === "supabase") {
+      const supaToken = body.supabaseToken;
+      if (!supaToken) return json(res, 400, { error: "Missing session token" });
+      const user = await supabaseUser(supaToken);
+      if (!user || !user.id) return json(res, 401, { error: "Invalid or expired session" });
+      const prof = await supabaseProfile(user.id);
+      if (!prof || !prof.is_tcg) return json(res, 403, { error: "Your account is not authorized for access yet. Ask a TCG admin to enable it." });
+      return json(res, 200, { scope: "admin", token: signToken({ scope: "admin", exp: Date.now() + TOKEN_TTL }) });
     }
 
     return json(res, 400, { error: "Unknown login mode" });
