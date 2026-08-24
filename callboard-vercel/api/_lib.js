@@ -8,6 +8,9 @@ const {
   ADMIN_PASSWORD,
   ADMIN_PASSWORD_2,
   APP_SECRET,
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  SUPABASE_SECRET_KEY,
 } = process.env;
 
 export const env = {
@@ -118,4 +121,33 @@ export function summary(rec) {
     hasEditor: !!f.EditorHash,
     hasAdmin: !!f.AdminHash,
   };
+}
+
+// ---- Supabase account helpers (Stage 3a token exchange) ----
+// Validate a Supabase access token by asking Supabase who it belongs to.
+export async function supabaseUser(token) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !token) return null;
+  try {
+    const r = await fetch(SUPABASE_URL + "/auth/v1/user", {
+      headers: { Authorization: "Bearer " + token, apikey: SUPABASE_ANON_KEY },
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch {
+    return null;
+  }
+}
+// Read a profile row (is_tcg, name, email) using the secret key.
+export async function supabaseProfile(uid) {
+  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY || !uid) return null;
+  try {
+    const r = await fetch(SUPABASE_URL + "/rest/v1/profiles?id=eq." + encodeURIComponent(uid) + "&select=is_tcg,name,email", {
+      headers: { apikey: SUPABASE_SECRET_KEY, Authorization: "Bearer " + SUPABASE_SECRET_KEY },
+    });
+    if (!r.ok) return null;
+    const rows = await r.json();
+    return (rows && rows[0]) || null;
+  } catch {
+    return null;
+  }
 }
