@@ -52,11 +52,15 @@ export async function loginShow(password) {
 }
 export async function loginSupabase(supabaseToken) {
   const r = await api("POST", "/api/auth", { mode: "supabase", supabaseToken });
-  setAuth({ scope: r.scope, token: r.token });
-  return { scope: r.scope, token: r.token };
+  setAuth({ scope: r.scope, token: r.token, is_tcg: r.is_tcg });
+  return { scope: r.scope, token: r.token, is_tcg: r.is_tcg };
 }
 
 export const runMigration = () => api("POST", "/api/migrate");
+export const listProfiles = () => api("GET", "/api/members?profiles=1");
+export const listShowMembers = (showId) => api("GET", "/api/members?showId=" + encodeURIComponent(showId));
+export const saveShowMember = (payload) => api("POST", "/api/members", payload);
+export const removeShowMember = (showId, userId) => api("DELETE", "/api/members?showId=" + encodeURIComponent(showId) + "&userId=" + encodeURIComponent(userId));
 export const listEvents = () => api("GET", "/api/events");
 export const getEvent = (id) => api("GET", "/api/events?id=" + encodeURIComponent(id));
 export const createEvent = (payload) => api("POST", "/api/events", payload);
