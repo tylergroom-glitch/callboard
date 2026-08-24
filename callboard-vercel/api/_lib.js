@@ -71,7 +71,7 @@ export function auth(req) {
   return verifyToken(bearer(req));
 }
 export function isAdmin(p) {
-  return !!p && p.scope === "admin";
+  return !!p && (p.is_tcg === true || p.scope === "admin");
 }
 export function canAccessShow(p, id) {
   return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id));
@@ -83,6 +83,21 @@ export function isShowManager(p) {
 }
 export function canManageShow(p, id) {
   return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id && p.level === "admin"));
+}
+// --- Account membership (Supabase show_members) ---
+export async function memberRole(p, showId) {
+  if (!p || !p.sub || !showId) return null;
+  try {
+    const rows = await supabaseRest("GET", "/show_members?user_id=eq." + encodeURIComponent(p.sub) + "&show_id=eq." + encodeURIComponent(showId) + "&select=role,areas&limit=1", null);
+    return rows && rows[0] ? rows[0] : null;
+  } catch { return null; }
+}
+export async function memberShowIds(p) {
+  if (!p || !p.sub) return [];
+  try {
+    const rows = await supabaseRest("GET", "/show_members?user_id=eq." + encodeURIComponent(p.sub) + "&select=show_id", null);
+    return (rows || []).map((r) => r.show_id);
+  } catch { return []; }
 }
 
 const AT_BASE = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;

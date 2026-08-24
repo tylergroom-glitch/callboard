@@ -46,8 +46,9 @@ export default async function handler(req, res) {
       const user = await supabaseUser(supaToken);
       if (!user || !user.id) return json(res, 401, { error: "Invalid or expired session" });
       const prof = await supabaseProfile(user.id);
-      if (!prof || !prof.is_tcg) return json(res, 403, { error: "Your account is not authorized for access yet. Ask a TCG admin to enable it." });
-      return json(res, 200, { scope: "admin", token: signToken({ scope: "admin", exp: Date.now() + TOKEN_TTL }) });
+      const isTcg = !!(prof && prof.is_tcg);
+      const token = signToken({ sub: user.id, is_tcg: isTcg, exp: Date.now() + TOKEN_TTL });
+      return json(res, 200, { scope: isTcg ? "admin" : "account", is_tcg: isTcg, token });
     }
 
     return json(res, 400, { error: "Unknown login mode" });
