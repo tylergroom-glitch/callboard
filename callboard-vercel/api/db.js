@@ -77,6 +77,21 @@ export const getPositions = () => api("GET", "/api/roster?positions=1");
 export const savePositions = (positions) =>
   api("POST", "/api/roster?positions=1", { positions });
 export const generateOnboardLink = () => api("GET", "/api/onboard?generate=1");
+// Post-show survey: a signed, show-scoped link crew can fill out. Responses are
+// stored on that show's record, so they stay with the show year over year.
+export const generateSurveyLink = (id) =>
+  api("GET", "/api/survey?generate=1&id=" + encodeURIComponent(id));
+export const generateScheduleFillLink = (id) =>
+  api("GET", "/api/schedule-fill?generate=1&id=" + encodeURIComponent(id));
+export const generateCalendarLink = () =>
+  api("GET", "/api/calendar?generate=1");
+export const generateShowCalendarLink = (id) =>
+  api("GET", "/api/calendar?generate=1&id=" + encodeURIComponent(id));
+// Department-scoped rundown share link (admin): visible/editable columns per link.
+export const generateRundownShareLink = (id, shareId) =>
+  api("GET", "/api/rundown-share?generate=1&id=" + encodeURIComponent(id) + "&share=" + encodeURIComponent(shareId));
+export const generateRundownOutputLink = (id) =>
+  api("GET", "/api/rundown-share?generate=1&output=1&id=" + encodeURIComponent(id));
 export const previewInventoryImport = (sheetUrl) =>
   api("POST", "/api/import-inventory", { sheetUrl, preview: true });
 export const confirmInventoryImport = (sheetUrl) =>
@@ -93,3 +108,5 @@ export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + en
 
 // Import gear from a quote PDF (passes the PDF to the Claude API for extraction).
 export const importQuote = (pdf) => api("POST", "/api/import-quote", { pdf });
+// Import an agenda / run-of-show and turn it into schedule days (paste text or a PDF).
+export const importAgenda = (payload) => api("POST", "/api/import-schedule", payload);
