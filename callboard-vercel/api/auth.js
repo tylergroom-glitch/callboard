@@ -1,7 +1,7 @@
 // POST /api/auth  { mode: "admin" | "show", password }
 // admin  -> token that can list/manage every show
 // show   -> token scoped to the ONE show whose password matches (crew never see others)
-import { json, readBody, hashPassword, signToken, airtable, summary, TOKEN_TTL, env, supabaseUser, supabaseProfile } from "./_lib.js";
+import { json, readBody, hashPassword, signToken, supabaseRest, TOKEN_TTL, env, supabaseUser, supabaseProfile } from "./_lib.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
@@ -28,21 +28,15 @@ export default async function handler(req, res) {
 
     if (mode === "show") {
       const hash = hashPassword(password);
-      // A show can have up to three passwords: crew (PassHash), editor (EditorHash),
-      // and show-admin (AdminHash). Match any of them, then decide the access level.
-      const formula = `OR({PassHash}='${hash}',{EditorHash}='${hash}',{AdminHash}='${hash}')`;
-      const data = await airtable("GET", `?filterByFormula=${encodeURIComponent(formula)}&maxRecords=1`);
-      const rec = data.records && data.records[0];
-      if (!rec) return json(res, 401, { error: "No show matches that password" });
-      const f = rec.fields || {};
-      let level = "crew";
-      if (f.AdminHash && f.AdminHash === hash) level = "admin";
-      else if (f.EditorHash && f.EditorHash === hash) level = "editor";
+      const rows = await supabaseRest("GET", "/shows?pass_hash=eq." + encodeURIComponent(hash) + "&select=id,name,client,start_date,end_date&limit=1", null);
+      const row = rows && rows[0];
+      if (!row) return json(res, 401, { error: "No show matches that password" });
+      const show = { id: row.id, name: row.name || "", client: row.client || "", startDate: row.start_date || "", endDate: row.end_date || "", hasPassword: true };
       return json(res, 200, {
         scope: "show",
-        level,
-        show: summary(rec),
-        token: signToken({ scope: "show", id: rec.id, level, exp: Date.now() + TOKEN_TTL }),
+        level: "crew",
+        show,
+        token: signToken({ scope: "show", id: row.id, level: "crew", exp: Date.now() + TOKEN_TTL }),
       });
     }
 

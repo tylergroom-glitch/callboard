@@ -104,9 +104,59 @@ export async function airtableTable(table, method, path = "", body) {
   }
   return data;
 }
-// Events table (default). Kept for existing callers.
+// Events table calls now go to the Supabase `shows` table. This shim keeps the
+// old Airtable-shaped interface so every existing caller works unchanged.
+function showToRecord(row) {
+  return {
+    id: row.id,
+    fields: {
+      Name: row.name || "",
+      Client: row.client || "",
+      StartDate: row.start_date || "",
+      EndDate: row.end_date || "",
+      Data: typeof row.data === "string" ? row.data : JSON.stringify(row.data || {}),
+      PassHash: row.pass_hash || "",
+    },
+  };
+}
 export async function airtable(method, path = "", body) {
-  return airtableTable(AIRTABLE_TABLE, method, path, body);
+  if (method === "GET" && path.startsWith("/")) {
+    const id = path.slice(1).split("?")[0];
+    const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=*", null);
+    if (!rows || !rows[0]) { const e = new Error("Show not found"); e.status = 404; throw e; }
+    return showToRecord(rows[0]);
+  }
+  if (method === "GET") {
+    const rows = await supabaseRest("GET", "/shows?select=*&order=start_date.asc.nullslast", null);
+    return { records: (rows || []).map(showToRecord) };
+  }
+  if (method === "POST") {
+    const f = (body && body.fields) || {};
+    let data = {};
+    try { data = f.Data ? JSON.parse(f.Data) : {}; } catch { data = {}; }
+    const rec = { name: f.Name || "", client: f.Client || "", start_date: f.StartDate || null, end_date: f.EndDate || null, data, pass_hash: f.PassHash || null };
+    const rows = await supabaseRest("POST", "/shows", rec, "return=representation");
+    return showToRecord(rows[0]);
+  }
+  if (method === "PATCH") {
+    const id = path.slice(1).split("?")[0];
+    const f = (body && body.fields) || {};
+    const patch = { updated_at: new Date().toISOString() };
+    if (f.Data !== undefined) { try { patch.data = JSON.parse(f.Data); } catch { patch.data = {}; } }
+    if (f.Name !== undefined) patch.name = f.Name;
+    if (f.Client !== undefined) patch.client = f.Client;
+    if (f.StartDate !== undefined) patch.start_date = f.StartDate || null;
+    if (f.EndDate !== undefined) patch.end_date = f.EndDate || null;
+    if (f.PassHash !== undefined) patch.pass_hash = f.PassHash || null;
+    await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), patch);
+    return {};
+  }
+  if (method === "DELETE") {
+    const id = path.slice(1).split("?")[0];
+    await supabaseRest("DELETE", "/shows?id=eq." + encodeURIComponent(id), null);
+    return {};
+  }
+  return {};
 }
 
 export function summary(rec) {

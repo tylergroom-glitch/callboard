@@ -5,7 +5,7 @@
 //
 // PREREQUISITE: run this once in the Supabase SQL editor first:
 //   alter table public.shows add column if not exists airtable_id text unique;
-import { json, auth, isAdmin, airtable, supabaseRest } from "./_lib.js";
+import { json, auth, isAdmin, airtableTable, supabaseRest } from "./_lib.js";
 
 export default async function handler(req, res) {
   const p = auth(req);
@@ -17,7 +17,7 @@ export default async function handler(req, res) {
     const recs = [];
     let offset;
     do {
-      const d = await airtable("GET", offset ? `?offset=${offset}` : "");
+      const d = await airtableTable("Events", "GET", offset ? `?offset=${offset}` : "");
       for (const r of d.records || []) recs.push(r);
       offset = d.offset;
     } while (offset);
