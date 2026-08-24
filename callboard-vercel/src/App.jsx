@@ -6,6 +6,9 @@ import {
   loginAdmin,
   loginSupabase,
   runMigration,
+  listShowMembers,
+  saveShowMember,
+  removeShowMember,
   loginShow,
   listEvents,
   getEvent,
@@ -823,12 +826,9 @@ function RemoveBtn({ onClick, title = "Remove" }) {
    App
    ============================================================ */
 function Callboard({ auth, onLogout }) {
-  const isSuperAdmin = auth.scope === "admin";                 // the account admin (manages every show)
-  const level = isSuperAdmin ? "admin" : (auth.level || "crew");
-  const isShowAdmin = level === "admin";                       // sees P&L + Roster, edits everything on this show
-  const isEditor = level === "editor";                         // edits production tabs, no P&L / Roster
-  const canEditTabs = isShowAdmin || isEditor;                 // may edit tab content
-  const levelLabel = isSuperAdmin ? "Admin · all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
+  const isSuperAdmin = auth.scope === "admin";                 // TCG employee — every show
+  const isAccount = auth.scope === "admin" || auth.scope === "account"; // any signed-in account
+  const initCrew = auth.scope === "show" && (auth.level || "crew") === "crew";
   const [showAccessOpen, setShowAccessOpen] = useState(false);
   const [pnlDashOpen, setPnlDashOpen] = useState(false);
   const [pnlDashBusy, setPnlDashBusy] = useState(false);
@@ -841,7 +841,16 @@ function Callboard({ auth, onLogout }) {
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
-  const [tab, setTab] = useState(level === "crew" ? "mycall" : "home");
+  const showRole = event && event._role ? event._role : null;
+  const level = isSuperAdmin ? "admin"
+    : auth.scope === "account" ? ((showRole === "producer" || showRole === "tcg") ? "admin" : showRole === "dept_editor" ? "editor" : "crew")
+    : (auth.level || "crew");
+  const isShowAdmin = level === "admin";
+  const isEditor = level === "editor";
+  const canEditTabs = isShowAdmin || isEditor;
+  const levelLabel = isSuperAdmin ? "Admin · all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [tab, setTab] = useState(initCrew ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
   const [toast, setToast] = useState("");
   const [loadError, setLoadError] = useState("");
@@ -858,9 +867,9 @@ function Callboard({ auth, onLogout }) {
   useEffect(() => {
     (async () => {
       try {
-        if (isSuperAdmin) {
+        if (isAccount) {
           let list = await listEvents();
-          if (!list.length) {
+          if (!list.length && isSuperAdmin) {
             const seed = seedEvent();
             const created = await createEvent({
               name: seed.name, client: seed.client, startDate: seed.startDate, endDate: seed.endDate, data: seed,
@@ -1132,11 +1141,12 @@ function Callboard({ auth, onLogout }) {
         <PipelineBoard onClose={() => setPipelineOpen(false)} onOpenShow={openLandingShow} />
       </div>
     );
-  if (isSuperAdmin && atLanding)
+  if (atLanding)
     return (
       <div className="cb">
         <style>{CSS}</style>
-        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onLogout={onLogout} />
+        {peopleOpen && <PeopleAccess events={events} onClose={() => setPeopleOpen(false)} />}
+        <ShowsCalendar events={events} isAdmin={isSuperAdmin} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} />
       </div>
     );
 
@@ -1662,7 +1672,83 @@ function PipelineBoard({ onClose, onOpenShow }) {
   );
 }
 
-function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) {
+function PeopleAccess({ events, onClose }) {
+  const [showId, setShowId] = useState((events[0] && events[0].id) || "");
+  const [members, setMembers] = useState([]);
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("crew");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(false);
+  const load = async (sid) => {
+    if (!sid) { setMembers([]); return; }
+    setLoading(true);
+    try { setMembers(await listShowMembers(sid)); } catch (e) { setMembers([]); }
+    setLoading(false);
+  };
+  useEffect(() => { load(showId); }, [showId]);
+  const add = async () => {
+    if (!email.trim()) return;
+    setErr(""); setBusy(true);
+    try { await saveShowMember({ showId, email: email.trim(), role }); setEmail(""); await load(showId); }
+    catch (e) { setErr((e && e.message) || "Could not add that person."); }
+    setBusy(false);
+  };
+  const changeRole = async (m, r) => { try { await saveShowMember({ showId, userId: m.userId, role: r }); await load(showId); } catch (e) {} };
+  const remove = async (m) => { if (!window.confirm("Remove " + (m.email || "this person") + " from this show?")) return; try { await removeShowMember(showId, m.userId); await load(showId); } catch (e) {} };
+  const ov = { position: "fixed", inset: 0, background: "rgba(4,8,18,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 2000, overflowY: "auto" };
+  const card = { width: "100%", maxWidth: 620, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: 22 };
+  const rowS = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" };
+  const inp = { flex: 1, minWidth: 160, background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "9px 11px", fontFamily: "inherit", fontSize: 14 };
+  const sel = { background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 8, padding: "9px 11px", fontFamily: "inherit", fontSize: 14 };
+  return (
+    <div style={ov} onClick={onClose}>
+      <div style={card} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+          <h2 style={{ margin: 0, fontSize: 20 }}>People &amp; Access</h2>
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+        <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 6 }}>Assign crew to a show and set what they can do. People sign up once first; then add them by email.</p>
+        <div style={{ ...rowS, marginBottom: 14 }}>
+          <span style={{ color: "var(--dim)", fontSize: 13 }}>Show:</span>
+          <select style={{ ...sel, flex: 1 }} value={showId} onChange={(e) => setShowId(e.target.value)}>
+            {events.map((ev) => <option key={ev.id} value={ev.id}>{ev.name || "Untitled"}{ev.client ? " \u2014 " + ev.client : ""}</option>)}
+          </select>
+        </div>
+        <div style={{ ...rowS, marginBottom: 6 }}>
+          <input style={inp} type="email" placeholder="person@email.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
+          <select style={sel} value={role} onChange={(e) => setRole(e.target.value)}>
+            <option value="producer">Producer / Lead</option>
+            <option value="dept_editor">Department editor</option>
+            <option value="crew">Crew</option>
+          </select>
+          <button className="btn" onClick={add} disabled={busy}>{busy ? "\u2026" : "Add"}</button>
+        </div>
+        {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 8 }}>{err}</div> : null}
+        <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          {loading ? <div style={{ color: "var(--dim)", fontSize: 13 }}>{"Loading\u2026"}</div>
+            : members.length === 0 ? <div style={{ color: "var(--dim)", fontSize: 13 }}>No one assigned yet.</div>
+            : members.map((m) => (
+              <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{m.name || m.email || m.userId}</div>
+                  {m.email ? <div style={{ fontSize: 12, color: "var(--dim)" }}>{m.email}</div> : null}
+                </div>
+                <select style={sel} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
+                  <option value="producer">Producer / Lead</option>
+                  <option value="dept_editor">Department editor</option>
+                  <option value="crew">Crew</option>
+                </select>
+                <button className="btn ghost" onClick={() => remove(m)}>Remove</button>
+              </div>
+            ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onPeople, onLogout }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
@@ -1689,11 +1775,12 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) 
       <div className="cal-top">
         <h1 className="cal-h1">Shows</h1>
         <div className="cal-top-actions">
-          <button className="btn ghost" onClick={onPipeline}>Pipeline</button>
-          <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>
-          <button className="btn" onClick={onNew}>+ New show</button>
-          <button className="btn ghost" onClick={onDemo}>Demo</button>
-          <button className="btn ghost" onClick={doMigrate} disabled={migrating} title="One-time copy of Airtable shows into Supabase">{migrating ? "Migrating\u2026" : "Migrate from Airtable"}</button>
+          {isAdmin && <button className="btn ghost" onClick={onPeople}>People &amp; Access</button>}
+          {isAdmin && <button className="btn ghost" onClick={onPipeline}>Pipeline</button>}
+          {isAdmin && <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>}
+          {isAdmin && <button className="btn" onClick={onNew}>+ New show</button>}
+          {isAdmin && <button className="btn ghost" onClick={onDemo}>Demo</button>}
+          {isAdmin && <button className="btn ghost" onClick={doMigrate} disabled={migrating} title="One-time copy of Airtable shows into Supabase">{migrating ? "Migrating\u2026" : "Migrate from Airtable"}</button>}
           {onLogout && <button className="btn ghost" onClick={onLogout}>Sign out</button>}
         </div>
       </div>
