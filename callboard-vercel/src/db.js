@@ -85,6 +85,8 @@ export const generateScheduleFillLink = (id) =>
   api("GET", "/api/schedule-fill?generate=1&id=" + encodeURIComponent(id));
 export const generateCalendarLink = () =>
   api("GET", "/api/calendar?generate=1");
+export const generateShowCalendarLink = (id) =>
+  api("GET", "/api/calendar?generate=1&id=" + encodeURIComponent(id));
 // Department-scoped rundown share link (admin): visible/editable columns per link.
 export const generateRundownShareLink = (id, shareId) =>
   api("GET", "/api/rundown-share?generate=1&id=" + encodeURIComponent(id) + "&share=" + encodeURIComponent(shareId));
