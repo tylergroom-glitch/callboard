@@ -1135,7 +1135,7 @@ function Callboard({ auth, onLogout }) {
     return (
       <div className="cb">
         <style>{CSS}</style>
-        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} />
+        <ShowsCalendar events={events} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onLogout={onLogout} />
       </div>
     );
 
@@ -1661,7 +1661,7 @@ function PipelineBoard({ onClose, onOpenShow }) {
   );
 }
 
-function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline }) {
+function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline, onLogout }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
@@ -1690,6 +1690,7 @@ function ShowsCalendar({ events, onOpen, onNew, onDemo, onPipeline }) {
           <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>
           <button className="btn" onClick={onNew}>+ New show</button>
           <button className="btn ghost" onClick={onDemo}>Demo</button>
+          {onLogout && <button className="btn ghost" onClick={onLogout}>Sign out</button>}
         </div>
       </div>
       {subUrl && (
