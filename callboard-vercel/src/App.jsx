@@ -1257,7 +1257,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
             {tab === "brief" && <LockWrapper canEdit={tabCanEdit("briefUnlocked")} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} showId={currentId} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("scheduleUnlocked")} showId={currentId} />}
-            {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("rundownUnlocked")} showId={currentId} />}
+            {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("rundownUnlocked")} myDepts={myDepts} showId={currentId} />}
             {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("todosUnlocked")} />}
             {tab === "documents" && <LockWrapper canEdit={tabCanEdit("documentsUnlocked")} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
             {tab === "itinerary" && <LockWrapper canEdit={tabCanEdit("itineraryUnlocked")} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
@@ -1730,7 +1730,8 @@ function PeopleAccess({ events, onClose }) {
     setSelected(new Set()); await load(showId);
     setBusy(false);
   };
-  const changeRole = async (m, r) => { try { await saveShowMember({ showId, userId: m.userId, role: r }); await load(showId); } catch (e) {} };
+  const changeRole = async (m, r) => { try { await saveShowMember({ showId, userId: m.userId, role: r, areas: r === "dept_editor" ? (m.areas || {}) : {} }); await load(showId); } catch (e) {} };
+  const toggleMemberDept = async (m, d) => { const cur = new Set(((m.areas && m.areas.depts) || [])); cur.has(d) ? cur.delete(d) : cur.add(d); try { await saveShowMember({ showId, userId: m.userId, role: "dept_editor", areas: { depts: Array.from(cur) } }); await load(showId); } catch (e) {} };
   const remove = async (m) => { if (!window.confirm("Remove " + (m.email || "this person") + " from this show?")) return; try { await removeShowMember(showId, m.userId); await load(showId); } catch (e) {} };
   const ov = { position: "fixed", inset: 0, background: "rgba(4,8,18,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 2000, overflowY: "auto" };
   const card = { width: "100%", maxWidth: 680, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: 22 };
@@ -1815,17 +1816,29 @@ function PeopleAccess({ events, onClose }) {
           {loading ? <div style={{ color: "var(--dim)", fontSize: 13 }}>{"Loading\u2026"}</div>
             : members.length === 0 ? <div style={{ color: "var(--dim)", fontSize: 13 }}>No one assigned yet.</div>
             : members.map((m) => (
-              <div key={m.userId} style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
-                <div style={{ flex: "1 1 220px", minWidth: 150, overflow: "hidden" }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name || m.email || m.userId}</div>
-                  {m.email && m.name ? <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</div> : null}
+              <div key={m.userId} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ flex: "1 1 220px", minWidth: 150, overflow: "hidden" }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name || m.email || m.userId}</div>
+                    {m.email && m.name ? <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</div> : null}
+                  </div>
+                  <select style={{ ...sel, width: 165, flexShrink: 0 }} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
+                    <option value="producer">Producer / Lead</option>
+                    <option value="dept_editor">Department editor</option>
+                    <option value="crew">Crew</option>
+                  </select>
+                  <button className="btn ghost" style={{ flexShrink: 0 }} onClick={() => remove(m)}>Remove</button>
                 </div>
-                <select style={{ ...sel, width: 165, flexShrink: 0 }} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
-                  <option value="producer">Producer / Lead</option>
-                  <option value="dept_editor">Department editor</option>
-                  <option value="crew">Crew</option>
-                </select>
-                <button className="btn ghost" style={{ flexShrink: 0 }} onClick={() => remove(m)}>Remove</button>
+                {m.role === "dept_editor" && (
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+                    <span style={{ color: "var(--dim)" }}>Departments:</span>
+                    {DEPARTMENTS.map((d) => (
+                      <label key={d} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                        <input type="checkbox" checked={((m.areas && m.areas.depts) || []).includes(d)} onChange={() => toggleMemberDept(m, d)} /> {d}
+                      </label>
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
         </div>
@@ -3074,9 +3087,10 @@ const RD_DEFAULT_COLS = [
   { id: "assets", type: "link", label: "Assets" },
   { id: "notes", type: "text", label: "Notes" },
 ];
-function RundownTab({ event, update, isAdmin, editor, showId }) {
+function RundownTab({ event, update, isAdmin, editor, myDepts, showId }) {
   const unlocked = !!event.rundownUnlocked;
   const canEdit = isAdmin || editor || unlocked;
+  const colCanEdit = (c) => { if (c && c.dept === "__producer__") return isAdmin; return canEdit || ((myDepts || []).includes(c && c.dept)); };
   const rd = event.rundown || { start: "", date: "", rows: [], columns: RD_DEFAULT_COLS, run: { on: false, showStart: 0, segIdx: 0, segStart: 0 } };
   const rows = rd.rows || [];
   const columns = rd.columns && rd.columns.length ? rd.columns : RD_DEFAULT_COLS;
@@ -3435,11 +3449,11 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
     if (c.type === "end") { if (isSub) return <span className="rd-time" key={c.id} />; const sd = pl.end == null ? "—" : fmtTOD(pl.end); const fv = forecastEnd[r.id]; if (fv == null) return <span className="rd-time" key={c.id}>{sd}</span>; return <span className="rd-time rd-2val" key={c.id}><span className="rd-sched">{sd}</span><span className={fcEndActual[r.id] ? "rd-actual" : "rd-fc"}>{fmtTOD(fv)}</span></span>; }
     if (c.type === "dur") return canEdit ? <input className="rd-dur" key={c.id} value={r.dur || ""} placeholder={isSub ? "len" : "30m"} onChange={(e) => setRow(r.id, "dur", e.target.value)} /> : <span className="rd-dur" key={c.id}>{r.dur}</span>;
     if (c.type === "image") { const iv = r.cells ? r.cells[c.id] || "" : "";
-      if (canEdit) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
+      if (colCanEdit(c)) return <div className="rd-imgcell" key={c.id}>{iv ? <img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} /> : null}<input value={iv} placeholder="Image URL" onChange={(e) => setCell(r.id, c.id, e.target.value)} /></div>;
       return <span className="rd-imgview" key={c.id}>{iv ? <a href={iv} target="_blank" rel="noreferrer" className="rd-asset-link"><img src={iv} className="rd-thumb" style={{ width: thumb || thumbSize, height: thumb || thumbSize }} alt="" onError={(e) => { const a = e.currentTarget.parentElement; if (a) a.textContent = "Open ↗"; }} /></a> : null}</span>; }
-    if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return canEdit ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
+    if (c.type === "link") { const lv = r.cells ? r.cells[c.id] || "" : ""; return colCanEdit(c) ? <input key={c.id} value={lv} placeholder="Paste file link" onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{lv ? <a href={lv} target="_blank" rel="noreferrer" className="rd-asset-link">Open ↗</a> : ""}</span>; }
     const v = r.cells ? r.cells[c.id] || "" : "";
-    return canEdit ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
+    return colCanEdit(c) ? <input key={c.id} value={v} placeholder={c.label} onChange={(e) => setCell(r.id, c.id, e.target.value)} /> : <span key={c.id}>{v}</span>;
   };
   const printVal = (r, c, numOrLbl, pl) => {
     if (c.type === "num") return numOrLbl;
@@ -3604,6 +3618,13 @@ function RundownTab({ event, update, isAdmin, editor, showId }) {
               {c.type === "text" || c.type === "link" || c.type === "image" ? (
                 <select className="rd-coltypesel" value={c.type} onChange={(e) => setCol(c.id, "type", e.target.value)}><option value="text">Text</option><option value="link">Link</option><option value="image">Image</option></select>
               ) : <span className="rd-coltype">auto</span>}
+              {(c.type === "text" || c.type === "link" || c.type === "image") && (
+                <select className="rd-coltypesel" title="Who can edit this column" value={c.dept || ""} onChange={(e) => setCol(c.id, "dept", e.target.value)}>
+                  <option value="">Any editor</option>
+                  {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  <option value="__producer__">Producer only</option>
+                </select>
+              )}
               <button className="rd-move" onClick={() => moveCol(c.id, -1)}>▲</button>
               <button className="rd-move" onClick={() => moveCol(c.id, 1)}>▼</button>
               {c.type === "text" ? <RemoveBtn onClick={() => removeCol(c.id)} /> : <span className="rd-collock" title="Built-in column (can hide/rename/reorder, not delete)">🔒</span>}
