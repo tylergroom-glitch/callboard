@@ -11,6 +11,9 @@ const {
   SUPABASE_URL,
   SUPABASE_ANON_KEY,
   SUPABASE_SECRET_KEY,
+  BREVO_API_KEY,
+  BREVO_SENDER_EMAIL,
+  BREVO_SENDER_NAME,
 } = process.env;
 
 export const env = {
@@ -308,4 +311,25 @@ export async function inviteUser(email, redirectTo) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) { const e = new Error(data.msg || data.error_description || data.error || "Invite failed"); e.status = r.status; throw e; }
   return data;
+}
+
+// Send a transactional email via Brevo (used to notify people added to a show).
+export async function sendBrevoEmail({ to, toName, subject, html, text }) {
+  if (!BREVO_API_KEY || !to) return false;
+  const senderEmail = BREVO_SENDER_EMAIL || "crewcall@touchstonecreativegroup.com";
+  const senderName = BREVO_SENDER_NAME || "Touchstone Crew Call";
+  try {
+    const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
+      body: JSON.stringify({
+        sender: { email: senderEmail, name: senderName },
+        to: [{ email: to, ...(toName ? { name: toName } : {}) }],
+        subject,
+        htmlContent: html,
+        ...(text ? { textContent: text } : {}),
+      }),
+    });
+    return r.ok;
+  } catch (e) { return false; }
 }

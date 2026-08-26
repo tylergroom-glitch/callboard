@@ -3,7 +3,7 @@
 // GET ?showId=<id>       list members of a show
 // POST { showId, email|userId, role, areas }   add/update a member
 // DELETE ?showId=&userId=                       remove a member
-import { json, readBody, auth, isAdmin, memberRole, supabaseRest, supabaseProfile, inviteUser } from "./_lib.js";
+import { json, readBody, auth, isAdmin, memberRole, supabaseRest, supabaseProfile, inviteUser, sendBrevoEmail } from "./_lib.js";
 
 async function canManageMembers(p, showId) {
   if (isAdmin(p)) return true;
@@ -58,9 +58,32 @@ export default async function handler(req, res) {
       }
       if (!userId) return json(res, 400, { error: "An email is required to add someone." });
       const role = ["producer", "dept_editor", "crew"].includes(b.role) ? b.role : "crew";
+      // Was this person already on the show? (role change vs. first add)
+      const existing = await supabaseRest("GET", "/show_members?show_id=eq." + encodeURIComponent(showId) + "&user_id=eq." + encodeURIComponent(userId) + "&select=user_id&limit=1", null);
+      const isNew = !(existing && existing.length);
       const rec = { show_id: showId, user_id: userId, role, areas: b.areas || {} };
       await supabaseRest("POST", "/show_members?on_conflict=show_id,user_id", rec, "return=minimal,resolution=merge-duplicates");
-      return json(res, 200, { ok: true, userId, invited });
+      // Notify on first add only. New accounts already get the Supabase invite;
+      // existing accounts get a "you were added" email. Role changes: no email.
+      if (isNew && !invited) {
+        let toEmail = b.email;
+        if (!toEmail) { const prof = await supabaseProfile(userId); toEmail = prof ? prof.email : null; }
+        if (toEmail) {
+          const showName = b.showName || "a show";
+          const roleLabel = role === "producer" ? "Producer / Lead" : role === "dept_editor" ? "Department editor" : "Crew";
+          const host = req.headers.host || "";
+          const appUrl = (host.startsWith("localhost") ? "http://" : "https://") + host + "/";
+          await sendBrevoEmail({
+            to: toEmail,
+            subject: "You\u2019ve been added to " + showName + " on Crew Call",
+            html: "<div style=\"font-family:sans-serif;font-size:15px;color:#1a2233;line-height:1.5\">" +
+              "<p>You\u2019ve been added to <b>" + showName + "</b> as <b>" + roleLabel + "</b> on Crew Call.</p>" +
+              "<p><a href=\"" + appUrl + "\" style=\"display:inline-block;background:#0077B6;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600\">Open Crew Call</a></p>" +
+              "<p style=\"color:#6b7688;font-size:13px\">If the button doesn\u2019t work, go to " + appUrl + "</p></div>",
+          });
+        }
+      }
+      return json(res, 200, { ok: true, userId, invited, isNew });
     }
 
     if (req.method === "DELETE") {
