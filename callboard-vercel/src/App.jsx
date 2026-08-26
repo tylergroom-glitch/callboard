@@ -1173,8 +1173,8 @@ function Callboard({ auth, onLogout }) {
       {/* top control bar */}
       <div className="topbar">
         <div className="brand">
-          <span className="brand-tab">CALL</span>
-          <span className="brand-rest">BOARD</span>
+          <span className="brand-tab">CREW</span>
+          <span className="brand-rest">CALL</span>
         </div>
         {isSuperAdmin ? (
           <>
@@ -9699,8 +9699,8 @@ function Login({ onDone }) {
       <div className="login-wrap">
         <div className="login-card">
           <div className="brand login-brand">
-            <span className="brand-tab">CALL</span>
-            <span className="brand-rest">BOARD</span>
+            <span className="brand-tab">CREW</span>
+            <span className="brand-rest">CALL</span>
           </div>
           <div className="login-tabs">
             <button className={"login-tab " + (mode === "show" ? "on" : "")} onClick={() => setMode("show")}>Open a show</button>
