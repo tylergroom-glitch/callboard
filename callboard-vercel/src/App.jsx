@@ -849,6 +849,10 @@ function Callboard({ auth, onLogout }) {
   const isEditor = level === "editor";
   const canEditTabs = isShowAdmin || isEditor;
   const levelLabel = isSuperAdmin ? "Admin · all shows" : isShowAdmin ? "Show admin" : isEditor ? "Editor" : "Crew";
+  const myDepts = (event && Array.isArray(event._depts)) ? event._depts : [];
+  const effDeptOf = (lockKey) => { const td = (event && event.tabDepts) || {}; return Object.prototype.hasOwnProperty.call(td, lockKey) ? (td[lockKey] || "") : (DEFAULT_TAB_DEPTS[lockKey] || ""); };
+  const deptCanEdit = (lockKey) => isEditor && myDepts.includes(effDeptOf(lockKey));
+  const tabCanEdit = (lockKey) => isShowAdmin || deptCanEdit(lockKey) || !!(event && event[lockKey]);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [tab, setTab] = useState(initCrew ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
@@ -1251,21 +1255,21 @@ function Callboard({ auth, onLogout }) {
           </div>
           <main className={"content" + (tab === "rundown" ? " content-wide" : "")} data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
-            {tab === "brief" && <LockWrapper canEdit={canEditTabs || !!event.briefUnlocked} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} showId={currentId} /></LockWrapper>}
-            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
-            {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} showId={currentId} />}
-            {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
-            {tab === "documents" && <LockWrapper canEdit={canEditTabs || !!event.documentsUnlocked} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
-            {tab === "itinerary" && <LockWrapper canEdit={canEditTabs || !!event.itineraryUnlocked} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
+            {tab === "brief" && <LockWrapper canEdit={tabCanEdit("briefUnlocked")} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} showId={currentId} /></LockWrapper>}
+            {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("scheduleUnlocked")} showId={currentId} />}
+            {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("rundownUnlocked")} showId={currentId} />}
+            {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("todosUnlocked")} />}
+            {tab === "documents" && <LockWrapper canEdit={tabCanEdit("documentsUnlocked")} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
+            {tab === "itinerary" && <LockWrapper canEdit={tabCanEdit("itineraryUnlocked")} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
-            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={isEditor} />}
-            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={isEditor} />}
-            {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
-            {tab === "diagrams" && <LockWrapper canEdit={canEditTabs || !!event.diagramsUnlocked} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
-            {tab === "floorplans" && <LockWrapper canEdit={canEditTabs || !!event.floorplansUnlocked} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
-            {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={isEditor} />}
-            {tab === "records" && <LockWrapper canEdit={canEditTabs || !!event.recordsUnlocked} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
-            {tab === "hours" && canEditTabs && <LockWrapper canEdit={canEditTabs || !!event.hoursUnlocked} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
+            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={deptCanEdit("audioUnlocked")} />}
+            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={deptCanEdit("videoUnlocked")} />}
+            {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("commsUnlocked")} />}
+            {tab === "diagrams" && <LockWrapper canEdit={tabCanEdit("diagramsUnlocked")} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
+            {tab === "floorplans" && <LockWrapper canEdit={tabCanEdit("floorplansUnlocked")} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
+            {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("gearEditUnlocked")} />}
+            {tab === "records" && <LockWrapper canEdit={tabCanEdit("recordsUnlocked")} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
+            {tab === "hours" && canEditTabs && <LockWrapper canEdit={tabCanEdit("hoursUnlocked")} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
             {tab === "roster" && isSuperAdmin && <RosterTab />}
             {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
@@ -1457,6 +1461,7 @@ const TAB_LOCKS = [
   { label: "Documents",      key: "documentsUnlocked" },
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
+  { label: "Comm Patch",     key: "commsUnlocked" },
   { label: "Itinerary",      key: "itineraryUnlocked" },
   { label: "Hours",          key: "hoursUnlocked" },
   { label: "Pull List",      key: "gearEditUnlocked" },
@@ -1465,7 +1470,7 @@ const TAB_LOCKS = [
 ];
 
 const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
-const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", documentsUnlocked: "Audio" };
+const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", commsUnlocked: "Audio" };
 
 /* LockWrapper — wraps a tab's content with a lock notice + CSS disable when locked */
 function LockWrapper({ canEdit, label, children }) {
