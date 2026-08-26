@@ -1694,8 +1694,9 @@ function PeopleAccess({ events, onClose }) {
     if (!email.trim()) return;
     setErr(""); setNotice(""); setBusy(true);
     try {
-      const r = await saveShowMember({ showId, email: email.trim(), role, redirectTo: window.location.origin + "?setpw=1" });
-      setNotice(r && r.invited ? ("Invited " + email.trim() + " — they’ll get an email to set a password.") : ("Added " + email.trim() + "."));
+      const showName = (events.find((ev) => ev.id === showId) || {}).name || "";
+      const r = await saveShowMember({ showId, showName, email: email.trim(), role, redirectTo: window.location.origin + "?setpw=1" });
+      setNotice(r && r.invited ? ("Invited " + email.trim() + " — they’ll get an email to set a password.") : ("Added " + email.trim() + " — they’ve been emailed."));
       setEmail(""); await load(showId);
     } catch (e) { setErr((e && e.message) || "Could not add that person."); }
     setBusy(false);
