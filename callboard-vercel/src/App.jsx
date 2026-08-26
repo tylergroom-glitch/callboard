@@ -1748,10 +1748,10 @@ function PeopleAccess({ events, onClose }) {
             </div>
             <div style={{ maxHeight: 190, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
               {rosterWithEmail.map((m) => (
-                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 12px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
-                  <input type="checkbox" checked={selected.has(m.data.email)} onChange={() => toggleSel(m.data.email)} />
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</span>
-                  <span style={{ fontSize: 12, color: "var(--dim)", marginLeft: "auto", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.data.email}</span>
+                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
+                  <input type="checkbox" style={{ flexShrink: 0, margin: 0 }} checked={selected.has(m.data.email)} onChange={() => toggleSel(m.data.email)} />
+                  <span style={{ flex: "1 1 auto", minWidth: 0, fontSize: 13, fontWeight: 600, textAlign: "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</span>
+                  <span style={{ flexShrink: 0, maxWidth: "48%", fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.data.email}</span>
                 </label>
               ))}
             </div>
