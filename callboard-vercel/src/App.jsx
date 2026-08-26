@@ -1465,6 +1465,7 @@ const TAB_LOCKS = [
 ];
 
 const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
+const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", documentsUnlocked: "Audio" };
 
 /* LockWrapper — wraps a tab's content with a lock notice + CSS disable when locked */
 function LockWrapper({ canEdit, label, children }) {
@@ -2004,12 +2005,16 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
           <div className="tab-access-title" style={{ marginTop: 18 }}>Tab departments</div>
           <div className="tab-access-grid">
             {TAB_LOCKS.map(({ label, key }) => {
-              const dept = (event.tabDepts || {})[key] || "";
+              const td0 = event.tabDepts || {};
+              const explicit = Object.prototype.hasOwnProperty.call(td0, key);
+              const defDept = DEFAULT_TAB_DEPTS[key] || "";
+              const val = explicit ? (td0[key] || "__none__") : "__default__";
               return (
                 <div key={key} className="tab-access-row" style={{ cursor: "default" }}>
                   <span className="tab-access-label">{label}</span>
-                  <select value={dept} onChange={(e) => update((ev) => { const td = { ...(ev.tabDepts || {}) }; if (e.target.value) td[key] = e.target.value; else delete td[key]; ev.tabDepts = td; })} style={{ background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 6, padding: "4px 8px", fontSize: 12, fontFamily: "inherit" }}>
-                    <option value="">No dept</option>
+                  <select value={val} onChange={(e) => update((ev) => { const td = { ...(ev.tabDepts || {}) }; const v = e.target.value; if (v === "__default__") delete td[key]; else if (v === "__none__") td[key] = ""; else td[key] = v; ev.tabDepts = td; })} style={{ background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 6, padding: "4px 8px", fontSize: 12, fontFamily: "inherit" }}>
+                    <option value="__default__">{defDept ? "Default (" + defDept + ")" : "Default (none)"}</option>
+                    <option value="__none__">No dept</option>
                     {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
                   </select>
                 </div>
