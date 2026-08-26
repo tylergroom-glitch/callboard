@@ -362,6 +362,60 @@ export const TAB_FIELDS = {
 
 function jsonEq(a, b) { try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; } }
 
+// Column-scoped Run of Show edit. A dept editor may change only cells in columns
+// tagged to their department; column definitions, row structure, and every other
+// column's cells must be unchanged. Returns { ok, data } or { ok:false, reason }.
+export function scopedRundown(stored, incoming, allowedCols) {
+  stored = stored || {};
+  incoming = incoming || {};
+  if (!jsonEq(stored.columns || [], incoming.columns || [])) return { ok: false, reason: "columns changed" };
+  for (const k of new Set([...Object.keys(stored), ...Object.keys(incoming)])) {
+    if (k === "rows" || k === "columns") continue;
+    if (!jsonEq(stored[k], incoming[k])) return { ok: false, reason: k + " changed" };
+  }
+  const sRows = Array.isArray(stored.rows) ? stored.rows : [];
+  const iRows = Array.isArray(incoming.rows) ? incoming.rows : [];
+  if (sRows.length !== iRows.length) return { ok: false, reason: "rows added or removed" };
+  const mergedRows = [];
+  for (let i = 0; i < sRows.length; i++) {
+    const sr = sRows[i] || {}, ir = iRows[i] || {};
+    if (sr.id !== ir.id) return { ok: false, reason: "row order changed" };
+    const a = { ...sr }; delete a.cells;
+    const b = { ...ir }; delete b.cells;
+    if (!jsonEq(a, b)) return { ok: false, reason: "row structure changed" };
+    const sCells = sr.cells || {}, iCells = ir.cells || {};
+    const newCells = { ...sCells };
+    for (const ck of new Set([...Object.keys(sCells), ...Object.keys(iCells)])) {
+      if (jsonEq(sCells[ck], iCells[ck])) continue;
+      if (!allowedCols.has(ck)) return { ok: false, reason: "column " + ck };
+      newCells[ck] = iCells[ck];
+    }
+    mergedRows.push({ ...sr, cells: newCells });
+  }
+  return { ok: true, data: { ...stored, rows: mergedRows } };
+}
+
+// Full Run of Show edit for a dept editor who owns the whole rundown tab, EXCEPT
+// producer-only columns: their cells may never change (existing rows) and must be
+// empty on any newly added row. Everything else (rows, structure) is allowed.
+export function scopedRundownStructured(stored, incoming, producerCols) {
+  stored = stored || {};
+  incoming = incoming || {};
+  if (!jsonEq(stored.columns || [], incoming.columns || [])) return { ok: false, reason: "columns changed" };
+  const sById = {};
+  for (const r of (stored.rows || [])) { if (r && r.id) sById[r.id] = r; }
+  for (const ir of (incoming.rows || [])) {
+    if (!ir) continue;
+    const sr = sById[ir.id];
+    for (const pc of producerCols) {
+      const iv = (ir.cells || {})[pc];
+      if (sr) { if (!jsonEq((sr.cells || {})[pc], iv)) return { ok: false, reason: "column " + pc }; }
+      else if (iv !== undefined && iv !== "" && iv !== null) return { ok: false, reason: "column " + pc + " (new row)" };
+    }
+  }
+  return { ok: true, data: incoming };
+}
+
 // Given the stored blob, an incoming blob, and the editor's departments, decide
 // what they're allowed to save. Returns { ok, data } or { ok:false, bad:[...] }.
 export function scopedSave(stored, incoming, depts) {
@@ -375,13 +429,37 @@ export function scopedSave(stored, incoming, depts) {
     const unlocked = !!((incoming && incoming[tab]) || (stored && stored[tab]));
     if ((d && depts.includes(d)) || unlocked) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
   }
-  // every top-level field that changed must be in the allowed set
+  // Run of Show columns: which this editor owns, and which are producer-only.
+  const cols = (stored.rundown && Array.isArray(stored.rundown.columns)) ? stored.rundown.columns : [];
+  const myCols = new Set();
+  const producerCols = new Set();
+  for (const c of cols) {
+    if (!c) continue;
+    if (c.dept === "__producer__") producerCols.add(c.id);
+    else if (c.dept && depts.includes(c.dept)) myCols.add(c.id);
+  }
+  const rundownTabAccess = allowed.has("rundown");
+
   const keys = new Set([...Object.keys(stored), ...Object.keys(incoming)]);
-  const bad = [];
-  for (const k of keys) { if (!jsonEq(stored[k], incoming[k]) && !allowed.has(k)) bad.push(k); }
-  if (bad.length) return { ok: false, bad };
-  // apply ONLY allowed fields onto the stored blob (belt and suspenders)
   const merged = { ...stored };
-  for (const k of allowed) { if (k in incoming) merged[k] = incoming[k]; }
+  for (const k of keys) {
+    if (jsonEq(stored[k], incoming[k])) continue;         // unchanged
+    if (k === "rundown") {
+      if (rundownTabAccess) {                             // full edit minus producer-only columns
+        const r = scopedRundownStructured(stored.rundown, incoming.rundown, producerCols);
+        if (!r.ok) return { ok: false, bad: ["Run of Show (" + r.reason + ")"] };
+        merged.rundown = r.data;
+      } else if (myCols.size) {                           // column-scoped cell edits only
+        const r = scopedRundown(stored.rundown, incoming.rundown, myCols);
+        if (!r.ok) return { ok: false, bad: ["Run of Show (" + r.reason + ")"] };
+        merged.rundown = r.data;
+      } else {
+        return { ok: false, bad: ["Run of Show"] };
+      }
+      continue;
+    }
+    if (allowed.has(k)) { merged[k] = incoming[k]; continue; }   // whole tab allowed
+    return { ok: false, bad: [k] };                       // out of scope
+  }
   return { ok: true, data: merged };
 }
