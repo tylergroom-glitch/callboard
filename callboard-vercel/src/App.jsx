@@ -1747,15 +1747,18 @@ function PeopleAccess({ events, onClose }) {
               <button onClick={toggleAll} style={{ background: "none", border: 0, color: "#5aa9e6", cursor: "pointer", fontSize: 12 }}>{allSelected ? "Clear all" : "Select all"}</button>
             </div>
             <div style={{ maxHeight: 190, overflowY: "auto", overflowX: "hidden", border: "1px solid var(--line)", borderRadius: 8 }}>
-              {rosterWithEmail.map((m) => (
-                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
-                  <input type="checkbox" style={{ flexShrink: 0, margin: 0 }} checked={selected.has(m.data.email)} onChange={() => toggleSel(m.data.email)} />
-                  <div style={{ flex: 1, minWidth: 0, overflow: "hidden" }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</div>
-                    <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.data.email}</div>
+              {rosterWithEmail.map((m) => {
+                const on = selected.has(m.data.email);
+                return (
+                  <div key={m.id} onClick={() => toggleSel(m.data.email)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
+                    <input type="checkbox" readOnly checked={on} style={{ flexShrink: 0, margin: 0, pointerEvents: "none" }} />
+                    <div style={{ flex: "1 1 200px", minWidth: 140, overflow: "hidden" }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name}</div>
+                      <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.data.email}</div>
+                    </div>
                   </div>
-                </label>
-              ))}
+                );
+              })}
             </div>
             <div style={{ ...rowS, marginTop: 8 }}>
               <select style={sel} value={batchRole} onChange={(e) => setBatchRole(e.target.value)}>
