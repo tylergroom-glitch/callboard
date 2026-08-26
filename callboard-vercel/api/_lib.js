@@ -338,7 +338,7 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
 export const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
 
 // Global defaults applied to every show; a show can override per tab.
-export const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", documentsUnlocked: "Audio" };
+export const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", commsUnlocked: "Audio" };
 export function effectiveTabDept(perShow, tab) {
   if (perShow && Object.prototype.hasOwnProperty.call(perShow, tab)) return perShow[tab] || "";
   return DEFAULT_TAB_DEPTS[tab] || "";
@@ -351,7 +351,8 @@ export const TAB_FIELDS = {
   scheduleUnlocked: ["schedule", "callTimes"],
   rundownUnlocked: ["rundown"],
   todosUnlocked: ["todos"],
-  documentsUnlocked: ["documents", "commPatch", "commChannels", "commHidden", "commData"],
+  documentsUnlocked: ["documents"],
+  commsUnlocked: ["commPatch", "commChannels", "commHidden", "commData"],
   audioUnlocked: ["audio"],
   videoUnlocked: ["video"],
   itineraryUnlocked: ["itinerary"],
@@ -371,7 +372,8 @@ export function scopedSave(stored, incoming, depts) {
   const allTabs = new Set([...Object.keys(TAB_FIELDS), ...Object.keys(DEFAULT_TAB_DEPTS), ...Object.keys(perShow)]);
   for (const tab of allTabs) {
     const d = effectiveTabDept(perShow, tab);
-    if (d && depts.includes(d)) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
+    const unlocked = !!((incoming && incoming[tab]) || (stored && stored[tab]));
+    if ((d && depts.includes(d)) || unlocked) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
   }
   // every top-level field that changed must be in the allowed set
   const keys = new Set([...Object.keys(stored), ...Object.keys(incoming)]);
