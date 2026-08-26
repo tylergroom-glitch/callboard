@@ -1464,6 +1464,8 @@ const TAB_LOCKS = [
   { label: "Floorplans",     key: "floorplansUnlocked" },
 ];
 
+const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
+
 /* LockWrapper — wraps a tab's content with a lock notice + CSS disable when locked */
 function LockWrapper({ canEdit, label, children }) {
   return (
@@ -1684,6 +1686,9 @@ function PeopleAccess({ events, onClose }) {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState(() => new Set());
   const [batchRole, setBatchRole] = useState("crew");
+  const [batchDepts, setBatchDepts] = useState(() => new Set());
+  const [singleDepts, setSingleDepts] = useState(() => new Set());
+  const toggleDept = (setter) => (d) => setter((prev) => { const n = new Set(prev); n.has(d) ? n.delete(d) : n.add(d); return n; });
   const rosterWithEmail = (roster || []).filter((m) => m.name && m.name !== "__positions__" && (m.data || {}).email);
   const load = async (sid) => {
     if (!sid) { setMembers([]); return; }
@@ -1697,7 +1702,7 @@ function PeopleAccess({ events, onClose }) {
     setErr(""); setNotice(""); setBusy(true);
     try {
       const showName = (events.find((ev) => ev.id === showId) || {}).name || "";
-      const r = await saveShowMember({ showId, showName, email: email.trim(), role, redirectTo: window.location.origin + "?setpw=1" });
+      const r = await saveShowMember({ showId, showName, email: email.trim(), role, areas: role === "dept_editor" ? { depts: Array.from(singleDepts) } : {}, redirectTo: window.location.origin + "?setpw=1" });
       setNotice(r && r.invited ? ("Invited " + email.trim() + " — they’ll get an email to set a password.") : ("Added " + email.trim() + " — they’ve been emailed."));
       setEmail(""); await load(showId);
     } catch (e) { setErr((e && e.message) || "Could not add that person."); }
@@ -1713,7 +1718,7 @@ function PeopleAccess({ events, onClose }) {
     const showName = (events.find((ev) => ev.id === showId) || {}).name || "";
     let okCount = 0, inv = 0;
     for (const em of emails) {
-      try { const r = await saveShowMember({ showId, showName, email: em, role: batchRole, redirectTo: window.location.origin + "?setpw=1" }); okCount++; if (r && r.invited) inv++; } catch (e) {}
+      try { const r = await saveShowMember({ showId, showName, email: em, role: batchRole, areas: batchRole === "dept_editor" ? { depts: Array.from(batchDepts) } : {}, redirectTo: window.location.origin + "?setpw=1" }); okCount++; if (r && r.invited) inv++; } catch (e) {}
     }
     setNotice("Added " + okCount + " to the show" + (inv ? " (" + inv + " invited by email)" : "") + ".");
     setSelected(new Set()); await load(showId);
@@ -1768,6 +1773,15 @@ function PeopleAccess({ events, onClose }) {
               </select>
               <button className="btn" onClick={addSelected} disabled={busy || !selected.size}>{busy ? "…" : ("Add " + selected.size + " selected")}</button>
             </div>
+            {batchRole === "dept_editor" && (
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 8, fontSize: 13 }}>
+                {DEPARTMENTS.map((d) => (
+                  <label key={d} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                    <input type="checkbox" checked={batchDepts.has(d)} onChange={() => toggleDept(setBatchDepts)(d)} /> {d}
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         )}
         <div style={{ fontSize: 12, color: "var(--dim)", margin: "4px 0 8px" }}>Or add one by email:</div>
@@ -1780,6 +1794,15 @@ function PeopleAccess({ events, onClose }) {
           </select>
           <button className="btn" onClick={add} disabled={busy}>{busy ? "\u2026" : "Add"}</button>
         </div>
+        {role === "dept_editor" && (
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 8, fontSize: 13 }}>
+            {DEPARTMENTS.map((d) => (
+              <label key={d} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+                <input type="checkbox" checked={singleDepts.has(d)} onChange={() => toggleDept(setSingleDepts)(d)} /> {d}
+              </label>
+            ))}
+          </div>
+        )}
         {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 8 }}>{err}</div> : null}
         {notice ? <div style={{ color: "#4ade80", fontSize: 13, marginBottom: 8 }}>{notice}</div> : null}
         <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
@@ -1978,6 +2001,22 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
             })}
           </div>
           <p className="tab-access-hint">Locked tabs are view-only for crew. You (admin) can always edit.</p>
+          <div className="tab-access-title" style={{ marginTop: 18 }}>Tab departments</div>
+          <div className="tab-access-grid">
+            {TAB_LOCKS.map(({ label, key }) => {
+              const dept = (event.tabDepts || {})[key] || "";
+              return (
+                <div key={key} className="tab-access-row" style={{ cursor: "default" }}>
+                  <span className="tab-access-label">{label}</span>
+                  <select value={dept} onChange={(e) => update((ev) => { const td = { ...(ev.tabDepts || {}) }; if (e.target.value) td[key] = e.target.value; else delete td[key]; ev.tabDepts = td; })} style={{ background: "var(--panel2)", border: "1px solid var(--line)", color: "var(--ink)", borderRadius: 6, padding: "4px 8px", fontSize: 12, fontFamily: "inherit" }}>
+                    <option value="">No dept</option>
+                    {DEPARTMENTS.map((d) => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+          <p className="tab-access-hint">Tag a tab to a department so its department editors can edit just that tab.</p>
         </div>
       )}
     </div>
