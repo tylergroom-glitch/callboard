@@ -333,3 +333,44 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
     return r.ok;
   } catch (e) { return false; }
 }
+
+// ---- Department-scoped editing (dept_editor role) ----
+export const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
+
+// Which top-level show fields each tab owns. Anything not listed here is NOT
+// editable by a department editor (default-deny / fails closed).
+export const TAB_FIELDS = {
+  briefUnlocked: ["venue", "contacts", "crew", "meals", "wardrobe", "notes", "links"],
+  scheduleUnlocked: ["schedule", "callTimes"],
+  rundownUnlocked: ["rundown"],
+  todosUnlocked: ["todos"],
+  documentsUnlocked: ["documents", "commPatch", "commChannels", "commHidden", "commData"],
+  audioUnlocked: ["audio"],
+  videoUnlocked: ["video"],
+  itineraryUnlocked: ["itinerary"],
+  floorplansUnlocked: ["floorplans"],
+  diagramsUnlocked: ["diagrams"],
+};
+
+function jsonEq(a, b) { try { return JSON.stringify(a) === JSON.stringify(b); } catch { return false; } }
+
+// Given the stored blob, an incoming blob, and the editor's departments, decide
+// what they're allowed to save. Returns { ok, data } or { ok:false, bad:[...] }.
+export function scopedSave(stored, incoming, depts) {
+  stored = stored || {};
+  incoming = incoming || {};
+  const tabDepts = incoming.tabDepts || stored.tabDepts || {};
+  const allowed = new Set();
+  for (const tab of Object.keys(tabDepts)) {
+    if (depts.includes(tabDepts[tab])) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
+  }
+  // every top-level field that changed must be in the allowed set
+  const keys = new Set([...Object.keys(stored), ...Object.keys(incoming)]);
+  const bad = [];
+  for (const k of keys) { if (!jsonEq(stored[k], incoming[k]) && !allowed.has(k)) bad.push(k); }
+  if (bad.length) return { ok: false, bad };
+  // apply ONLY allowed fields onto the stored blob (belt and suspenders)
+  const merged = { ...stored };
+  for (const k of allowed) { if (k in incoming) merged[k] = incoming[k]; }
+  return { ok: true, data: merged };
+}
