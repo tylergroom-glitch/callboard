@@ -1682,6 +1682,8 @@ function PeopleAccess({ events, onClose }) {
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [batchRole, setBatchRole] = useState("crew");
   const rosterWithEmail = (roster || []).filter((m) => m.name && m.name !== "__positions__" && (m.data || {}).email);
   const load = async (sid) => {
     if (!sid) { setMembers([]); return; }
@@ -1699,6 +1701,22 @@ function PeopleAccess({ events, onClose }) {
       setNotice(r && r.invited ? ("Invited " + email.trim() + " — they’ll get an email to set a password.") : ("Added " + email.trim() + " — they’ve been emailed."));
       setEmail(""); await load(showId);
     } catch (e) { setErr((e && e.message) || "Could not add that person."); }
+    setBusy(false);
+  };
+  const toggleSel = (em) => setSelected((prev) => { const n = new Set(prev); if (n.has(em)) n.delete(em); else n.add(em); return n; });
+  const allSelected = rosterWithEmail.length > 0 && rosterWithEmail.every((m) => selected.has(m.data.email));
+  const toggleAll = () => setSelected(() => (allSelected ? new Set() : new Set(rosterWithEmail.map((m) => m.data.email))));
+  const addSelected = async () => {
+    const emails = Array.from(selected);
+    if (!emails.length) return;
+    setErr(""); setNotice(""); setBusy(true);
+    const showName = (events.find((ev) => ev.id === showId) || {}).name || "";
+    let okCount = 0, inv = 0;
+    for (const em of emails) {
+      try { const r = await saveShowMember({ showId, showName, email: em, role: batchRole, redirectTo: window.location.origin + "?setpw=1" }); okCount++; if (r && r.invited) inv++; } catch (e) {}
+    }
+    setNotice("Added " + okCount + " to the show" + (inv ? " (" + inv + " invited by email)" : "") + ".");
+    setSelected(new Set()); await load(showId);
     setBusy(false);
   };
   const changeRole = async (m, r) => { try { await saveShowMember({ showId, userId: m.userId, role: r }); await load(showId); } catch (e) {} };
@@ -1723,14 +1741,31 @@ function PeopleAccess({ events, onClose }) {
           </select>
         </div>
         {rosterWithEmail.length > 0 && (
-          <div style={{ ...rowS, marginBottom: 8 }}>
-            <span style={{ color: "var(--dim)", fontSize: 13 }}>From roster:</span>
-            <select style={{ ...sel, flex: 1 }} value="" onChange={(e) => { if (e.target.value) setEmail(e.target.value); }}>
-              <option value="">— pick a crew member —</option>
-              {rosterWithEmail.map((m) => <option key={m.id} value={m.data.email}>{m.name}{m.data.email ? " (" + m.data.email + ")" : ""}</option>)}
-            </select>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ color: "var(--dim)", fontSize: 13 }}>Add from roster:</span>
+              <button onClick={toggleAll} style={{ background: "none", border: 0, color: "#5aa9e6", cursor: "pointer", fontSize: 12 }}>{allSelected ? "Clear all" : "Select all"}</button>
+            </div>
+            <div style={{ maxHeight: 190, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+              {rosterWithEmail.map((m) => (
+                <label key={m.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 12px", cursor: "pointer", borderBottom: "1px solid var(--line)" }}>
+                  <input type="checkbox" checked={selected.has(m.data.email)} onChange={() => toggleSel(m.data.email)} />
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{m.name}</span>
+                  <span style={{ fontSize: 12, color: "var(--dim)", marginLeft: "auto", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.data.email}</span>
+                </label>
+              ))}
+            </div>
+            <div style={{ ...rowS, marginTop: 8 }}>
+              <select style={sel} value={batchRole} onChange={(e) => setBatchRole(e.target.value)}>
+                <option value="producer">Producer / Lead</option>
+                <option value="dept_editor">Department editor</option>
+                <option value="crew">Crew</option>
+              </select>
+              <button className="btn" onClick={addSelected} disabled={busy || !selected.size}>{busy ? "…" : ("Add " + selected.size + " selected")}</button>
+            </div>
           </div>
         )}
+        <div style={{ fontSize: 12, color: "var(--dim)", margin: "4px 0 8px" }}>Or add one by email:</div>
         <div style={{ ...rowS, marginBottom: 6 }}>
           <input style={inp} type="email" placeholder="person@email.com" value={email} onChange={(e) => setEmail(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") add(); }} />
           <select style={sel} value={role} onChange={(e) => setRole(e.target.value)}>
