@@ -9786,10 +9786,8 @@ function Login({ onDone }) {
 }
 
 function SupabaseLogin() {
-  const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
@@ -9801,27 +9799,31 @@ function SupabaseLogin() {
   const submit = async () => {
     setErr(""); setNotice(""); setBusy(true);
     try {
-      if (mode === "signup") {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { name: name.trim() } } });
-        if (error) throw error;
-        if (data && data.user && !data.session) setNotice("Account created. If email confirmation is on, check your inbox, then sign in.");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-        if (error) throw error;
-      }
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) throw error;
     } catch (e) { setErr((e && e.message) || "Something went wrong."); }
+    setBusy(false);
+  };
+  const forgot = async () => {
+    if (!email.trim()) { setErr("Enter your email above first, then tap reset."); return; }
+    setErr(""); setNotice(""); setBusy(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin + "?setpw=1" });
+      if (error) throw error;
+      setNotice("If that email has an account, a reset link is on its way.");
+    } catch (e) { setErr((e && e.message) || "Could not send the reset email."); }
     setBusy(false);
   };
   return (<div style={wrap}><div style={card}>
     <h2 style={{ marginTop: 0 }}>Crew Call</h2>
-    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>{mode === "signup" ? "Create your account" : "Sign in"}</p>
-    {mode === "signup" && <input style={inp} placeholder="Your name" value={name} onChange={(e) => setName(e.target.value)} />}
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Sign in</p>
     <input style={inp} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
     <input style={inp} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
     {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 10 }}>{err}</div> : null}
     {notice ? <div style={{ color: "#4ade80", fontSize: 13, marginBottom: 10 }}>{notice}</div> : null}
-    <button style={btn} onClick={submit} disabled={busy}>{busy ? "\u2026" : (mode === "signup" ? "Create account" : "Sign in")}</button>
-    <button style={link} onClick={() => { setMode(mode === "signup" ? "signin" : "signup"); setErr(""); setNotice(""); }}>{mode === "signup" ? "Have an account? Sign in" : "Need an account? Sign up"}</button>
+    <button style={btn} onClick={submit} disabled={busy}>{busy ? "\u2026" : "Sign in"}</button>
+    <button style={link} onClick={forgot} disabled={busy}>Forgot password?</button>
+    <p style={{ color: "#6b7688", fontSize: 12, marginTop: 18, textAlign: "center" }}>Access is invite-only. Ask a Touchstone admin to add you to a show.</p>
   </div></div>);
 }
 
