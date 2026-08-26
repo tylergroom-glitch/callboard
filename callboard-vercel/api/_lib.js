@@ -337,6 +337,13 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
 // ---- Department-scoped editing (dept_editor role) ----
 export const DEPARTMENTS = ["Audio", "Video", "Lighting", "Scenic"];
 
+// Global defaults applied to every show; a show can override per tab.
+export const DEFAULT_TAB_DEPTS = { audioUnlocked: "Audio", videoUnlocked: "Video", documentsUnlocked: "Audio" };
+export function effectiveTabDept(perShow, tab) {
+  if (perShow && Object.prototype.hasOwnProperty.call(perShow, tab)) return perShow[tab] || "";
+  return DEFAULT_TAB_DEPTS[tab] || "";
+}
+
 // Which top-level show fields each tab owns. Anything not listed here is NOT
 // editable by a department editor (default-deny / fails closed).
 export const TAB_FIELDS = {
@@ -359,10 +366,12 @@ function jsonEq(a, b) { try { return JSON.stringify(a) === JSON.stringify(b); } 
 export function scopedSave(stored, incoming, depts) {
   stored = stored || {};
   incoming = incoming || {};
-  const tabDepts = incoming.tabDepts || stored.tabDepts || {};
+  const perShow = incoming.tabDepts || stored.tabDepts || {};
   const allowed = new Set();
-  for (const tab of Object.keys(tabDepts)) {
-    if (depts.includes(tabDepts[tab])) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
+  const allTabs = new Set([...Object.keys(TAB_FIELDS), ...Object.keys(DEFAULT_TAB_DEPTS), ...Object.keys(perShow)]);
+  for (const tab of allTabs) {
+    const d = effectiveTabDept(perShow, tab);
+    if (d && depts.includes(d)) (TAB_FIELDS[tab] || []).forEach((k) => allowed.add(k));
   }
   // every top-level field that changed must be in the allowed set
   const keys = new Set([...Object.keys(stored), ...Object.keys(incoming)]);
