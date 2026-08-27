@@ -41,6 +41,17 @@ import {
   generateOnboardLink,
   previewInventoryImport,
   confirmInventoryImport,
+  listCatalog,
+  saveCatalogItem,
+  deleteCatalogItem,
+  bulkCatalogImport,
+  importCatalogPdf,
+  listClients,
+  saveClient,
+  deleteClient,
+  listVenues,
+  saveVenue,
+  deleteVenue,
 } from "./db.js";
 
 /* ============================================================
@@ -838,6 +849,7 @@ function Callboard({ auth, onLogout }) {
   const [ready, setReady] = useState(false);
   const [atLanding, setAtLanding] = useState(false);
   const [pipelineOpen, setPipelineOpen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -1145,12 +1157,19 @@ function Callboard({ auth, onLogout }) {
         <PipelineBoard onClose={() => setPipelineOpen(false)} onOpenShow={openLandingShow} />
       </div>
     );
+  if (isSuperAdmin && catalogOpen)
+    return (
+      <div className="cb">
+        <style>{CSS}</style>
+        <CatalogScreen onClose={() => setCatalogOpen(false)} />
+      </div>
+    );
   if (atLanding)
     return (
       <div className="cb">
         <style>{CSS}</style>
         {peopleOpen && <PeopleAccess events={events} onClose={() => setPeopleOpen(false)} />}
-        <ShowsCalendar events={events} isAdmin={isSuperAdmin} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} />
+        <ShowsCalendar events={events} isAdmin={isSuperAdmin} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onPeople={() => setPeopleOpen(true)} onCatalog={() => setCatalogOpen(true)} onLogout={onLogout} />
       </div>
     );
 
@@ -1847,7 +1866,559 @@ function PeopleAccess({ events, onClose }) {
   );
 }
 
-function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onPeople, onLogout }) {
+/* ============================================================
+   QUOTING — Stage 1 admin screens: Catalog, Clients, Venues.
+   Reached from the Shows screen via the "Catalog" button.
+   TCG admin only; crew never load these.
+   ============================================================ */
+
+const CTG_DEPTS = ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"];
+const CTG_DEPT_COLOR = { Audio: "#5FD08A", Video: "#5A7FE0", Lighting: "#FFB020", Power: "#FF6B6B", Scenic: "#C77DA0", Misc: "#96A0B2" };
+const ctgMoney = (n) => "$" + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const ctgOv = { position: "fixed", inset: 0, background: "rgba(4,8,18,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 2000, overflowY: "auto" };
+const ctgCard = { width: "100%", maxWidth: 620, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 14, padding: 22 };
+const ctgLabel = { display: "block", fontSize: 12, color: "var(--dim)", fontWeight: 600, marginBottom: 4 };
+const ctgRow = { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" };
+const ctgListRow = { display: "flex", alignItems: "center", gap: 12, background: "var(--panel)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", marginBottom: 6 };
+const ctgChip = (on, color) => ({ background: on ? color : "transparent", color: on ? "#101218" : "var(--dim)", border: "1px solid " + (on ? color : "var(--line)"), borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
+const ctgErr = { color: "var(--danger)", fontSize: 13, margin: "8px 0" };
+const ctgHint = { color: "var(--dim)", fontSize: 13, marginTop: 6 };
+
+async function ctgFileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = (ev) => resolve(String(ev.target.result).split(",")[1]);
+    r.onerror = () => reject(new Error("Couldn't read that file"));
+    r.readAsDataURL(file);
+  });
+}
+
+function CtgModal({ title, wide, onClose, children }) {
+  return (
+    <div style={ctgOv} onClick={onClose}>
+      <div style={wide ? { ...ctgCard, maxWidth: 900 } : ctgCard} onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h2 style={{ margin: 0, fontSize: 19 }}>{title}</h2>
+          <button className="btn ghost" onClick={onClose}>Close</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/* Type-to-find picker over the catalog. Used to build packages. */
+function CtgPicker({ catalog, excludeIds, onPick }) {
+  const [q, setQ] = useState("");
+  const skip = excludeIds || [];
+  const hits = q.trim()
+    ? catalog.filter((c) => skip.indexOf(c.id) < 0 && c.name.toLowerCase().indexOf(q.trim().toLowerCase()) >= 0).slice(0, 8)
+    : [];
+  return (
+    <div style={{ position: "relative" }}>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search catalog to add a component…" style={{ width: "100%" }} />
+      {hits.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, marginTop: 3, overflow: "hidden" }}>
+          {hits.map((h) => (
+            <button
+              key={h.id}
+              onClick={() => { onPick(h); setQ(""); }}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, color: "var(--ink)", padding: "8px 11px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}
+            >
+              {h.name} <span style={{ color: "var(--dim)" }}>· {h.department} · {ctgMoney(h.rate)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Add / edit one catalog item, including its package contents. */
+function CtgItemForm({ draft, setDraft, catalog, onSave, onCancel, busy }) {
+  const comps = Array.isArray(draft.components) ? draft.components : [];
+  const nameOf = (id) => { const h = catalog.find((c) => c.id === id); return h ? h.name : "(deleted item)"; };
+  const rateOf = (id) => { const h = catalog.find((c) => c.id === id); return h ? h.rate : 0; };
+  const compTotal = comps.reduce((sum, c) => sum + rateOf(c.itemId) * (c.qty || 1), 0);
+  const setComps = (next) => setDraft({ ...draft, components: next });
+  return (
+    <div>
+      <div style={{ ...ctgRow, marginBottom: 10 }}>
+        <div style={{ flex: "1 1 240px" }}>
+          <label style={ctgLabel}>Name</label>
+          <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="e.g. PTZ Camera Package" style={{ width: "100%" }} />
+        </div>
+        <div style={{ flex: "0 0 130px" }}>
+          <label style={ctgLabel}>Department</label>
+          <select value={draft.department} onChange={(e) => setDraft({ ...draft, department: e.target.value })} style={{ width: "100%" }}>
+            {CTG_DEPTS.map((d) => <option key={d}>{d}</option>)}
+          </select>
+        </div>
+        <div style={{ flex: "0 0 120px" }}>
+          <label style={ctgLabel}>Rate / day</label>
+          <input value={draft.rate} onChange={(e) => setDraft({ ...draft, rate: e.target.value })} inputMode="decimal" placeholder="0.00" style={{ width: "100%" }} />
+        </div>
+      </div>
+      <div style={{ ...ctgRow, marginBottom: 10 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 13, color: "var(--dim)", cursor: "pointer" }}>
+          <input type="checkbox" checked={draft.taxable !== false} onChange={(e) => setDraft({ ...draft, taxable: e.target.checked })} style={{ width: 16, height: 16 }} />
+          Taxable
+        </label>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <label style={ctgLabel}>Notes</label>
+        <input value={draft.notes || ""} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="For your reference only — never shown to the client" style={{ width: "100%" }} />
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+          <label style={{ ...ctgLabel, marginBottom: 0 }}>Package contents</label>
+          {comps.length > 0 && <span style={{ fontSize: 12, color: "var(--dim)" }}>Parts add up to {ctgMoney(compTotal)}/day</span>}
+        </div>
+        <p style={{ ...ctgHint, marginTop: 0, marginBottom: 8 }}>
+          Leave empty for a normal item. Add components to make this a package — it stays one line on the quote and breaks out into these parts on the pull list.
+        </p>
+        {comps.map((c, i) => (
+          <div key={c.itemId + "-" + i} style={{ ...ctgListRow, marginBottom: 5, padding: "7px 10px" }}>
+            <span style={{ flex: 1, fontSize: 13 }}>{nameOf(c.itemId)}</span>
+            <input
+              value={c.qty}
+              onChange={(e) => { const n = comps.slice(); n[i] = { ...c, qty: e.target.value.replace(/[^0-9]/g, "") }; setComps(n); }}
+              style={{ width: 62, textAlign: "center" }}
+              inputMode="numeric"
+            />
+            <button className="btn ghost danger" onClick={() => setComps(comps.filter((_, j) => j !== i))} style={{ padding: "5px 9px" }}>Remove</button>
+          </div>
+        ))}
+        <CtgPicker
+          catalog={catalog}
+          excludeIds={[draft.id].concat(comps.map((c) => c.itemId)).filter(Boolean)}
+          onPick={(h) => setComps(comps.concat([{ itemId: h.id, qty: 1 }]))}
+        />
+      </div>
+
+      <div style={{ ...ctgRow, marginTop: 16, justifyContent: "flex-end" }}>
+        <button className="btn ghost" onClick={onCancel}>Cancel</button>
+        <button className="btn amber" onClick={onSave} disabled={busy || !draft.name.trim()}>{busy ? "Saving…" : "Save item"}</button>
+      </div>
+    </div>
+  );
+}
+
+/* One-time seeding: read an itemised Current RMS quote and preview the rows. */
+function CtgImportWizard({ onDone, onCancel }) {
+  const [step, setStep] = useState("pick");
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const pickFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setErr(""); setBusy(true);
+    try {
+      const b64 = await ctgFileToBase64(file);
+      const r = await importCatalogPdf(b64);
+      const items = (r && r.items) || [];
+      if (!items.length) { setErr("No line items were found in that PDF."); setBusy(false); return; }
+      setRows(items);
+      setStep("preview");
+    } catch (ex) {
+      setErr((ex && ex.message) || "Couldn't read that PDF.");
+    }
+    setBusy(false);
+  };
+
+  const doImport = async () => {
+    const clean = rows.filter((r) => r.name.trim());
+    if (!clean.length) { setErr("Nothing left to import."); return; }
+    setErr(""); setBusy(true);
+    try {
+      await bulkCatalogImport(clean);
+      onDone(clean.length);
+    } catch (ex) {
+      setErr((ex && ex.message) || "Import failed.");
+      setBusy(false);
+    }
+  };
+
+  const setRow = (i, patch) => setRows((prev) => { const n = prev.slice(); n[i] = { ...n[i], ...patch }; return n; });
+
+  if (step === "pick")
+    return (
+      <CtgModal title="Import catalog from a quote" onClose={onCancel}>
+        <p style={ctgHint}>
+          In Current RMS, build a quote containing every item you rent, with itemised pricing showing, and export it to PDF. Drop that PDF here and the line items become catalog entries.
+        </p>
+        <p style={ctgHint}>
+          Nothing is saved until you have checked the preview. Running this again later updates rates on items you already have rather than duplicating them.
+        </p>
+        {err ? <div style={ctgErr}>{err}</div> : null}
+        <div style={{ marginTop: 14 }}>
+          <input type="file" accept="application/pdf" onChange={pickFile} disabled={busy} />
+        </div>
+        {busy ? <div style={{ ...ctgHint, marginTop: 12 }}>Reading the PDF — this can take up to a minute on a long quote…</div> : null}
+      </CtgModal>
+    );
+
+  return (
+    <CtgModal title={"Check these " + rows.length + " items"} wide onClose={onCancel}>
+      <p style={ctgHint}>Fix anything that came through wrong, drop what you don't want, then import. Rates are per day, per unit.</p>
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      <div style={{ maxHeight: "52vh", overflowY: "auto", margin: "12px 0" }}>
+        {rows.map((r, i) => (
+          <div key={i} style={{ ...ctgListRow, padding: "7px 10px" }}>
+            <input value={r.name} onChange={(e) => setRow(i, { name: e.target.value })} style={{ flex: 1, minWidth: 140 }} />
+            <select value={r.department} onChange={(e) => setRow(i, { department: e.target.value })} style={{ flex: "0 0 110px" }}>
+              {CTG_DEPTS.map((d) => <option key={d}>{d}</option>)}
+            </select>
+            <input value={r.rate} onChange={(e) => setRow(i, { rate: e.target.value })} inputMode="decimal" style={{ flex: "0 0 92px", textAlign: "right" }} />
+            <button className="btn ghost danger" onClick={() => setRows(rows.filter((_, j) => j !== i))} style={{ padding: "5px 9px" }}>Drop</button>
+          </div>
+        ))}
+      </div>
+      <div style={{ ...ctgRow, justifyContent: "flex-end" }}>
+        <button className="btn ghost" onClick={() => { setStep("pick"); setRows([]); }}>Back</button>
+        <button className="btn amber" onClick={doImport} disabled={busy}>{busy ? "Importing…" : "Import " + rows.length + " items"}</button>
+      </div>
+    </CtgModal>
+  );
+}
+
+function CatalogItems() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
+  const [dept, setDept] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [wizard, setWizard] = useState(false);
+  const [notice, setNotice] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    try { setItems(await listCatalog()); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the catalog."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await saveCatalogItem({ ...draft, rate: parseFloat(String(draft.rate).replace(/[^0-9.\-]/g, "")) || 0 });
+      setDraft(null);
+      await load();
+    } catch (e) { setErr((e && e.message) || "Couldn't save."); }
+    setBusy(false);
+  };
+
+  const remove = async (it) => {
+    if (!window.confirm("Delete " + it.name + "? It will also be removed from any package that contains it.")) return;
+    try { await deleteCatalogItem(it.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete."); }
+  };
+
+  const shown = items.filter((it) => {
+    if (dept && it.department !== dept) return false;
+    if (!q.trim()) return true;
+    return it.name.toLowerCase().indexOf(q.trim().toLowerCase()) >= 0;
+  });
+
+  return (
+    <div>
+      <div style={{ ...ctgRow, marginBottom: 12 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search items…" style={{ flex: "1 1 200px" }} />
+        <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", taxable: true, components: [], notes: "" })}>+ Add item</button>
+        <button className="btn ghost" onClick={() => setWizard(true)}>Import from quote PDF</button>
+      </div>
+      <div style={{ ...ctgRow, marginBottom: 14 }}>
+        <button onClick={() => setDept("")} style={ctgChip(!dept, "#96A0B2")}>All ({items.length})</button>
+        {CTG_DEPTS.map((d) => {
+          const n = items.filter((it) => it.department === d).length;
+          if (!n) return null;
+          return <button key={d} onClick={() => setDept(dept === d ? "" : d)} style={ctgChip(dept === d, CTG_DEPT_COLOR[d])}>{d} ({n})</button>;
+        })}
+      </div>
+
+      {notice ? <div style={{ ...ctgHint, color: "var(--green)" }}>{notice}</div> : null}
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Loading…</div> : null}
+
+      {!loading && !items.length ? (
+        <div style={{ ...ctgHint, padding: 34, textAlign: "center" }}>
+          Nothing in the catalog yet. Import an itemised Current RMS quote to seed it, or add items one at a time.
+        </div>
+      ) : null}
+
+      {shown.map((it) => (
+        <div key={it.id} style={ctgListRow}>
+          <span style={{ width: 8, height: 8, borderRadius: "50%", background: CTG_DEPT_COLOR[it.department] || "#96A0B2", flex: "0 0 auto" }} />
+          <span style={{ flex: 1, minWidth: 140, fontSize: 14, fontWeight: 600 }}>
+            {it.name}
+            {it.components && it.components.length ? <span style={{ color: "var(--dim)", fontWeight: 500, fontSize: 12 }}> · package of {it.components.length}</span> : null}
+          </span>
+          <span style={{ color: "var(--dim)", fontSize: 12, width: 72 }}>{it.department}</span>
+          <span style={{ fontVariantNumeric: "tabular-nums", fontSize: 14, width: 96, textAlign: "right" }}>{ctgMoney(it.rate)}</span>
+          <span style={{ color: "var(--faint)", fontSize: 11, width: 34 }}>{it.taxable ? "tax" : ""}</span>
+          <button className="btn ghost" onClick={() => setDraft({ ...it, rate: String(it.rate) })} style={{ padding: "5px 10px" }}>Edit</button>
+          <button className="btn ghost danger" onClick={() => remove(it)} style={{ padding: "5px 10px" }}>Delete</button>
+        </div>
+      ))}
+
+      {draft ? (
+        <CtgModal title={draft.id ? "Edit item" : "New item"} onClose={() => setDraft(null)}>
+          <CtgItemForm draft={draft} setDraft={setDraft} catalog={items} onSave={save} onCancel={() => setDraft(null)} busy={busy} />
+        </CtgModal>
+      ) : null}
+
+      {wizard ? (
+        <CtgImportWizard
+          onCancel={() => setWizard(false)}
+          onDone={async (n) => { setWizard(false); setNotice("Imported " + n + " items."); await load(); }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogClients() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { setRows(await listClients()); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load clients."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setBusy(true);
+    try { await saveClient(draft); setDraft(null); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't save."); }
+    setBusy(false);
+  };
+  const remove = async (r) => {
+    const kids = rows.filter((x) => x.parentId === r.id).length;
+    const msg = kids ? "Delete " + r.name + "? Its " + kids + " contact(s) will be kept but no longer grouped under it." : "Delete " + r.name + "?";
+    if (!window.confirm(msg)) return;
+    try { await deleteClient(r.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete."); }
+  };
+
+  const companies = rows.filter((r) => !r.parentId);
+  const orphans = rows.filter((r) => r.parentId && !rows.some((c) => c.id === r.parentId));
+  const blank = (parentId) => ({ parentId: parentId || null, name: "", contactName: "", email: "", phone: "", billingAddress: "", notes: "" });
+
+  return (
+    <div>
+      <div style={{ ...ctgRow, marginBottom: 12 }}>
+        <button className="btn" onClick={() => setDraft(blank(null))}>+ Add company</button>
+        <span style={ctgHint}>A company can hold several contacts — divisions, meeting planners, whoever you bill.</span>
+      </div>
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Loading…</div> : null}
+      {!loading && !rows.length ? <div style={{ ...ctgHint, padding: 34, textAlign: "center" }}>No clients yet.</div> : null}
+
+      {companies.map((c) => {
+        const kids = rows.filter((r) => r.parentId === c.id);
+        return (
+          <div key={c.id} style={{ marginBottom: 12 }}>
+            <div style={{ ...ctgListRow, marginBottom: 4 }}>
+              <span style={{ flex: 1, minWidth: 140, fontSize: 15, fontWeight: 700 }}>{c.name}</span>
+              {c.contactName ? <span style={{ color: "var(--dim)", fontSize: 12 }}>{c.contactName}</span> : null}
+              {c.email ? <span style={{ color: "var(--dim)", fontSize: 12 }}>{c.email}</span> : null}
+              <button className="btn ghost" onClick={() => setDraft(blank(c.id))} style={{ padding: "5px 10px" }}>+ Contact</button>
+              <button className="btn ghost" onClick={() => setDraft(c)} style={{ padding: "5px 10px" }}>Edit</button>
+              <button className="btn ghost danger" onClick={() => remove(c)} style={{ padding: "5px 10px" }}>Delete</button>
+            </div>
+            {kids.map((k) => (
+              <div key={k.id} style={{ ...ctgListRow, marginLeft: 26, marginBottom: 4, background: "var(--panel2)" }}>
+                <span style={{ flex: 1, minWidth: 120, fontSize: 13 }}>{k.name}</span>
+                <span style={{ color: "var(--dim)", fontSize: 12 }}>{k.contactName}</span>
+                <span style={{ color: "var(--dim)", fontSize: 12 }}>{k.email}</span>
+                <button className="btn ghost" onClick={() => setDraft(k)} style={{ padding: "4px 9px" }}>Edit</button>
+                <button className="btn ghost danger" onClick={() => remove(k)} style={{ padding: "4px 9px" }}>Delete</button>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+
+      {orphans.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div style={{ ...ctgLabel, marginBottom: 6 }}>Ungrouped contacts</div>
+          {orphans.map((k) => (
+            <div key={k.id} style={ctgListRow}>
+              <span style={{ flex: 1, fontSize: 13 }}>{k.name}</span>
+              <button className="btn ghost" onClick={() => setDraft(k)} style={{ padding: "4px 9px" }}>Edit</button>
+              <button className="btn ghost danger" onClick={() => remove(k)} style={{ padding: "4px 9px" }}>Delete</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {draft ? (
+        <CtgModal title={draft.id ? "Edit" : draft.parentId ? "New contact" : "New company"} onClose={() => setDraft(null)}>
+          <div style={{ marginBottom: 10 }}>
+            <label style={ctgLabel}>{draft.parentId ? "Contact / division label" : "Company name"}</label>
+            <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={{ width: "100%" }} placeholder={draft.parentId ? "e.g. Meetings & Events" : "e.g. Open Sauce"} />
+          </div>
+          <div style={{ ...ctgRow, marginBottom: 10 }}>
+            <div style={{ flex: "1 1 180px" }}>
+              <label style={ctgLabel}>Contact name</label>
+              <input value={draft.contactName} onChange={(e) => setDraft({ ...draft, contactName: e.target.value })} style={{ width: "100%" }} />
+            </div>
+            <div style={{ flex: "1 1 180px" }}>
+              <label style={ctgLabel}>Phone</label>
+              <input value={draft.phone} onChange={(e) => setDraft({ ...draft, phone: fmtPhone(e.target.value) })} style={{ width: "100%" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={ctgLabel}>Email</label>
+            <input value={draft.email} onChange={(e) => setDraft({ ...draft, email: e.target.value })} style={{ width: "100%" }} />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={ctgLabel}>Billing address</label>
+            <textarea value={draft.billingAddress} onChange={(e) => setDraft({ ...draft, billingAddress: e.target.value })} rows={3} style={{ width: "100%" }} />
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <label style={ctgLabel}>Notes</label>
+            <input value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} style={{ width: "100%" }} />
+          </div>
+          <div style={{ ...ctgRow, marginTop: 16, justifyContent: "flex-end" }}>
+            <button className="btn ghost" onClick={() => setDraft(null)}>Cancel</button>
+            <button className="btn amber" onClick={save} disabled={busy || !draft.name.trim()}>{busy ? "Saving…" : "Save"}</button>
+          </div>
+        </CtgModal>
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogVenues() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [q, setQ] = useState("");
+  const [draft, setDraft] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { setRows(await listVenues()); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load venues."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const save = async () => {
+    setBusy(true);
+    try { await saveVenue(draft); setDraft(null); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't save."); }
+    setBusy(false);
+  };
+  const remove = async (r) => {
+    if (!window.confirm("Delete " + r.name + "?")) return;
+    try { await deleteVenue(r.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete."); }
+  };
+
+  const shown = q.trim() ? rows.filter((r) => (r.name + " " + r.city).toLowerCase().indexOf(q.trim().toLowerCase()) >= 0) : rows;
+
+  return (
+    <div>
+      <div style={{ ...ctgRow, marginBottom: 12 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search venues…" style={{ flex: "1 1 200px" }} />
+        <button className="btn" onClick={() => setDraft({ name: "", address: "", city: "", state: "", zip: "", notes: "" })}>+ Add venue</button>
+      </div>
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Loading…</div> : null}
+      {!loading && !rows.length ? <div style={{ ...ctgHint, padding: 34, textAlign: "center" }}>No venues yet.</div> : null}
+
+      {shown.map((v) => (
+        <div key={v.id} style={ctgListRow}>
+          <span style={{ flex: 1, minWidth: 140, fontSize: 14, fontWeight: 600 }}>{v.name}</span>
+          <span style={{ color: "var(--dim)", fontSize: 12, flex: "1 1 180px" }}>
+            {[v.address, v.city, v.state, v.zip].filter(Boolean).join(", ")}
+          </span>
+          <button className="btn ghost" onClick={() => setDraft(v)} style={{ padding: "5px 10px" }}>Edit</button>
+          <button className="btn ghost danger" onClick={() => remove(v)} style={{ padding: "5px 10px" }}>Delete</button>
+        </div>
+      ))}
+
+      {draft ? (
+        <CtgModal title={draft.id ? "Edit venue" : "New venue"} onClose={() => setDraft(null)}>
+          <div style={{ marginBottom: 10 }}>
+            <label style={ctgLabel}>Venue name</label>
+            <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} style={{ width: "100%" }} />
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={ctgLabel}>Address</label>
+            <input value={draft.address} onChange={(e) => setDraft({ ...draft, address: e.target.value })} style={{ width: "100%" }} />
+          </div>
+          <div style={{ ...ctgRow, marginBottom: 10 }}>
+            <div style={{ flex: "1 1 160px" }}>
+              <label style={ctgLabel}>City</label>
+              <input value={draft.city} onChange={(e) => setDraft({ ...draft, city: e.target.value })} style={{ width: "100%" }} />
+            </div>
+            <div style={{ flex: "0 0 80px" }}>
+              <label style={ctgLabel}>State</label>
+              <input value={draft.state} onChange={(e) => setDraft({ ...draft, state: e.target.value })} style={{ width: "100%" }} />
+            </div>
+            <div style={{ flex: "0 0 100px" }}>
+              <label style={ctgLabel}>ZIP</label>
+              <input value={draft.zip} onChange={(e) => setDraft({ ...draft, zip: e.target.value })} style={{ width: "100%" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 4 }}>
+            <label style={ctgLabel}>Notes</label>
+            <textarea value={draft.notes} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} rows={3} style={{ width: "100%" }} placeholder="Dock access, union rules, ceiling height — anything worth remembering." />
+          </div>
+          <div style={{ ...ctgRow, marginTop: 16, justifyContent: "flex-end" }}>
+            <button className="btn ghost" onClick={() => setDraft(null)}>Cancel</button>
+            <button className="btn amber" onClick={save} disabled={busy || !draft.name.trim()}>{busy ? "Saving…" : "Save"}</button>
+          </div>
+        </CtgModal>
+      ) : null}
+    </div>
+  );
+}
+
+function CatalogScreen({ onClose }) {
+  const [tab, setTab] = useState("catalog");
+  const tabs = [
+    { key: "catalog", label: "Pricing catalog" },
+    { key: "clients", label: "Clients" },
+    { key: "venues", label: "Venues" },
+  ];
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Catalog</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+      <div style={{ ...ctgRow, marginBottom: 18 }}>
+        {tabs.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={ctgChip(tab === t.key, "#FFB020")}>{t.label}</button>
+        ))}
+      </div>
+      {tab === "catalog" ? <CatalogItems /> : null}
+      {tab === "clients" ? <CatalogClients /> : null}
+      {tab === "venues" ? <CatalogVenues /> : null}
+    </div>
+  );
+}
+
+function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onPeople, onCatalog, onLogout }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
@@ -1876,6 +2447,7 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
         <div className="cal-top-actions">
           {isAdmin && <button className="btn ghost" onClick={onPeople}>People &amp; Access</button>}
           {isAdmin && <button className="btn ghost" onClick={onPipeline}>Pipeline</button>}
+          {isAdmin && <button className="btn ghost" onClick={onCatalog}>Catalog</button>}
           {isAdmin && <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>}
           {isAdmin && <button className="btn" onClick={onNew}>+ New show</button>}
           {isAdmin && <button className="btn ghost" onClick={onDemo}>Demo</button>}

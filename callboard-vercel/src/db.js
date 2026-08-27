@@ -120,3 +120,32 @@ export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + en
 export const importQuote = (pdf) => api("POST", "/api/import-quote", { pdf });
 // Import an agenda / run-of-show and turn it into schedule days (paste text or a PDF).
 export const importAgenda = (payload) => api("POST", "/api/import-schedule", payload);
+
+/* ============================================================
+   QUOTING — Stage 1: catalog, clients, venues.
+   All admin-gated on the server. Crew never receive pricing.
+   ============================================================ */
+
+// Pricing catalog (admin only, both reading and writing).
+export const listCatalog = () => api("GET", "/api/pricing");
+export const saveCatalogItem = (item) => api("POST", "/api/pricing", { item });
+export const deleteCatalogItem = (id) =>
+  api("DELETE", "/api/pricing?id=" + encodeURIComponent(id));
+// Upsert many at once. Matched on name, so re-importing updates rates
+// rather than creating duplicates, and existing packages are left intact.
+export const bulkCatalogImport = (items) => api("POST", "/api/pricing", { bulk: items });
+// Read a Current RMS quote PDF and hand back rows to preview. Saves nothing.
+export const importCatalogPdf = (pdf) => api("POST", "/api/import-catalog", { pdf });
+
+// Clients — a row with no parentId is a company; rows with a parentId are
+// contacts / divisions under it.
+export const listClients = () => api("GET", "/api/directory?kind=clients");
+export const saveClient = (row) => api("POST", "/api/directory?kind=clients", row);
+export const deleteClient = (id) =>
+  api("DELETE", "/api/directory?kind=clients&id=" + encodeURIComponent(id));
+
+// Venues.
+export const listVenues = () => api("GET", "/api/directory?kind=venues");
+export const saveVenue = (row) => api("POST", "/api/directory?kind=venues", row);
+export const deleteVenue = (id) =>
+  api("DELETE", "/api/directory?kind=venues&id=" + encodeURIComponent(id));
