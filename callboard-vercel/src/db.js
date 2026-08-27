@@ -149,3 +149,20 @@ export const listVenues = () => api("GET", "/api/directory?kind=venues");
 export const saveVenue = (row) => api("POST", "/api/directory?kind=venues", row);
 export const deleteVenue = (id) =>
   api("DELETE", "/api/directory?kind=venues&id=" + encodeURIComponent(id));
+
+/* ---------- Quotes (admin only; crew never load these) ---------- */
+export const listQuotes = () => api("GET", "/api/quotes");
+export const getQuote = (id) => api("GET", "/api/quotes?id=" + encodeURIComponent(id));
+export const listQuoteRevisions = (familyId) =>
+  api("GET", "/api/quotes?family=" + encodeURIComponent(familyId));
+export const createQuote = (payload) => api("POST", "/api/quotes", payload);
+export const saveQuote = (id, payload) =>
+  api("PATCH", "/api/quotes?id=" + encodeURIComponent(id), payload);
+// Status changes work even on a locked version (that is how you mark it won).
+export const setQuoteStatus = (id, status) =>
+  api("PATCH", "/api/quotes?id=" + encodeURIComponent(id) + "&status=" + encodeURIComponent(status));
+// Duplicate a quote as the next version, back in draft.
+export const reviseQuote = (id) =>
+  api("POST", "/api/quotes?revise=" + encodeURIComponent(id));
+export const deleteQuote = (id) =>
+  api("DELETE", "/api/quotes?id=" + encodeURIComponent(id));

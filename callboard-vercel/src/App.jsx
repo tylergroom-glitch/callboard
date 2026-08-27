@@ -52,6 +52,14 @@ import {
   listVenues,
   saveVenue,
   deleteVenue,
+  listQuotes,
+  getQuote,
+  listQuoteRevisions,
+  createQuote,
+  saveQuote,
+  setQuoteStatus,
+  reviseQuote,
+  deleteQuote,
 } from "./db.js";
 
 /* ============================================================
@@ -850,6 +858,7 @@ function Callboard({ auth, onLogout }) {
   const [atLanding, setAtLanding] = useState(false);
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [quotesOpen, setQuotesOpen] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -1164,12 +1173,19 @@ function Callboard({ auth, onLogout }) {
         <CatalogScreen onClose={() => setCatalogOpen(false)} />
       </div>
     );
+  if (isSuperAdmin && quotesOpen)
+    return (
+      <div className="cb">
+        <style>{CSS}</style>
+        <QuotesScreen onClose={() => setQuotesOpen(false)} />
+      </div>
+    );
   if (atLanding)
     return (
       <div className="cb">
         <style>{CSS}</style>
         {peopleOpen && <PeopleAccess events={events} onClose={() => setPeopleOpen(false)} />}
-        <ShowsCalendar events={events} isAdmin={isSuperAdmin} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onPeople={() => setPeopleOpen(true)} onCatalog={() => setCatalogOpen(true)} onLogout={onLogout} />
+        <ShowsCalendar events={events} isAdmin={isSuperAdmin} onOpen={openLandingShow} onNew={newEvent} onDemo={newDemoEvent} onPipeline={() => setPipelineOpen(true)} onPeople={() => setPeopleOpen(true)} onCatalog={() => setCatalogOpen(true)} onQuotes={() => setQuotesOpen(true)} onLogout={onLogout} />
       </div>
     );
 
@@ -2418,7 +2434,718 @@ function CatalogScreen({ onClose }) {
   );
 }
 
-function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onPeople, onCatalog, onLogout }) {
+/* ============================================================
+   QUOTING — Stage 2: the quote builder.
+   Reached from the Shows screen via the "Quotes" button. Admin only.
+   ============================================================ */
+
+/* Shared look, borrowed from the catalog screens above. */
+const qtRow = ctgRow;
+const qtLabel = ctgLabel;
+const qtHint = ctgHint;
+const qtErr = ctgErr;
+const qtListRow = ctgListRow;
+
+const QT_TRUCKS = [
+  { key: "van", label: "Van", rate: 0.75 },
+  { key: "box", label: "Box Truck", rate: 3 },
+  { key: "semi", label: "Semi", rate: 4 },
+];
+const QT_STATUS = {
+  draft: { label: "Draft", color: "#96A0B2" },
+  sent: { label: "Sent", color: "#5A7FE0" },
+  won: { label: "Won", color: "#5FD08A" },
+  lost: { label: "Lost", color: "#FF6B6B" },
+};
+const QT_DEFAULT_DEPOSITS = [
+  { label: "On signature", pct: 25 },
+  { label: "30 days before load-in", pct: 50 },
+  { label: "Balance after show", pct: 25 },
+];
+
+const qtNum = (v) => {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
+  return isFinite(n) ? n : 0;
+};
+/* Mirrors the maths in api/quotes.js. Keep the two in step. */
+const qtLineTotal = (l) => {
+  if (!l) return 0;
+  const d = Math.min(Math.max(qtNum(l.discount), 0), 100);
+  return Math.round(qtNum(l.qty) * qtNum(l.days) * qtNum(l.rate) * (1 - d / 100) * 100) / 100;
+};
+const qtMoney = (n) => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+const qtMoney0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
+
+function qtNormalize(data) {
+  const d = data && typeof data === "object" ? data : {};
+  return {
+    groups: Array.isArray(d.groups) ? d.groups : [],
+    lines: Array.isArray(d.lines) ? d.lines : [],
+    deposits: Array.isArray(d.deposits) ? d.deposits : [],
+    truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : { van: 0.75, box: 3, semi: 4 },
+    displayMode: d.displayMode === "groups" ? "groups" : "itemized",
+    client: d.client && typeof d.client === "object" ? d.client : {},
+    venue: d.venue && typeof d.venue === "object" ? d.venue : {},
+    notes: d.notes || "",
+  };
+}
+
+/* ---------- small shared bits ---------- */
+
+function QtBadge({ status }) {
+  const s = QT_STATUS[status] || QT_STATUS.draft;
+  return (
+    <span style={{ background: s.color, color: "#101218", borderRadius: 999, padding: "3px 10px", fontSize: 11, fontWeight: 800, textTransform: "uppercase", letterSpacing: ".04em" }}>
+      {s.label}
+    </span>
+  );
+}
+
+/* Type-to-find over the catalog. Enter picks the first hit. */
+function QtCatalogPicker({ catalog, onPick, placeholder }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const term = q.trim().toLowerCase();
+  const hits = term ? catalog.filter((c) => c.name.toLowerCase().indexOf(term) >= 0).slice(0, 10) : [];
+  const take = (h) => { onPick(h); setQ(""); setOpen(false); };
+  return (
+    <div style={{ position: "relative", flex: "1 1 260px" }}>
+      <input
+        value={q}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 160)}
+        onKeyDown={(e) => { if (e.key === "Enter" && hits.length) { e.preventDefault(); take(hits[0]); } }}
+        placeholder={placeholder || "Search the catalog to add a line…"}
+        style={{ width: "100%" }}
+      />
+      {open && hits.length > 0 && (
+        <div style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 30, background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 8, marginTop: 3, overflow: "hidden", maxHeight: 280, overflowY: "auto" }}>
+          {hits.map((h) => (
+            <button key={h.id} onMouseDown={(e) => e.preventDefault()} onClick={() => take(h)}
+              style={{ display: "block", width: "100%", textAlign: "left", background: "none", border: 0, color: "var(--ink)", padding: "8px 11px", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>
+              {h.name}
+              <span style={{ color: "var(--dim)" }}>
+                {" · " + h.department + " · " + qtMoney(h.rate) + "/day"}
+                {h.components && h.components.length ? " · package" : ""}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Company first, then which contact at that company you are billing. */
+function QtClientPicker({ clients, clientId, contactId, onChange }) {
+  const companies = clients.filter((c) => !c.parentId);
+  const contacts = clientId ? clients.filter((c) => c.parentId === clientId) : [];
+  const company = clients.find((c) => c.id === clientId) || null;
+  const contact = clients.find((c) => c.id === contactId) || null;
+  const snapshot = (co, ct) => {
+    const src = ct || co;
+    if (!src) return {};
+    return {
+      company: co ? co.name : "",
+      contactLabel: ct ? ct.name : "",
+      contactName: src.contactName || (co && co.contactName) || "",
+      email: src.email || (co && co.email) || "",
+      phone: src.phone || (co && co.phone) || "",
+      billingAddress: src.billingAddress || (co && co.billingAddress) || "",
+    };
+  };
+  return (
+    <div style={{ ...qtRow, flex: "1 1 320px" }}>
+      <div style={{ flex: "1 1 160px" }}>
+        <label style={qtLabel}>Client</label>
+        <select
+          value={clientId || ""}
+          onChange={(e) => {
+            const co = clients.find((c) => c.id === e.target.value) || null;
+            onChange({ clientId: co ? co.id : null, contactId: null, snapshot: snapshot(co, null) });
+          }}
+          style={{ width: "100%" }}
+        >
+          <option value="">— pick a client —</option>
+          {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+      </div>
+      {contacts.length > 0 && (
+        <div style={{ flex: "1 1 160px" }}>
+          <label style={qtLabel}>Contact</label>
+          <select
+            value={contactId || ""}
+            onChange={(e) => {
+              const ct = clients.find((c) => c.id === e.target.value) || null;
+              onChange({ clientId: clientId, contactId: ct ? ct.id : null, snapshot: snapshot(company, ct) });
+            }}
+            style={{ width: "100%" }}
+          >
+            <option value="">— pick a contact —</option>
+            {contacts.map((c) => <option key={c.id} value={c.id}>{c.name}{c.contactName ? " · " + c.contactName : ""}</option>)}
+          </select>
+        </div>
+      )}
+      {contact && contact.email ? <span style={{ ...qtHint, flexBasis: "100%" }}>{contact.email}</span> : null}
+    </div>
+  );
+}
+
+/* Enter the miles once; see what each vehicle would cost; pick one. */
+function QtTruckModal({ rates, onAdd, onClose }) {
+  const [miles, setMiles] = useState("");
+  const [r, setR] = useState(rates || { van: 0.75, box: 3, semi: 4 });
+  const m = qtNum(miles);
+  return (
+    <CtgModal title="Trucking" onClose={onClose}>
+      <p style={qtHint}>Enter the miles once. Pick whichever vehicle you are actually sending and it becomes a line item.</p>
+      <div style={{ marginTop: 12, marginBottom: 14 }}>
+        <label style={qtLabel}>Total miles</label>
+        <input value={miles} onChange={(e) => setMiles(e.target.value)} inputMode="decimal" placeholder="e.g. 450" style={{ width: 160 }} autoFocus />
+      </div>
+      {QT_TRUCKS.map((t) => {
+        const rate = qtNum(r[t.key]);
+        const cost = Math.round(m * rate * 100) / 100;
+        return (
+          <div key={t.key} style={{ ...qtListRow, opacity: m > 0 ? 1 : 0.55 }}>
+            <span style={{ flex: 1, fontSize: 14, fontWeight: 600 }}>{t.label}</span>
+            <input
+              value={r[t.key]}
+              onChange={(e) => setR({ ...r, [t.key]: e.target.value })}
+              inputMode="decimal"
+              style={{ width: 78, textAlign: "right" }}
+              title="Rate per mile"
+            />
+            <span style={{ color: "var(--dim)", fontSize: 12, width: 40 }}>/mi</span>
+            <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 15, fontWeight: 700 }}>{qtMoney(cost)}</span>
+            <button className="btn amber" disabled={!(m > 0)} onClick={() => onAdd({ vehicle: t.label, miles: m, rate, total: cost, rates: r })} style={{ padding: "6px 12px" }}>Use</button>
+          </div>
+        );
+      })}
+      <p style={{ ...qtHint, marginTop: 12 }}>Rates are editable here and saved with this quote.</p>
+    </CtgModal>
+  );
+}
+
+/* ---------- the editor ---------- */
+
+function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged }) {
+  const [q, setQ] = useState(null);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [save, setSave] = useState("idle"); // idle | saving | saved
+  const [sel, setSel] = useState(() => new Set());
+  const [truck, setTruck] = useState(false);
+  const [revs, setRevs] = useState([]);
+  const [bulk, setBulk] = useState({ qty: "", days: "", discount: "" });
+  const timer = useRef(null);
+  const dirty = useRef(false);
+  const locked = !!q && q.status !== "draft";
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const full = await getQuote(quoteId);
+      setQ(full);
+      setData(qtNormalize(full.data));
+      setErr("");
+      try { setRevs(await listQuoteRevisions(full.familyId)); } catch (e) { setRevs([]); }
+    } catch (e) { setErr((e && e.message) || "Couldn't load that quote."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, [quoteId]);
+
+  /* Auto-save: every edit schedules a write about a second later, so a burst
+     of typing turns into one request instead of dozens. The pending write
+     reads from refs rather than the values captured when it was scheduled,
+     so fast typing can never save a stale copy. */
+  const qRef = useRef(null);
+  const dataRef = useRef(null);
+  useEffect(() => { qRef.current = q; }, [q]);
+  useEffect(() => { dataRef.current = data; }, [data]);
+
+  const touch = (nextData, nextQ) => {
+    if (locked) return;
+    if (nextData) { dataRef.current = nextData; setData(nextData); }
+    if (nextQ) { qRef.current = nextQ; setQ(nextQ); }
+    dirty.current = true;
+    setSave("saving");
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(async () => {
+      const body = qRef.current;
+      const blob = dataRef.current;
+      if (!body) return;
+      try {
+        await saveQuote(quoteId, {
+          name: body.name,
+          clientId: body.clientId,
+          contactId: body.contactId,
+          venueId: body.venueId,
+          startDate: body.startDate || null,
+          endDate: body.endDate || null,
+          data: blob,
+        });
+        dirty.current = false;
+        setSave("saved");
+        if (onChanged) onChanged();
+        window.setTimeout(() => setSave((s) => (s === "saved" ? "idle" : s)), 1600);
+      } catch (e) {
+        setSave("idle");
+        setErr((e && e.message) || "Couldn't save.");
+      }
+    }, 900);
+  };
+
+  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
+
+  if (loading) return <div className="cal-wrap"><div style={{ ...qtHint, padding: 40, textAlign: "center" }}>Loading…</div></div>;
+  if (!q || !data) return <div className="cal-wrap"><div style={qtErr}>{err || "Not found."}</div><button className="btn ghost" onClick={onClose}>Back</button></div>;
+
+  const lines = data.lines;
+  const groups = data.groups;
+  const ungrouped = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
+  const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
+  const groupTotal = (gid) => lines.filter((l) => l.groupId === gid).reduce((t, l) => t + qtLineTotal(l), 0);
+
+  const setLines = (next) => touch({ ...data, lines: next });
+  const patchLine = (id, patch) => setLines(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const removeLine = (id) => { setLines(lines.filter((l) => l.id !== id)); setSel((prev) => { const n = new Set(prev); n.delete(id); return n; }); };
+
+  const addFromCatalog = (hit, groupId) => {
+    setLines(lines.concat([{
+      id: uid(), kind: "item", groupId: groupId || null, catalogId: hit.id,
+      name: hit.name, department: hit.department,
+      qty: 1, days: 1, rate: hit.rate, discount: 0,
+    }]));
+  };
+  const addBlank = (groupId) => {
+    setLines(lines.concat([{ id: uid(), kind: "item", groupId: groupId || null, catalogId: null, name: "", department: "Misc", qty: 1, days: 1, rate: 0, discount: 0 }]));
+  };
+  const addGroup = () => {
+    const name = window.prompt("Group name (e.g. Main Stage, Ballroom, Breakouts)");
+    if (!name || !name.trim()) return;
+    touch({ ...data, groups: groups.concat([{ id: uid(), name: name.trim() }]) });
+  };
+  const renameGroup = (g) => {
+    const name = window.prompt("Rename group", g.name);
+    if (!name || !name.trim()) return;
+    touch({ ...data, groups: groups.map((x) => (x.id === g.id ? { ...x, name: name.trim() } : x)) });
+  };
+  const removeGroup = (g) => {
+    const n = lines.filter((l) => l.groupId === g.id).length;
+    if (n && !window.confirm("Delete " + g.name + "? Its " + n + " line(s) move to Ungrouped.")) return;
+    touch({ ...data, groups: groups.filter((x) => x.id !== g.id), lines: lines.map((l) => (l.groupId === g.id ? { ...l, groupId: null } : l)) });
+  };
+
+  const toggleSel = (id) => setSel((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const applyBulk = () => {
+    if (!sel.size) return;
+    setLines(lines.map((l) => {
+      if (!sel.has(l.id)) return l;
+      const patch = {};
+      if (bulk.qty !== "") patch.qty = qtNum(bulk.qty);
+      if (bulk.days !== "") patch.days = qtNum(bulk.days);
+      if (bulk.discount !== "") patch.discount = qtNum(bulk.discount);
+      return { ...l, ...patch };
+    }));
+    setBulk({ qty: "", days: "", discount: "" });
+    setSel(new Set());
+  };
+
+  const addTruck = (t) => {
+    setTruck(false);
+    touch({
+      ...data,
+      truckRates: { van: qtNum(t.rates.van), box: qtNum(t.rates.box), semi: qtNum(t.rates.semi) },
+      lines: lines.concat([{
+        id: uid(), kind: "trucking", groupId: null, catalogId: null,
+        name: "Trucking — " + t.vehicle + " (" + t.miles.toLocaleString() + " mi @ " + qtMoney(t.rate) + "/mi)",
+        department: "Misc", qty: 1, days: 1, rate: t.total, discount: 0,
+      }]),
+    });
+  };
+
+  const buildDeposits = () => {
+    const rows = QT_DEFAULT_DEPOSITS.map((d, i) => ({ id: uid(), label: d.label, pct: d.pct, dueDate: "", paid: false, _i: i }));
+    touch({ ...data, deposits: rows.map(({ _i, ...r }) => r) });
+  };
+  const depAmount = (d, i, all) => {
+    // The last row takes whatever is left so the rows always sum to the total
+    // exactly, instead of drifting a few cents from rounding.
+    if (i === all.length - 1) {
+      const before = all.slice(0, -1).reduce((t, x) => t + Math.round(grand * (qtNum(x.pct) / 100) * 100) / 100, 0);
+      return Math.round((grand - before) * 100) / 100;
+    }
+    return Math.round(grand * (qtNum(d.pct) / 100) * 100) / 100;
+  };
+  const setDeposits = (next) => touch({ ...data, deposits: next });
+
+  const doStatus = async (st) => {
+    if (st === "sent" && !window.confirm("Mark v" + q.version + " as sent?\n\nThis locks it so it always matches what the client received. To keep editing, make a revision.")) return;
+    try {
+      await setQuoteStatus(q.id, st);
+      await load();
+      if (onChanged) onChanged();
+    } catch (e) { setErr((e && e.message) || "Couldn't change the status."); }
+  };
+  const doRevise = async () => {
+    try {
+      const made = await reviseQuote(q.id);
+      if (onChanged) onChanged();
+      onClose(made.id);
+    } catch (e) { setErr((e && e.message) || "Couldn't create a revision."); }
+  };
+
+  const lineRow = (l) => {
+    const on = sel.has(l.id);
+    return (
+      <div key={l.id} style={{ ...qtListRow, marginBottom: 4, background: on ? "var(--panel2)" : "var(--panel)" }}>
+        {!locked && <input type="checkbox" checked={on} onChange={() => toggleSel(l.id)} style={{ width: 15, height: 15, flex: "0 0 auto" }} />}
+        <input value={l.name} onChange={(e) => patchLine(l.id, { name: e.target.value })} disabled={locked} style={{ flex: "1 1 180px", minWidth: 130 }} />
+        <input value={l.qty} onChange={(e) => patchLine(l.id, { qty: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Qty" />
+        <input value={l.days} onChange={(e) => patchLine(l.id, { days: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Days billed" />
+        <input value={l.rate} onChange={(e) => patchLine(l.id, { rate: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 88, textAlign: "right" }} title="Rate per day" />
+        <input value={l.discount} onChange={(e) => patchLine(l.id, { discount: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Discount %" />
+        <span style={{ width: 104, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 14, fontWeight: 700 }}>{qtMoney(qtLineTotal(l))}</span>
+        {!locked && (
+          <select value={l.groupId || ""} onChange={(e) => patchLine(l.id, { groupId: e.target.value || null })} style={{ width: 120 }} title="Group">
+            <option value="">Ungrouped</option>
+            {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select>
+        )}
+        {!locked && <button className="btn ghost danger" onClick={() => removeLine(l.id)} style={{ padding: "4px 9px" }}>×</button>}
+      </div>
+    );
+  };
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <h1 className="cal-h1" style={{ margin: 0 }}>{q.name || "Untitled quote"}</h1>
+          <span style={{ color: "var(--dim)", fontSize: 13 }}>v{q.version}</span>
+          <QtBadge status={q.status} />
+          {save === "saving" ? <span style={{ color: "var(--dim)", fontSize: 12 }}>Saving…</span> : null}
+          {save === "saved" ? <span style={{ color: "var(--green)", fontSize: 12 }}>Saved</span> : null}
+        </div>
+        <div className="cal-top-actions">
+          {locked ? <button className="btn amber" onClick={doRevise}>Make revision v{(revs.length ? Math.max.apply(null, revs.map((r) => r.version)) : q.version) + 1}</button> : null}
+          {q.status === "draft" ? <button className="btn" onClick={() => doStatus("sent")}>Mark sent</button> : null}
+          {q.status === "sent" ? <button className="btn" onClick={() => doStatus("won")}>Mark won</button> : null}
+          {q.status === "sent" ? <button className="btn ghost" onClick={() => doStatus("lost")}>Mark lost</button> : null}
+          <button className="btn ghost" onClick={() => onClose()}>Back to quotes</button>
+        </div>
+      </div>
+
+      {err ? <div style={qtErr}>{err}</div> : null}
+      {locked ? (
+        <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "var(--dim)" }}>
+          This version is locked so it keeps matching what the client received. Make a revision to keep working.
+        </div>
+      ) : null}
+
+      {revs.length > 1 && (
+        <div style={{ ...qtRow, marginBottom: 14 }}>
+          <span style={{ ...qtLabel, marginBottom: 0 }}>Revisions:</span>
+          {revs.map((r) => (
+            <button key={r.id} onClick={() => onClose(r.id)} style={ctgChip(r.id === q.id, "#FFB020")}>
+              v{r.version} · {qtMoney0(r.total)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ---- header fields ---- */}
+      <div className="panel" style={{ marginBottom: 14 }}>
+        <div style={{ ...qtRow, marginBottom: 10 }}>
+          <div style={{ flex: "1 1 220px" }}>
+            <label style={qtLabel}>Quote name</label>
+            <input value={q.name} onChange={(e) => touch(null, { ...q, name: e.target.value })} disabled={locked} style={{ width: "100%" }} placeholder="e.g. Open Sauce 2027 — General Session" />
+          </div>
+          <div style={{ flex: "0 0 150px" }}>
+            <label style={qtLabel}>Start date</label>
+            <input type="date" value={q.startDate || ""} onChange={(e) => touch(null, { ...q, startDate: e.target.value })} disabled={locked} style={{ width: "100%" }} />
+          </div>
+          <div style={{ flex: "0 0 150px" }}>
+            <label style={qtLabel}>End date</label>
+            <input type="date" value={q.endDate || ""} onChange={(e) => touch(null, { ...q, endDate: e.target.value })} disabled={locked} style={{ width: "100%" }} />
+          </div>
+        </div>
+        <div style={qtRow}>
+          {locked ? (
+            <div style={{ flex: "1 1 320px", fontSize: 13, color: "var(--dim)" }}>
+              {(data.client && data.client.company) || "No client"}{data.client && data.client.contactLabel ? " · " + data.client.contactLabel : ""}
+            </div>
+          ) : (
+            <QtClientPicker
+              clients={clients}
+              clientId={q.clientId}
+              contactId={q.contactId}
+              onChange={(v) => touch({ ...data, client: v.snapshot }, { ...q, clientId: v.clientId, contactId: v.contactId })}
+            />
+          )}
+          <div style={{ flex: "1 1 200px" }}>
+            <label style={qtLabel}>Venue</label>
+            {locked ? (
+              <div style={{ fontSize: 13, color: "var(--dim)" }}>{(data.venue && data.venue.name) || "—"}</div>
+            ) : (
+              <select
+                value={q.venueId || ""}
+                onChange={(e) => {
+                  const v = venues.find((x) => x.id === e.target.value) || null;
+                  touch({ ...data, venue: v ? { name: v.name, address: [v.address, v.city, v.state, v.zip].filter(Boolean).join(", ") } : {} }, { ...q, venueId: v ? v.id : null });
+                }}
+                style={{ width: "100%" }}
+              >
+                <option value="">— pick a venue —</option>
+                {venues.map((v) => <option key={v.id} value={v.id}>{v.name}{v.city ? " · " + v.city : ""}</option>)}
+              </select>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ---- toolbar ---- */}
+      {!locked && (
+        <div style={{ ...qtRow, marginBottom: 12 }}>
+          <QtCatalogPicker catalog={catalog} onPick={(h) => addFromCatalog(h, null)} />
+          <button className="btn ghost" onClick={() => addBlank(null)}>+ Blank line</button>
+          <button className="btn ghost" onClick={addGroup}>+ Group</button>
+          <button className="btn ghost" onClick={() => setTruck(true)}>Trucking…</button>
+        </div>
+      )}
+
+      {/* ---- bulk edit bar ---- */}
+      {!locked && sel.size > 0 && (
+        <div style={{ ...qtRow, background: "var(--panel2)", border: "1px solid var(--amber)", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.size} selected</span>
+          <span style={{ color: "var(--dim)", fontSize: 12 }}>Set</span>
+          <input value={bulk.qty} onChange={(e) => setBulk({ ...bulk, qty: e.target.value })} placeholder="Qty" style={{ width: 66 }} inputMode="decimal" />
+          <input value={bulk.days} onChange={(e) => setBulk({ ...bulk, days: e.target.value })} placeholder="Days" style={{ width: 66 }} inputMode="decimal" />
+          <input value={bulk.discount} onChange={(e) => setBulk({ ...bulk, discount: e.target.value })} placeholder="Disc %" style={{ width: 76 }} inputMode="decimal" />
+          <button className="btn amber" onClick={applyBulk} style={{ padding: "6px 12px" }}>Apply</button>
+          <button className="btn ghost" onClick={() => setSel(new Set())} style={{ padding: "6px 12px" }}>Clear</button>
+          <span style={{ ...qtHint, flexBasis: "100%", marginTop: 2 }}>Blank boxes are left alone — fill in only what you want to change.</span>
+        </div>
+      )}
+
+      {/* ---- column headings ---- */}
+      {lines.length > 0 && (
+        <div style={{ ...qtListRow, background: "transparent", border: 0, padding: "0 12px", marginBottom: 2, color: "var(--dim)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>
+          {!locked && <span style={{ width: 15, flex: "0 0 auto" }} />}
+          <span style={{ flex: "1 1 180px", minWidth: 130 }}>Item</span>
+          <span style={{ width: 54, textAlign: "center" }}>Qty</span>
+          <span style={{ width: 54, textAlign: "center" }}>Days</span>
+          <span style={{ width: 88, textAlign: "right" }}>Rate</span>
+          <span style={{ width: 54, textAlign: "center" }}>Disc</span>
+          <span style={{ width: 104, textAlign: "right" }}>Total</span>
+          {!locked && <span style={{ width: 120 }}>Group</span>}
+          {!locked && <span style={{ width: 26 }} />}
+        </div>
+      )}
+
+      {/* ---- grouped lines ---- */}
+      {groups.map((g) => (
+        <div key={g.id} style={{ marginBottom: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, marginTop: 6 }}>
+            <span style={{ fontSize: 15, fontWeight: 800 }}>{g.name}</span>
+            <span style={{ color: "var(--dim)", fontSize: 13 }}>{qtMoney(groupTotal(g.id))}</span>
+            {!locked && <button className="btn ghost" onClick={() => renameGroup(g)} style={{ padding: "3px 8px", fontSize: 12 }}>Rename</button>}
+            {!locked && <button className="btn ghost danger" onClick={() => removeGroup(g)} style={{ padding: "3px 8px", fontSize: 12 }}>Delete</button>}
+          </div>
+          {lines.filter((l) => l.groupId === g.id).map(lineRow)}
+          {!locked && (
+            <div style={{ ...qtRow, marginTop: 4, marginLeft: 2 }}>
+              <QtCatalogPicker catalog={catalog} onPick={(h) => addFromCatalog(h, g.id)} placeholder={"Add to " + g.name + "…"} />
+              <button className="btn ghost" onClick={() => addBlank(g.id)} style={{ padding: "6px 11px" }}>+ Blank</button>
+            </div>
+          )}
+        </div>
+      ))}
+
+      {ungrouped.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          {groups.length > 0 && <div style={{ fontSize: 15, fontWeight: 800, marginBottom: 6, marginTop: 6 }}>Ungrouped</div>}
+          {ungrouped.map(lineRow)}
+        </div>
+      )}
+
+      {!lines.length && (
+        <div style={{ ...qtHint, padding: 34, textAlign: "center" }}>
+          No lines yet. Search the catalog above to add your first one.
+        </div>
+      )}
+
+      {/* ---- grand total ---- */}
+      <div className="panel" style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+        <div style={{ ...qtRow }}>
+          <span style={{ ...qtLabel, marginBottom: 0 }}>Client sees</span>
+          <button onClick={() => touch({ ...data, displayMode: "itemized" })} disabled={locked} style={ctgChip(data.displayMode === "itemized", "#FFB020")}>Every line</button>
+          <button onClick={() => touch({ ...data, displayMode: "groups" })} disabled={locked} style={ctgChip(data.displayMode === "groups", "#FFB020")}>Group totals only</button>
+        </div>
+        <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{qtMoney(grand)}</div>
+      </div>
+
+      {/* ---- deposit schedule ---- */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
+          <span style={{ fontSize: 15, fontWeight: 800 }}>Payment schedule</span>
+          {!locked && <button className="btn ghost" onClick={buildDeposits} style={{ padding: "5px 11px" }}>{data.deposits.length ? "Reset to 25 / 50 / 25" : "Build 25 / 50 / 25"}</button>}
+        </div>
+        {!data.deposits.length ? (
+          <p style={qtHint}>No schedule yet. Build the standard three and edit from there, or add rows for whatever this client's terms are.</p>
+        ) : null}
+        {data.deposits.map((d, i, all) => (
+          <div key={d.id} style={{ ...qtListRow, marginBottom: 4 }}>
+            <input value={d.label} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, label: e.target.value } : x)))} disabled={locked} style={{ flex: "1 1 180px" }} />
+            <input value={d.pct} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, pct: e.target.value } : x)))} disabled={locked || i === all.length - 1} inputMode="decimal" style={{ width: 62, textAlign: "center" }} title={i === all.length - 1 ? "The last row is whatever is left over" : "Percent"} />
+            <span style={{ color: "var(--dim)", fontSize: 12, width: 14 }}>%</span>
+            <input type="date" value={d.dueDate || ""} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, dueDate: e.target.value } : x)))} disabled={locked} style={{ width: 148 }} />
+            <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{qtMoney(depAmount(d, i, all))}</span>
+            {!locked && <button className="btn ghost danger" onClick={() => setDeposits(all.filter((x) => x.id !== d.id))} style={{ padding: "4px 9px" }}>×</button>}
+          </div>
+        ))}
+        {!locked && data.deposits.length > 0 && (
+          <button className="btn ghost" onClick={() => setDeposits(data.deposits.concat([{ id: uid(), label: "", pct: 0, dueDate: "", paid: false }]))} style={{ padding: "5px 11px", marginTop: 4 }}>+ Row</button>
+        )}
+        {data.deposits.length > 0 && (
+          <p style={{ ...qtHint, marginTop: 8 }}>The last row is calculated as the remainder, so the schedule always adds up to {qtMoney(grand)} exactly.</p>
+        )}
+      </div>
+
+      {/* ---- notes ---- */}
+      <div className="panel" style={{ marginTop: 14 }}>
+        <label style={qtLabel}>Internal notes</label>
+        <textarea value={data.notes} onChange={(e) => touch({ ...data, notes: e.target.value })} disabled={locked} rows={3} style={{ width: "100%" }} placeholder="Never shown to the client." />
+      </div>
+
+      {truck ? <QtTruckModal rates={data.truckRates} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
+    </div>
+  );
+}
+
+/* ---------- the list ---------- */
+
+function QuotesScreen({ onClose }) {
+  const [rows, setRows] = useState([]);
+  const [catalog, setCatalog] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [venues, setVenues] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [openId, setOpenId] = useState(null);
+  const [filter, setFilter] = useState("");
+
+  const loadList = async () => {
+    try { setRows(await listQuotes()); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load quotes."); }
+  };
+  const loadAll = async () => {
+    setLoading(true);
+    await loadList();
+    try {
+      const [c, cl, v] = await Promise.all([listCatalog(), listClients(), listVenues()]);
+      setCatalog(c); setClients(cl); setVenues(v);
+    } catch (e) { /* the editor still works, just without pickers */ }
+    setLoading(false);
+  };
+  useEffect(() => { loadAll(); }, []);
+
+  const newQuote = async () => {
+    try {
+      const made = await createQuote({ name: "", data: { groups: [], lines: [], deposits: [] } });
+      await loadList();
+      setOpenId(made.id);
+    } catch (e) { setErr((e && e.message) || "Couldn't create a quote."); }
+  };
+  const remove = async (r) => {
+    if (!window.confirm("Delete " + (r.name || "this quote") + " v" + r.version + "? This cannot be undone.")) return;
+    try { await deleteQuote(r.id); await loadList(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete."); }
+  };
+
+  if (openId)
+    return (
+      <QuoteEditor
+        quoteId={openId}
+        catalog={catalog}
+        clients={clients}
+        venues={venues}
+        onChanged={loadList}
+        onClose={(nextId) => { setOpenId(nextId || null); loadList(); }}
+      />
+    );
+
+  // Only the newest version of each family shows in the list; older ones are
+  // reachable from inside the editor.
+  const newest = {};
+  for (const r of rows) {
+    const cur = newest[r.familyId];
+    if (!cur || r.version > cur.version) newest[r.familyId] = r;
+  }
+  let list = Object.keys(newest).map((k) => newest[k]);
+  if (filter) list = list.filter((r) => r.status === filter);
+  list.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+
+  const nameOfClient = (r) => {
+    const c = clients.find((x) => x.id === (r.contactId || r.clientId));
+    const parent = c && c.parentId ? clients.find((x) => x.id === c.parentId) : null;
+    if (!c) return "";
+    return parent ? parent.name + " · " + c.name : c.name;
+  };
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Quotes</h1>
+        <div className="cal-top-actions">
+          <button className="btn" onClick={newQuote}>+ New quote</button>
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      <div style={{ ...qtRow, marginBottom: 16 }}>
+        <button onClick={() => setFilter("")} style={ctgChip(!filter, "#96A0B2")}>All ({Object.keys(newest).length})</button>
+        {Object.keys(QT_STATUS).map((k) => {
+          const n = Object.keys(newest).filter((f) => newest[f].status === k).length;
+          if (!n) return null;
+          return <button key={k} onClick={() => setFilter(filter === k ? "" : k)} style={ctgChip(filter === k, QT_STATUS[k].color)}>{QT_STATUS[k].label} ({n})</button>;
+        })}
+      </div>
+
+      {err ? <div style={qtErr}>{err}</div> : null}
+      {loading ? <div style={{ ...qtHint, padding: 40, textAlign: "center" }}>Loading…</div> : null}
+      {!loading && !list.length ? (
+        <div style={{ ...qtHint, padding: 40, textAlign: "center" }}>
+          {filter ? "Nothing with that status." : "No quotes yet. Start one and it will appear here."}
+        </div>
+      ) : null}
+
+      {list.map((r) => (
+        <div key={r.id} style={qtListRow}>
+          <button onClick={() => setOpenId(r.id)} style={{ flex: 1, minWidth: 160, textAlign: "left", background: "none", border: 0, color: "var(--ink)", cursor: "pointer", fontSize: 15, fontWeight: 700, fontFamily: "inherit", padding: 0 }}>
+            {r.name || "Untitled quote"}
+            {r.version > 1 ? <span style={{ color: "var(--dim)", fontWeight: 500, fontSize: 12 }}> · v{r.version}</span> : null}
+          </button>
+          <span style={{ color: "var(--dim)", fontSize: 13, flex: "1 1 140px" }}>{nameOfClient(r)}</span>
+          <span style={{ color: "var(--dim)", fontSize: 13, width: 110 }}>{r.startDate ? prettyDate(r.startDate) : ""}</span>
+          <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 15, fontWeight: 700 }}>{qtMoney0(r.total)}</span>
+          <QtBadge status={r.status} />
+          <button className="btn ghost" onClick={() => setOpenId(r.id)} style={{ padding: "5px 10px" }}>Open</button>
+          <button className="btn ghost danger" onClick={() => remove(r)} style={{ padding: "5px 10px" }}>Delete</button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onPeople, onCatalog, onQuotes, onLogout }) {
   const now = new Date();
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
@@ -2447,6 +3174,7 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
         <div className="cal-top-actions">
           {isAdmin && <button className="btn ghost" onClick={onPeople}>People &amp; Access</button>}
           {isAdmin && <button className="btn ghost" onClick={onPipeline}>Pipeline</button>}
+          {isAdmin && <button className="btn ghost" onClick={onQuotes}>Quotes</button>}
           {isAdmin && <button className="btn ghost" onClick={onCatalog}>Catalog</button>}
           {isAdmin && <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>}
           {isAdmin && <button className="btn" onClick={onNew}>+ New show</button>}
