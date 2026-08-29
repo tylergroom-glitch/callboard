@@ -1176,6 +1176,7 @@ function Callboard({ auth, onLogout }) {
     setQuotesOpen(s === "quotes");
     setStaffOpen(s === "staff");
   };
+  const goAdminFromShow = (s) => { goAdmin(s); setAtLanding(true); };
   const calendar = (
     <ShowsCalendar
       events={events}
@@ -1237,6 +1238,13 @@ function Callboard({ auth, onLogout }) {
   return (
     <div className="cb">
       <style>{CSS}</style>
+
+      <div className="adm-shell">
+        {isSuperAdmin ? (
+          /* A show sits underneath Shows, so that stays lit while you're in one. */
+          <AdminSidebar active="shows" go={goAdminFromShow} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} />
+        ) : null}
+        <div className="adm-main">
 
       {/* top control bar */}
       <div className="topbar">
@@ -1340,6 +1348,11 @@ function Callboard({ auth, onLogout }) {
           </main>
         </>
       )}
+
+        </div>
+      </div>
+
+      {peopleOpen && <PeopleAccess events={events} onClose={() => setPeopleOpen(false)} />}
 
       {pnlDashOpen && (
         <div className="pnl-dash-overlay" onClick={() => setPnlDashOpen(false)}>
@@ -10254,6 +10267,9 @@ const CSS = `
 .cb .adm-div{height:1px; background:var(--line); margin:10px 12px;}
 .cb .adm-spacer{flex:1; min-height:20px;}
 .cb .adm-main{flex:1; min-width:0;}
+/* The show view's own topbar is sticky at z-index 20. Keep the rail above it so
+   the nav isn't overlapped when a show is scrolled. */
+.cb .adm-side{z-index:25;}
 @media (max-width:860px){
   .cb .adm-shell{display:block;}
   .cb .adm-side{
