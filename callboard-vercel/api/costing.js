@@ -1,12 +1,16 @@
 // /api/costing — per-show P&L / costing figures, ADMIN ONLY.
-// Stored in a separate "Costing" field on the show's Events record and never
-// returned by /api/events, so crew (show-scoped tokens) never receive the numbers.
+//
+// Stored in its own `show_costing` table rather than on the show record,
+// because /api/events hands the whole `data` blob to anyone with show
+// access — crew included. Keeping the numbers in a separate table that is
+// only ever read here, behind canManageShow(), means a crew token can
+// never receive them.
+//
 // GET   ?id=   read costing for a show   (admin only)
 // PATCH ?id=   save costing for a show   (admin only)   body: { costing }
 //
-// SETUP: add a long-text field named "Costing" to your Events table in Airtable.
-// No new env vars are required.
-import { json, readBody, auth, canManageShow, airtable } from "./_lib.js";
+// SETUP: run setup-costing.sql once in the Supabase SQL Editor.
+import { json, readBody, auth, canManageShow, supabaseRest } from "./_lib.js";
 
 export default async function handler(req, res) {
   const p = auth(req);
@@ -17,20 +21,27 @@ export default async function handler(req, res) {
 
   try {
     if (req.method === "GET") {
-      const rec = await airtable("GET", "/" + id);
-      const f = rec.fields || {};
-      let costing = {};
-      try {
-        costing = f.Costing ? JSON.parse(f.Costing) : {};
-      } catch {
-        costing = {};
-      }
+      const rows = await supabaseRest(
+        "GET",
+        "/show_costing?show_id=eq." + encodeURIComponent(id) + "&select=costing&limit=1",
+        null
+      );
+      const row = rows && rows[0];
+      // No row yet just means nobody has entered figures for this show.
+      const costing = row && row.costing && typeof row.costing === "object" ? row.costing : {};
       return json(res, 200, { costing });
     }
 
     if (req.method === "PATCH" || req.method === "POST") {
       const b = await readBody(req);
-      await airtable("PATCH", "/" + id, { fields: { Costing: JSON.stringify(b.costing || {}) } });
+      const costing = b && b.costing && typeof b.costing === "object" ? b.costing : {};
+      // Upsert, so the first save on a show creates the row.
+      await supabaseRest(
+        "POST",
+        "/show_costing",
+        { show_id: id, costing, updated_at: new Date().toISOString() },
+        "resolution=merge-duplicates,return=minimal"
+      );
       return json(res, 200, { ok: true });
     }
 
