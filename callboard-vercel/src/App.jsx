@@ -3187,6 +3187,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [terms, setTerms] = useState("");
   const [revs, setRevs] = useState([]);
   const [bulk, setBulk] = useState({ qty: "", days: "", discount: "" });
+  const [exporting, setExporting] = useState(false);
   const timer = useRef(null);
   const dirty = useRef(false);
   const locked = !!q && q.status !== "draft";
@@ -3346,7 +3347,6 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
 
   // The stored T&C runs to a couple of hundred KB, so it is fetched at export
   // time rather than kept in the editor's state for every quote you open.
-  const [exporting, setExporting] = useState(false);
   const doExport = async () => {
     setExporting(true);
     let termsPdfB64 = "";
