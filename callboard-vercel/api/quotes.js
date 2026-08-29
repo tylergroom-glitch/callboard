@@ -87,6 +87,65 @@ export default async function handler(req, res) {
   const q = req.query || {};
 
   try {
+    // ---- terms and conditions (one shared block, reused on every quote) ----
+    if (q.terms) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/app_settings?key=eq.quote_terms&select=value", null);
+        const v = rows && rows[0] ? rows[0].value : null;
+        return json(res, 200, { text: (v && v.text) || "" });
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        await supabaseRest("POST", "/app_settings?on_conflict=key", {
+          key: "quote_terms",
+          value: { text: String(b.text || "") },
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates");
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    // ---- branded T&C PDF ----
+    // Stored base64 in app_settings alongside the plain-text terms. Kept out of
+    // the ordinary terms GET because it is ~230 KB and only the exporter needs
+    // the bytes; ?termsPdf=meta returns just the filename/page count for the UI.
+    if (q.termsPdf) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/app_settings?key=eq.quote_terms_pdf&select=value", null);
+        const v = (rows && rows[0] && rows[0].value) || null;
+        if (!v || !v.b64) return json(res, 200, { pdf: null });
+        if (q.termsPdf === "meta") {
+          return json(res, 200, { pdf: { name: v.name || "", pages: v.pages || 0, size: v.size || 0, uploadedAt: v.uploadedAt || "" } });
+        }
+        return json(res, 200, { pdf: v });
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        if (!b.b64) return json(res, 400, { error: "No file provided" });
+        // ~7 MB of base64. Well above anything a terms document needs, but a
+        // guard so a mis-picked file can't wedge the settings row.
+        if (String(b.b64).length > 7000000) return json(res, 413, { error: "That PDF is too large (7 MB limit)." });
+        await supabaseRest("POST", "/app_settings?on_conflict=key", {
+          key: "quote_terms_pdf",
+          value: {
+            b64: String(b.b64),
+            name: String(b.name || "Terms.pdf").slice(0, 200),
+            pages: Number(b.pages) || 0,
+            size: Number(b.size) || 0,
+            uploadedAt: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates");
+        return json(res, 200, { ok: true });
+      }
+      if (req.method === "DELETE") {
+        await supabaseRest("DELETE", "/app_settings?key=eq.quote_terms_pdf", null);
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
     if (req.method === "GET") {
       if (q.id) return json(res, 200, shape(await getOne(q.id), true));
       if (q.family) {
