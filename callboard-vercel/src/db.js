@@ -174,3 +174,9 @@ export const saveQuoteTerms = (text) => api("POST", "/api/quotes?terms=1", { tex
 // Platform-wide TCG admin. Invites the person if they have no account yet.
 export const setTcgAdmin = (body) =>
   api("POST", "/api/members?tcg=1", { redirectTo: window.location.origin + "?setpw=1", ...body });
+
+// Branded T&C PDF. "meta" fetches just name/page count; no arg fetches the bytes.
+export const getQuoteTermsPdfMeta = () => api("GET", "/api/quotes?termsPdf=meta");
+export const getQuoteTermsPdf = () => api("GET", "/api/quotes?termsPdf=1");
+export const saveQuoteTermsPdf = (payload) => api("POST", "/api/quotes?termsPdf=1", payload);
+export const deleteQuoteTermsPdf = () => api("DELETE", "/api/quotes?termsPdf=1");

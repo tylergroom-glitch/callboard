@@ -63,6 +63,10 @@ import {
   reviseQuote,
   deleteQuote,
   getQuoteTerms,
+  getQuoteTermsPdfMeta,
+  getQuoteTermsPdf,
+  saveQuoteTermsPdf,
+  deleteQuoteTermsPdf,
   saveQuoteTerms,
 } from "./db.js";
 
@@ -2474,14 +2478,48 @@ function CatalogTerms() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
+  const [pdfMeta, setPdfMeta] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const fileRef = useRef(null);
 
   useEffect(() => {
     (async () => {
       try { const t = await getQuoteTerms(); setText((t && t.text) || ""); }
       catch (e) { setErr((e && e.message) || "Couldn't load the terms."); }
+      try { const m = await getQuoteTermsPdfMeta(); setPdfMeta((m && m.pdf) || null); }
+      catch { /* upload simply appears as "none set" */ }
       setLoading(false);
     })();
   }, []);
+
+  const pickPdf = async (file) => {
+    if (!file) return;
+    if (file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+      setErr("That is not a PDF."); return;
+    }
+    setPdfBusy(true); setErr("");
+    try {
+      const b64 = await new Promise((ok, bad) => {
+        const r = new FileReader();
+        r.onload = () => ok(String(r.result).split(",")[1] || "");
+        r.onerror = () => bad(new Error("Could not read that file."));
+        r.readAsDataURL(file);
+      });
+      await saveQuoteTermsPdf({ b64, name: file.name, size: file.size, pages: 0 });
+      const m = await getQuoteTermsPdfMeta();
+      setPdfMeta((m && m.pdf) || null);
+    } catch (e) { setErr((e && e.message) || "Couldn't upload that PDF."); }
+    setPdfBusy(false);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const removePdf = async () => {
+    if (!window.confirm("Remove the branded T&C PDF? Quotes will fall back to the typed terms below.")) return;
+    setPdfBusy(true); setErr("");
+    try { await deleteQuoteTermsPdf(); setPdfMeta(null); }
+    catch (e) { setErr((e && e.message) || "Couldn't remove it."); }
+    setPdfBusy(false);
+  };
 
   const save = async () => {
     setBusy(true); setErr(""); setSaved(false);
@@ -2493,8 +2531,36 @@ function CatalogTerms() {
   if (loading) return <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Loading…</div>;
   return (
     <div>
+      <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 14, marginBottom: 18 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Branded T&amp;C PDF</div>
+        <p style={{ ...ctgHint, marginTop: 0 }}>
+          Upload your designed terms and its pages get attached to the end of every quote exactly as they are \u2014 fonts, logo and layout untouched. This takes priority over the typed text below.
+        </p>
+        {pdfMeta ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{pdfMeta.name}</span>
+            <span style={{ fontSize: 12, color: "var(--dim)" }}>
+              {pdfMeta.size ? Math.round(pdfMeta.size / 1024) + " KB" : ""}
+            </span>
+            <button className="btn ghost" onClick={() => fileRef.current && fileRef.current.click()} disabled={pdfBusy}>Replace</button>
+            <button className="btn ghost" onClick={removePdf} disabled={pdfBusy}>Remove</button>
+          </div>
+        ) : (
+          <button className="btn amber" onClick={() => fileRef.current && fileRef.current.click()} disabled={pdfBusy} style={{ marginTop: 6 }}>
+            {pdfBusy ? "Uploading\u2026" : "Upload T&C PDF"}
+          </button>
+        )}
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          style={{ display: "none" }}
+          onChange={(e) => pickPdf(e.target.files && e.target.files[0])}
+        />
+      </div>
+
       <p style={ctgHint}>
-        Paste your terms and conditions once. They are appended to every quote PDF, starting on a fresh page after the pricing.
+        Typed fallback, used only when no PDF is uploaded above. Appended to the quote starting on a fresh page.
       </p>
       <p style={{ ...ctgHint, marginTop: 4, marginBottom: 12 }}>
         Leave a blank line between paragraphs — that is what splits them up in the PDF. Leave this empty and quotes export with no appendix.
@@ -2593,6 +2659,8 @@ function qtNormalize(data) {
     deposits: Array.isArray(d.deposits) ? d.deposits : [],
     truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : { van: 0.75, box: 3, semi: 4 },
     displayMode: d.displayMode === "groups" ? "groups" : "itemized",
+    // Ticked unless explicitly turned off, so existing quotes pick it up too.
+    attachTerms: d.attachTerms !== false,
     client: d.client && typeof d.client === "object" ? d.client : {},
     venue: d.venue && typeof d.venue === "object" ? d.venue : {},
     notes: d.notes || "",
@@ -2901,7 +2969,9 @@ const qtEsc = (t) =>
 function qtQuoteHtml(opts) {
   const q = opts.quote;
   const data = opts.data;
-  const terms = opts.terms || "";
+  // The branded PDF supersedes the typed text: appending both would print the
+  // terms twice.
+  const terms = opts.termsPdfB64 ? "" : (opts.terms || "");
   const lines = Array.isArray(data.lines) ? data.lines : [];
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const itemized = data.displayMode !== "groups";
@@ -3053,14 +3123,35 @@ function qtQuoteHtml(opts) {
     depBlock +
     "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + "</span></div>" +
     termsBlock +
-    "</div><script>(function(){var s=document.createElement('script');" +
-    "s.src='https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';" +
-    "s.onload=function(){window.html2pdf().set({margin:[0.45,0.5]," +
-    "filename:'" + String(q.name || "Quotation").replace(/[^a-zA-Z0-9 _-]/g, "") + " v" + q.version + ".pdf'," +
+    "</div><script>" +
+    "var TERMS_B64=" + JSON.stringify(opts.termsPdfB64 || "") + ";" +
+    "var FNAME=" + JSON.stringify(String(q.name || "Quotation").replace(/[^a-zA-Z0-9 _-]/g, "") + " v" + q.version + ".pdf") + ";" +
+    "(function(){" +
+    "function load(src){return new Promise(function(ok,bad){var s=document.createElement('script');s.src=src;s.onload=ok;s.onerror=function(){bad(new Error('Could not load '+src));};document.head.appendChild(s);});}" +
+    "function dl(bytes){var b=new Blob([bytes],{type:'application/pdf'});var u=URL.createObjectURL(b);" +
+    "var a=document.createElement('a');a.href=u;a.download=FNAME;document.body.appendChild(a);a.click();" +
+    "setTimeout(function(){URL.revokeObjectURL(u);window.close();},1500);}" +
+    "function fail(m){document.body.innerHTML=\"<div style='font:14px sans-serif;padding:40px;color:#333'>\"+m+\"</div>\";}" +
+    "load('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js').then(function(){" +
+    "return window.html2pdf().set({margin:[0.45,0.5],filename:FNAME," +
     "image:{type:'jpeg',quality:0.97},html2canvas:{scale:2,useCORS:true,logging:false,allowTaint:true}," +
     "pagebreak:{mode:['css','legacy']},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}})" +
-    ".from(document.getElementById('quote-content')).save().then(function(){window.close();});};" +
-    "document.head.appendChild(s);})();<\/script></body></html>"
+    ".from(document.getElementById('quote-content')).outputPdf('arraybuffer');})" +
+    ".then(function(quoteBytes){" +
+    "if(!TERMS_B64){dl(quoteBytes);return;}" +
+    // Terms are a bonus, not the deliverable: if the merge library or the
+    // stored file fails, still hand over the quote rather than nothing.
+    "return load('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js').then(function(){" +
+    "return PDFLib.PDFDocument.load(quoteBytes);}).then(function(out){" +
+    "var raw=atob(TERMS_B64);var arr=new Uint8Array(raw.length);" +
+    "for(var i=0;i<raw.length;i++)arr[i]=raw.charCodeAt(i);" +
+    "return PDFLib.PDFDocument.load(arr).then(function(terms){" +
+    "return out.copyPages(terms,terms.getPageIndices()).then(function(pages){" +
+    "pages.forEach(function(pg){out.addPage(pg);});return out.save();});});})" +
+    ".then(function(merged){dl(merged);})" +
+    ".catch(function(){dl(quoteBytes);});})" +
+    ".catch(function(e){fail('Could not build the PDF: '+(e&&e.message?e.message:'unknown error')+'. Check your connection and try again.');});" +
+    "})();<\/script></body></html>"
   );
 }
 
@@ -3253,6 +3344,20 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   };
   const setDeposits = (next) => touch({ ...data, deposits: next });
 
+  // The stored T&C runs to a couple of hundred KB, so it is fetched at export
+  // time rather than kept in the editor's state for every quote you open.
+  const [exporting, setExporting] = useState(false);
+  const doExport = async () => {
+    setExporting(true);
+    let termsPdfB64 = "";
+    if (data.attachTerms !== false) {
+      try { const r = await getQuoteTermsPdf(); termsPdfB64 = (r && r.pdf && r.pdf.b64) || ""; }
+      catch { /* fall through to the typed terms */ }
+    }
+    qtExportQuotePdf({ quote: q, data, terms: data.attachTerms === false ? "" : terms, termsPdfB64 });
+    setExporting(false);
+  };
+
   const doStatus = async (st) => {
     if (st === "sent" && !window.confirm("Mark v" + q.version + " as sent?\n\nThis locks it so it always matches what the client received. To keep editing, make a revision.")) return;
     try {
@@ -3303,7 +3408,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         </div>
         <div className="cal-top-actions">
           {locked ? <button className="btn amber" onClick={doRevise}>Make revision v{(revs.length ? Math.max.apply(null, revs.map((r) => r.version)) : q.version) + 1}</button> : null}
-          <button className="btn amber" onClick={() => qtExportQuotePdf({ quote: q, data, terms })} disabled={!lines.length} title={lines.length ? "" : "Add a line first"}>Download PDF</button>
+          <button className="btn amber" onClick={doExport} disabled={!lines.length || exporting} title={lines.length ? "" : "Add a line first"}>{exporting ? "Preparing\u2026" : "Download PDF"}</button>
           {q.status === "draft" ? <button className="btn" onClick={() => doStatus("sent")}>Mark sent</button> : null}
           {q.status === "sent" ? <button className="btn" onClick={() => doStatus("won")}>Mark won</button> : null}
           {q.status === "sent" ? <button className="btn ghost" onClick={() => doStatus("lost")}>Mark lost</button> : null}
@@ -3459,6 +3564,15 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           <span style={{ ...qtLabel, marginBottom: 0 }}>Client sees</span>
           <button onClick={() => touch({ ...data, displayMode: "itemized" })} disabled={locked} style={ctgChip(data.displayMode === "itemized", "#FFB020")}>Every line</button>
           <button onClick={() => touch({ ...data, displayMode: "groups" })} disabled={locked} style={ctgChip(data.displayMode === "groups", "#FFB020")}>Group totals only</button>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 14, fontSize: 13, color: "var(--dim)", cursor: locked ? "default" : "pointer" }}>
+            <input
+              type="checkbox"
+              checked={data.attachTerms !== false}
+              disabled={locked}
+              onChange={(e) => touch({ ...data, attachTerms: e.target.checked })}
+            />
+            Attach T&amp;Cs
+          </label>
         </div>
         <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{qtMoney(grand)}</div>
       </div>
