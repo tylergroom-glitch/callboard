@@ -1,5 +1,6 @@
 // /api/members — manage who is on a show and their role. TCG or the show's producer.
 // GET ?profiles=1        list all accounts (invite picker) — TCG only
+// POST ?tcg=1 { email|userId, isTcg }   grant/revoke platform-wide TCG admin — TCG only
 // GET ?showId=<id>       list members of a show
 // POST { showId, email|userId, role, areas }   add/update a member
 // DELETE ?showId=&userId=                       remove a member
@@ -17,6 +18,59 @@ export default async function handler(req, res) {
   const q = req.query || {};
 
   try {
+    // ---- platform-wide TCG admin flag ----
+    // Not tied to any show: this is the switch that opens Pipeline, Quotes,
+    // Catalog and P&L across every show.
+    if (req.method === "POST" && q.tcg) {
+      if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+      const b = await readBody(req);
+      const isTcg = b.isTcg === true;
+      let userId = b.userId;
+      let invited = false;
+
+      if (!userId && b.email) {
+        const email = String(b.email).trim();
+        const rows = await supabaseRest("GET", "/profiles?email=eq." + encodeURIComponent(email) + "&select=id&limit=1", null);
+        userId = rows && rows[0] ? rows[0].id : null;
+        if (!userId) {
+          if (!isTcg) return json(res, 404, { error: "No account found for " + email });
+          try {
+            const u = await inviteUser(email, b.redirectTo);
+            userId = u && u.id ? u.id : null;
+            invited = !!userId;
+          } catch (e) {
+            return json(res, e.status || 500, { error: "Could not invite " + email + ": " + (e.message || "error") });
+          }
+        }
+      }
+      if (!userId) return json(res, 400, { error: "An email is required." });
+
+      // Don't let an admin lock themselves out of the backend.
+      if (!isTcg && userId === p.sub) {
+        return json(res, 400, { error: "You can't remove your own admin access. Ask another admin to do it." });
+      }
+
+      await supabaseRest("PATCH", "/profiles?id=eq." + encodeURIComponent(userId), { is_tcg: isTcg }, "return=minimal");
+
+      if (isTcg && !invited) {
+        const prof = await supabaseProfile(userId);
+        const toEmail = b.email || (prof ? prof.email : null);
+        if (toEmail) {
+          const host = req.headers.host || "";
+          const appUrl = (host.startsWith("localhost") ? "http://" : "https://") + host + "/";
+          await sendBrevoEmail({
+            to: toEmail,
+            subject: "You\u2019ve been given admin access on Crew Call",
+            html: "<div style=\"font-family:sans-serif;font-size:15px;color:#1a2233;line-height:1.5\">" +
+              "<p>You now have <b>full admin access</b> on Crew Call \u2014 every show, plus Pipeline, Quotes and the Catalog.</p>" +
+              "<p style=\"color:#6b7688;font-size:13px\">If you\u2019re already signed in, sign out and back in for it to take effect.</p>" +
+              "<p><a href=\"" + appUrl + "\" style=\"display:inline-block;background:#0077B6;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;font-weight:600\">Open Crew Call</a></p></div>",
+          });
+        }
+      }
+      return json(res, 200, { ok: true, userId, invited });
+    }
+
     if (req.method === "GET" && q.profiles) {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       const rows = await supabaseRest("GET", "/profiles?select=id,email,name,is_tcg&order=email.asc", null);
