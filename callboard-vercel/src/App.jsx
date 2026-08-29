@@ -2658,7 +2658,10 @@ function qtNormalize(data) {
     lines: Array.isArray(d.lines) ? d.lines : [],
     deposits: Array.isArray(d.deposits) ? d.deposits : [],
     truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : { van: 0.75, box: 3, semi: 4 },
-    displayMode: d.displayMode === "groups" ? "groups" : "itemized",
+    // itemized = every line with prices
+    // summary  = every line by name, priced only at the group level
+    // groups   = one row per group, contents hidden
+    displayMode: d.displayMode === "groups" ? "groups" : d.displayMode === "summary" ? "summary" : "itemized",
     // Ticked unless explicitly turned off, so existing quotes pick it up too.
     attachTerms: d.attachTerms !== false,
     client: d.client && typeof d.client === "object" ? d.client : {},
@@ -2974,7 +2977,8 @@ function qtQuoteHtml(opts) {
   const terms = opts.termsPdfB64 ? "" : (opts.terms || "");
   const lines = Array.isArray(data.lines) ? data.lines : [];
   const groups = Array.isArray(data.groups) ? data.groups : [];
-  const itemized = data.displayMode !== "groups";
+  const mode = data.displayMode === "groups" ? "groups" : data.displayMode === "summary" ? "summary" : "itemized";
+  const itemized = mode === "itemized";
   const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
   const money = (n) =>
     "$" + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -3001,8 +3005,36 @@ function qtQuoteHtml(opts) {
       )
       .join("");
 
+  // Item names and counts, no rates or line totals — the client sees exactly
+  // what is included without being able to unpick the pricing line by line.
+  const namesFor = (list) =>
+    list
+      .map(
+        (l) =>
+          "<tr><td>" + qtEsc(l.name) + "</td>" +
+          "<td class='n'>" + qtEsc(l.qty) + "</td>" +
+          "<td class='n'>" + qtEsc(l.days) + "</td></tr>"
+      )
+      .join("");
+
   let body = "";
-  if (itemized) {
+  if (mode === "summary") {
+    const head = "<thead><tr><th>Item</th><th class='n'>Qty</th><th class='n'>Days</th></tr></thead>";
+    const block = (label, list) => {
+      const t = list.reduce((acc, l) => acc + qtLineTotal(l), 0);
+      return (
+        "<div class='grp'><div class='grp-h'><span>" + label + "</span><span>" + money(t) + "</span></div>" +
+        "<table>" + head + "<tbody>" + namesFor(list) + "</tbody></table></div>"
+      );
+    };
+    for (const g of groups) {
+      const gl = lines.filter((l) => l.groupId === g.id);
+      if (!gl.length) continue;
+      body += block(qtEsc(g.name), gl);
+    }
+    const un = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
+    if (un.length) body += block(groups.length ? "Additional" : "Equipment &amp; Labor", un);
+  } else if (itemized) {
     const head =
       "<thead><tr><th>Item</th><th class='n'>Qty</th><th class='n'>Days</th><th class='n'>Rate</th><th class='n'>Disc</th><th class='n'>Total</th></tr></thead>";
     for (const g of groups) {
@@ -3563,6 +3595,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <div style={{ ...qtRow }}>
           <span style={{ ...qtLabel, marginBottom: 0 }}>Client sees</span>
           <button onClick={() => touch({ ...data, displayMode: "itemized" })} disabled={locked} style={ctgChip(data.displayMode === "itemized", "#FFB020")}>Every line</button>
+          <button onClick={() => touch({ ...data, displayMode: "summary" })} disabled={locked} style={ctgChip(data.displayMode === "summary", "#FFB020")}>Items, group prices</button>
           <button onClick={() => touch({ ...data, displayMode: "groups" })} disabled={locked} style={ctgChip(data.displayMode === "groups", "#FFB020")}>Group totals only</button>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 14, fontSize: 13, color: "var(--dim)", cursor: locked ? "default" : "pointer" }}>
             <input
