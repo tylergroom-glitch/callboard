@@ -69,7 +69,7 @@ export const deleteEvent = (id) => api("DELETE", "/api/events?id=" + encodeURICo
 export const setPassword = (id, password) => api("POST", "/api/password", { id, password });
 // Set any of the three per-show access passwords. Only the keys you include are
 // changed: omit a key to leave it as-is, or pass "" to remove that level.
-// passwords = { crewPassword?, editorPassword?, adminPassword? }
+// passwords = { crewPassword? }  — editor/admin tiers removed; use account roles
 export const setShowPasswords = (id, passwords) => api("POST", "/api/password", { id, ...passwords });
 
 // Shared pull-list templates (global library; saving/deleting is admin-only).
@@ -166,3 +166,11 @@ export const reviseQuote = (id) =>
   api("POST", "/api/quotes?revise=" + encodeURIComponent(id));
 export const deleteQuote = (id) =>
   api("DELETE", "/api/quotes?id=" + encodeURIComponent(id));
+
+// Terms and conditions — one shared block appended to every quote PDF.
+export const getQuoteTerms = () => api("GET", "/api/quotes?terms=1");
+export const saveQuoteTerms = (text) => api("POST", "/api/quotes?terms=1", { text });
+
+// Platform-wide TCG admin. Invites the person if they have no account yet.
+export const setTcgAdmin = (body) =>
+  api("POST", "/api/members?tcg=1", { redirectTo: window.location.origin + "?setpw=1", ...body });

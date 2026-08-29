@@ -11641,31 +11641,29 @@ const CSS = `
 /* ============================================================
    LOGIN + ROOT — the password gate in front of the app
    ============================================================ */
-/* ShowAccessModal — set the three per-show passwords (crew / editor / admin).
-   Only the account admin opens this. Blank box = leave unchanged; tick Remove to clear. */
+/* ShowAccessModal — set the show's crew password.
+   Only the account admin opens this. Blank box = leave unchanged; tick Remove to clear.
+
+   There used to be three tiers here (crew / editor / admin). The upper two were
+   never wired end to end — the API accepted them, but nothing stored them and no
+   login path issued anything above crew level, so setting them appeared to work
+   and did nothing. Editing rights and P&L access now come from a person's account
+   role, so the tiers have been removed rather than repaired. */
 function ShowAccessModal({ show, currentId, onClose, onSaved }) {
   const [crew, setCrew] = useState("");
-  const [editor, setEditor] = useState("");
-  const [admin, setAdmin] = useState("");
   const [clearCrew, setClearCrew] = useState(false);
-  const [clearEditor, setClearEditor] = useState(false);
-  const [clearAdmin, setClearAdmin] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   const rows = [
-    { key: "crew",   label: "Crew — view only",              has: !!show.hasPassword, val: crew,   set: setCrew,   clear: clearCrew,   setClear: setClearCrew },
-    { key: "editor", label: "Editor — edit tabs",            has: !!show.hasEditor,   val: editor, set: setEditor, clear: clearEditor, setClear: setClearEditor },
-    { key: "admin",  label: "Admin — edit + P&L",   has: !!show.hasAdmin,    val: admin,  set: setAdmin,  clear: clearAdmin,  setClear: setClearAdmin },
+    { key: "crew", label: "Crew password — view only", has: !!show.hasPassword, val: crew, set: setCrew, clear: clearCrew, setClear: setClearCrew },
   ];
 
   async function save() {
     const payload = {};
-    if (clearCrew) payload.crewPassword = "";     else if (crew.trim())   payload.crewPassword = crew.trim();
-    if (clearEditor) payload.editorPassword = ""; else if (editor.trim()) payload.editorPassword = editor.trim();
-    if (clearAdmin) payload.adminPassword = "";   else if (admin.trim())  payload.adminPassword = admin.trim();
+    if (clearCrew) payload.crewPassword = ""; else if (crew.trim()) payload.crewPassword = crew.trim();
     if (!Object.keys(payload).length) {
-      setErr("Type a new password, or tick Remove, for at least one level.");
+      setErr("Type a new password, or tick Remove.");
       return;
     }
     setBusy(true);
@@ -11674,8 +11672,6 @@ function ShowAccessModal({ show, currentId, onClose, onSaved }) {
       await setShowPasswords(currentId, payload);
       const flags = {};
       if (payload.crewPassword !== undefined) flags.hasPassword = !!payload.crewPassword;
-      if (payload.editorPassword !== undefined) flags.hasEditor = !!payload.editorPassword;
-      if (payload.adminPassword !== undefined) flags.hasAdmin = !!payload.adminPassword;
       onSaved(flags);
       onClose();
     } catch (e) {
@@ -11688,7 +11684,7 @@ function ShowAccessModal({ show, currentId, onClose, onSaved }) {
     <div className="sa-overlay" onClick={onClose}>
       <div className="sa-modal" onClick={(e) => e.stopPropagation()}>
         <div className="sa-title">Show access — {show.name || "this show"}</div>
-        <p className="sa-hint">Three passwords, three levels. Share each with the right people. Leave a box blank to keep it unchanged.</p>
+        <p className="sa-hint">Anyone with this password can view the show. To let someone edit, or to give them P&amp;L access, add them under People &amp; Access instead \u2014 that\u2019s controlled by their account, not by a password.</p>
         {rows.map((r) => (
           <div className="sa-row" key={r.key}>
             <div className="sa-rowhead">
