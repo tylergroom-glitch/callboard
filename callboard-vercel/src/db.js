@@ -162,6 +162,13 @@ export const saveQuote = (id, payload) =>
 export const setQuoteStatus = (id, status) =>
   api("PATCH", "/api/quotes?id=" + encodeURIComponent(id) + "&status=" + encodeURIComponent(status));
 // Duplicate a quote as the next version, back in draft.
+// Save just the payment schedule. Deposits get ticked paid after a quote has
+// been sent, so this deliberately works on a locked version.
+export const saveQuotePayments = (id, deposits) =>
+  api("PATCH", "/api/quotes?id=" + encodeURIComponent(id) + "&payments=1", { deposits });
+// Link a won quote to the show it was turned into. Safe on locked quotes.
+export const linkQuoteToShow = (id, eventId) =>
+  api("PATCH", "/api/quotes?id=" + encodeURIComponent(id) + "&eventId=" + encodeURIComponent(eventId));
 export const reviseQuote = (id) =>
   api("POST", "/api/quotes?revise=" + encodeURIComponent(id));
 export const deleteQuote = (id) =>

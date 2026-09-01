@@ -57,6 +57,8 @@ import {
   listQuotes,
   getQuote,
   listQuoteRevisions,
+  linkQuoteToShow,
+  saveQuotePayments,
   createQuote,
   saveQuote,
   setQuoteStatus,
@@ -1212,7 +1214,11 @@ function Callboard({ auth, onLogout }) {
             ) : admSection === "catalog" ? (
               <CatalogScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "quotes" ? (
-              <QuotesScreen onClose={() => goAdmin("shows")} />
+              <QuotesScreen
+                onClose={() => goAdmin("shows")}
+                onOpenShow={openLandingShow}
+                onShowCreated={(created) => setEvents((prev) => prev.concat([created]))}
+              />
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
             ) : (
@@ -2024,9 +2030,15 @@ function CtgItemForm({ draft, setDraft, catalog, onSave, onCancel, busy }) {
           <label style={ctgLabel}>Qty owned</label>
           <input value={draft.qtyOwned == null ? "" : draft.qtyOwned} onChange={(e) => setDraft({ ...draft, qtyOwned: e.target.value.replace(/[^0-9]/g, "") })} inputMode="numeric" placeholder="0" style={{ width: "100%" }} />
         </div>
+        <div style={{ flex: "0 0 130px" }}>
+          <label style={ctgLabel}>Sub-rent cost / day</label>
+          <input value={draft.subCost == null ? "" : draft.subCost} onChange={(e) => setDraft({ ...draft, subCost: e.target.value })} inputMode="decimal" placeholder="—" style={{ width: "100%" }} />
+        </div>
       </div>
       <p style={{ ...ctgHint, marginTop: -2, marginBottom: 10 }}>
-        Leave Qty owned at 0 for anything you always sub-rent — availability checks skip it rather than reporting a shortfall.
+        Qty owned is what makes the sub-rental check work: quote more than this and the extra shows up as a sub-rent. Leave it at 0 for anything
+        you always sub-rent, so every unit counts. Sub-rent cost is only a starting figure — the real vendor price is typed on the quote line,
+        and this is the only cost we keep, since owned gear costs nothing extra to send out.
       </p>
       <div style={{ marginBottom: 12 }}>
         <label style={ctgLabel}>Notes</label>
@@ -2170,7 +2182,12 @@ function CatalogItems() {
   const save = async () => {
     setBusy(true);
     try {
-      await saveCatalogItem({ ...draft, rate: parseFloat(String(draft.rate).replace(/[^0-9.\-]/g, "")) || 0 });
+      await saveCatalogItem({
+        ...draft,
+        rate: parseFloat(String(draft.rate).replace(/[^0-9.\-]/g, "")) || 0,
+        // Left blank on purpose = we have never priced a sub-rent for it.
+        subCost: String(draft.subCost == null ? "" : draft.subCost).trim(),
+      });
       setDraft(null);
       await load();
     } catch (e) { setErr((e && e.message) || "Couldn't save."); }
@@ -2193,7 +2210,7 @@ function CatalogItems() {
     <div>
       <div style={{ ...ctgRow, marginBottom: 12 }}>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search items…" style={{ flex: "1 1 200px" }} />
-        <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", taxable: false, qtyOwned: "", components: [], notes: "" })}>+ Add item</button>
+        <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", qtyOwned: "", subCost: "", components: [], notes: "" })}>+ Add item</button>
         <button className="btn ghost" onClick={() => setWizard(true)}>Import from quote PDF</button>
       </div>
       <div style={{ ...ctgRow, marginBottom: 14 }}>
@@ -2225,7 +2242,8 @@ function CatalogItems() {
           <span style={{ color: "var(--dim)", fontSize: 12, width: 72 }}>{it.department}</span>
           <span style={{ fontVariantNumeric: "tabular-nums", fontSize: 14, width: 96, textAlign: "right" }}>{ctgMoney(it.rate)}</span>
           <span style={{ color: "var(--faint)", fontSize: 12, width: 64, textAlign: "right" }}>{it.qtyOwned ? "own " + it.qtyOwned : ""}</span>
-          <button className="btn ghost" onClick={() => setDraft({ ...it, rate: String(it.rate) })} style={{ padding: "5px 10px" }}>Edit</button>
+          <span style={{ color: "var(--faint)", fontSize: 12, width: 86, textAlign: "right" }} title="What a sub-rent of this typically costs us per day">{it.subCost == null ? "" : "sub " + ctgMoney(it.subCost)}</span>
+          <button className="btn ghost" onClick={() => setDraft({ ...it, rate: String(it.rate), subCost: it.subCost == null ? "" : String(it.subCost) })} style={{ padding: "5px 10px" }}>Edit</button>
           <button className="btn ghost danger" onClick={() => remove(it)} style={{ padding: "5px 10px" }}>Delete</button>
         </div>
       ))}
@@ -2668,6 +2686,172 @@ function qtNormalize(data) {
     venue: d.venue && typeof d.venue === "object" ? d.venue : {},
     notes: d.notes || "",
   };
+}
+
+/* ---------- sub-rentals, deposits, pull list ---------- */
+
+/* What we own is a pool for the whole quote, not per line: the same item put in
+   two groups still competes for the same cases in the shop. So the shortfall is
+   worked out once across every line that points at a catalog item, then shared
+   back out to those lines largest-first. */
+function qtSubrentMap(lines, catalog) {
+  const byCat = {};
+  for (const l of lines || []) {
+    if (!l || l.kind === "trucking" || !l.catalogId) continue;
+    const qty = qtNum(l.qty);
+    if (qty <= 0) continue;
+    if (!byCat[l.catalogId]) byCat[l.catalogId] = { quoted: 0, lines: [] };
+    byCat[l.catalogId].quoted += qty;
+    byCat[l.catalogId].lines.push(l);
+  }
+  const out = {}; // lineId -> { short, owned, quoted, name }
+  for (const catId of Object.keys(byCat)) {
+    const hit = (catalog || []).find((c) => c.id === catId);
+    // No catalog row, or "we never own this" (0), means every unit is a sub-rent.
+    const owned = hit ? qtNum(hit.qtyOwned) : 0;
+    const entry = byCat[catId];
+    let short = Math.max(0, entry.quoted - owned);
+    if (short <= 0) continue;
+    const ordered = entry.lines.slice().sort((a, b) => qtNum(b.qty) - qtNum(a.qty));
+    for (const l of ordered) {
+      if (short <= 0) break;
+      const take = Math.min(short, qtNum(l.qty));
+      out[l.id] = { short: take, owned, quoted: entry.quoted, name: hit ? hit.name : l.name };
+      short -= take;
+    }
+  }
+  return out;
+}
+
+/* What the shortfall costs us. Per line: short qty x days x cost/day. The cost
+   is whatever is typed on the line; the catalog figure is only ever a starting
+   suggestion, because a vendor price moves week to week. */
+const qtSubCostOf = (l, info) => {
+  if (!info || !info.short) return 0;
+  return Math.round(info.short * qtNum(l.days) * qtNum(l.subCost) * 100) / 100;
+};
+function qtSubrentTotals(lines, map) {
+  let cost = 0, unpriced = 0, count = 0;
+  const byVendor = {};
+  for (const l of lines || []) {
+    const info = map[l.id];
+    if (!info) continue;
+    count += 1;
+    const c = qtSubCostOf(l, info);
+    if (!qtNum(l.subCost)) unpriced += 1;
+    cost += c;
+    const v = String(l.subVendor || "").trim() || "Unassigned";
+    byVendor[v] = Math.round(((byVendor[v] || 0) + c) * 100) / 100;
+  }
+  return { cost: Math.round(cost * 100) / 100, unpriced, count, byVendor };
+}
+
+/* Payment schedule. A row that has been ticked paid keeps the figure it was
+   paid at — revising the quote afterwards must never restate an invoice that
+   has already gone out. Unpaid rows still work off their percentage, and the
+   last row takes whatever is left so the schedule always lands on the total. */
+function qtDepositRows(deposits, grand) {
+  const all = Array.isArray(deposits) ? deposits : [];
+  const amounts = all.map((d) => (d && d.paid ? qtNum(d.paidAmount) : null));
+  const lastIdx = all.length - 1;
+  for (let i = 0; i < all.length; i++) {
+    if (amounts[i] != null) continue;
+    if (i === lastIdx) continue;
+    amounts[i] = Math.round(grand * (qtNum(all[i].pct) / 100) * 100) / 100;
+  }
+  if (lastIdx >= 0 && amounts[lastIdx] == null) {
+    const before = amounts.slice(0, lastIdx).reduce((t, x) => t + (x || 0), 0);
+    amounts[lastIdx] = Math.round((grand - before) * 100) / 100;
+  }
+  const locked = all.reduce((t, d, i) => t + (d && d.paid ? amounts[i] || 0 : 0), 0);
+  return {
+    amounts,
+    paidTotal: Math.round(locked * 100) / 100,
+    scheduled: Math.round(amounts.reduce((t, x) => t + (x || 0), 0) * 100) / 100,
+    // Negative means we have already invoiced more than the quote is now worth.
+    remaining: Math.round((grand - locked) * 100) / 100,
+  };
+}
+
+/* Quote gear -> pull list rows. Packages break into their parts here, because
+   the crew packs pieces; the client still sees the one package line. Trucking
+   is money, not gear, so it never reaches the pull list. */
+const qtCat = (d) => (PULL_CAT_ORDER.indexOf(d) >= 0 ? d : "Misc");
+function qtPullRows(data, catalog) {
+  const lines = (data && data.lines) || [];
+  const map = qtSubrentMap(lines, catalog);
+  const find = (id) => (catalog || []).find((c) => c.id === id) || null;
+  const rows = [];
+  for (const l of lines) {
+    if (!l || l.kind === "trucking") continue;
+    const qty = qtNum(l.qty);
+    if (qty <= 0) continue;
+    const hit = l.catalogId ? find(l.catalogId) : null;
+    const info = map[l.id];
+    const vendor = String(l.subVendor || "").trim();
+    const comps = hit && Array.isArray(hit.components) ? hit.components : [];
+    if (comps.length) {
+      for (const c of comps) {
+        const part = find(c.itemId);
+        if (!part) continue;
+        rows.push({
+          key: l.id + ":" + c.itemId,
+          item: part.name,
+          qty: qty * (qtNum(c.qty) || 1),
+          category: qtCat(part.department || hit.department),
+          // A package is sub-rented as a unit, so its parts inherit the vendor.
+          source: info ? "Sub Rental" : "TCG",
+          rentedFrom: info ? vendor : "",
+          notes: "From quote — " + hit.name,
+          include: true,
+          // No catalog match means the name came from a blank line and is very
+          // likely generic ("Premium Audio Mixer"), so it wants a real model.
+          ambiguous: false,
+        });
+      }
+      continue;
+    }
+    rows.push({
+      key: l.id,
+      item: (hit && hit.name) || l.name || "",
+      qty,
+      category: qtCat((hit && hit.department) || l.department),
+      source: info ? "Sub Rental" : "TCG",
+      rentedFrom: info ? vendor : "",
+      notes: "From quote",
+      include: true,
+      ambiguous: !hit,
+    });
+  }
+  return rows;
+}
+
+/* Fold the reviewed rows into a show's pull list: one case per department,
+   appended to whatever is already there rather than replacing it. */
+function qtMergePull(existing, rows) {
+  const base = existing && typeof existing === "object" ? existing : { cases: [], loose: [] };
+  const cases = Array.isArray(base.cases) ? base.cases.map((c) => ({ ...c, items: (c.items || []).slice() })) : [];
+  const loose = Array.isArray(base.loose) ? base.loose.slice() : [];
+  let nextNo = cases.reduce((n, c) => Math.max(n, qtNum(c.caseNo) || 0), 0);
+  for (const cat of PULL_CAT_ORDER) {
+    const mine = rows.filter((r) => r.include && (r.category || "Misc") === cat && String(r.item || "").trim());
+    if (!mine.length) continue;
+    const label = cat.toUpperCase() + " — FROM QUOTE";
+    let target = cases.find((c) => c.case === label);
+    if (!target) {
+      nextNo += 1;
+      target = { id: uid(), caseNo: nextNo, case: label, category: cat, items: [] };
+      cases.push(target);
+    }
+    for (const r of mine) {
+      target.items.push({
+        id: uid(), drawer: null, item: String(r.item).trim(), qty: qtNum(r.qty),
+        source: r.source || "TCG", rentedFrom: String(r.rentedFrom || "").trim(),
+        notes: r.notes || "", out: false, in: false,
+      });
+    }
+  }
+  return { cases, loose };
 }
 
 /* ---------- small shared bits ---------- */
@@ -3207,7 +3391,110 @@ function qtExportQuotePdf(opts) {
 
 /* ---------- the editor ---------- */
 
-function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, onRefs }) {
+/* The review step between a quote and a pull list. Packages are already broken
+   into parts by the time rows arrive here. Anything typed on a blank quote line
+   has no catalog entry behind it, so it is flagged: "Premium Audio Mixer" is a
+   price, not something you can pack, and wants a real model before it goes to
+   the crew. Used for both creating a show and pushing into one that exists. */
+function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose }) {
+  const [rows, setRows] = useState(initial);
+  const [showId, setShowId] = useState("");
+  const [shows, setShows] = useState(null);
+  useEffect(() => {
+    if (mode !== "push") return;
+    listEvents().then((l) => setShows(l || [])).catch(() => setShows([]));
+  }, [mode]);
+  const patch = (key, p) => setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
+  const on = rows.filter((r) => r.include);
+  const flagged = on.filter((r) => r.ambiguous);
+  const byCat = {};
+  for (const r of rows) (byCat[r.category] = byCat[r.category] || []).push(r);
+  const cats = PULL_CAT_ORDER.filter((c) => byCat[c] && byCat[c].length);
+  const ready = on.length > 0 && (mode !== "push" || !!showId);
+  return (
+    <CtgModal title={mode === "push" ? "Push gear to a pull list" : "Create a show from this quote"} onClose={onClose} wide>
+      {mode === "convert" ? (
+        <p style={{ ...qtHint, marginTop: 0 }}>
+          The show gets its name, dates, client, venue and contact from the quote, the quote total lands in the P&amp;L as the revenue estimate,
+          and any sub-rentals become vendor estimates. Check the gear below — it becomes the pull list.
+        </p>
+      ) : (
+        <p style={{ ...qtHint, marginTop: 0 }}>Pick a show, then check the gear. These rows are added to whatever is already on its pull list — nothing is replaced.</p>
+      )}
+
+      {mode === "push" && (
+        <div style={{ marginBottom: 14 }}>
+          <label style={qtLabel}>Show</label>
+          {shows === null ? (
+            <div style={qtHint}>Loading shows…</div>
+          ) : (
+            <select value={showId} onChange={(e) => setShowId(e.target.value)} style={{ width: "100%" }}>
+              <option value="">Choose a show…</option>
+              {shows.map((sh) => (
+                <option key={sh.id} value={sh.id}>{sh.name}{sh.startDate ? " · " + sh.startDate : ""}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
+      {flagged.length > 0 && (
+        <div style={{ background: "rgba(255,176,32,.1)", border: "1px solid #FFB020", borderRadius: 10, padding: "9px 13px", marginBottom: 12, fontSize: 13 }}>
+          {flagged.length} item{flagged.length === 1 ? "" : "s"} came from a typed line rather than the catalog, so the name may be a category rather than a model. Set the actual model before the crew packs from this.
+        </div>
+      )}
+
+      <div style={{ maxHeight: "46vh", overflowY: "auto", paddingRight: 4 }}>
+        {cats.map((cat) => (
+          <div key={cat} style={{ marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: (PULL_CATS[cat] || {}).color || "#96A0B2" }} />
+              <span style={{ fontSize: 14, fontWeight: 800 }}>{cat}</span>
+              <span style={{ fontSize: 12, color: "var(--dim)" }}>{byCat[cat].filter((r) => r.include).length} of {byCat[cat].length}</span>
+            </div>
+            {byCat[cat].map((r) => (
+              <div key={r.key} style={{ ...qtListRow, marginBottom: 4, opacity: r.include ? 1 : 0.45 }}>
+                <input type="checkbox" checked={r.include} onChange={(e) => patch(r.key, { include: e.target.checked })} style={{ width: 15, height: 15, flex: "0 0 auto" }} />
+                <input
+                  value={r.item}
+                  onChange={(e) => patch(r.key, { item: e.target.value, ambiguous: false })}
+                  style={{ flex: "1 1 200px", minWidth: 150, borderColor: r.include && r.ambiguous ? "#FFB020" : undefined }}
+                  placeholder="Model"
+                />
+                <input value={r.qty} onChange={(e) => patch(r.key, { qty: e.target.value.replace(/[^0-9]/g, "") })} inputMode="numeric" style={{ width: 58, textAlign: "center" }} title="Qty" />
+                <select value={r.source || "TCG"} onChange={(e) => patch(r.key, { source: e.target.value })} style={{ width: 116 }} title="Where it comes from">
+                  <option>TCG</option>
+                  <option>Sub Rental</option>
+                </select>
+                <input
+                  value={r.rentedFrom || ""}
+                  onChange={(e) => patch(r.key, { rentedFrom: e.target.value })}
+                  placeholder={r.source === "Sub Rental" ? "Vendor" : "—"}
+                  disabled={r.source !== "Sub Rental"}
+                  style={{ width: 130 }}
+                  title="Vendor — this is what the P&L groups rental costs by"
+                />
+              </div>
+            ))}
+          </div>
+        ))}
+        {!rows.length && <p style={{ ...qtHint, padding: 22, textAlign: "center" }}>This quote has no gear lines to push — only trucking or labour.</p>}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 13, color: "var(--dim)" }}>{on.length} item{on.length === 1 ? "" : "s"} selected{quoteName ? " from " + quoteName : ""}</span>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn amber" onClick={() => onConfirm(rows, showId)} disabled={busy || !ready}>
+            {busy ? "Working…" : mode === "push" ? "Add to pull list" : "Create show"}
+          </button>
+        </div>
+      </div>
+    </CtgModal>
+  );
+}
+
+function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, onRefs, onOpenShow, onShowCreated }) {
   const [q, setQ] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3220,6 +3507,10 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [revs, setRevs] = useState([]);
   const [bulk, setBulk] = useState({ qty: "", days: "", discount: "" });
   const [exporting, setExporting] = useState(false);
+  const [pushOpen, setPushOpen] = useState(false);
+  const [convert, setConvert] = useState(null); // { rows } while the convert sheet is open
+  const [busyShow, setBusyShow] = useState(false);
+  const [notice, setNotice] = useState("");
   const timer = useRef(null);
   const dirty = useRef(false);
   const locked = !!q && q.status !== "draft";
@@ -3289,6 +3580,10 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const ungrouped = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
   const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
   const groupTotal = (gid) => lines.filter((l) => l.groupId === gid).reduce((t, l) => t + qtLineTotal(l), 0);
+  // Worked out across the whole quote, not line by line — see qtSubrentMap.
+  const subMap = qtSubrentMap(lines, catalog);
+  const subs = qtSubrentTotals(lines, subMap);
+  const dep = qtDepositRows(data.deposits, grand);
 
   const setLines = (next) => touch({ ...data, lines: next });
   const patchLine = (id, patch) => setLines(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -3299,6 +3594,9 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       id: uid(), kind: "item", groupId: groupId || null, catalogId: hit.id,
       name: hit.name, department: hit.department,
       qty: 1, days: 1, rate: hit.rate, discount: 0,
+      // Snapshot like the rate: the catalog figure is a starting point, and
+      // re-pricing the catalog later must not rewrite a quote already out.
+      subVendor: "", subCost: hit.subCost == null ? "" : String(hit.subCost),
     }]));
   };
   const addManyFromCatalog = (hits, groupId) => {
@@ -3307,6 +3605,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       id: uid(), kind: "item", groupId: groupId || null, catalogId: h.id,
       name: h.name, department: h.department,
       qty: 1, days: 1, rate: h.rate, discount: 0,
+      subVendor: "", subCost: h.subCost == null ? "" : String(h.subCost),
     }))));
   };
   const addBlank = (groupId) => {
@@ -3366,16 +3665,27 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     const rows = QT_DEFAULT_DEPOSITS.map((d, i) => ({ id: uid(), label: d.label, pct: d.pct, dueDate: "", paid: false, _i: i }));
     touch({ ...data, deposits: rows.map(({ _i, ...r }) => r) });
   };
-  const depAmount = (d, i, all) => {
-    // The last row takes whatever is left so the rows always sum to the total
-    // exactly, instead of drifting a few cents from rounding.
-    if (i === all.length - 1) {
-      const before = all.slice(0, -1).reduce((t, x) => t + Math.round(grand * (qtNum(x.pct) / 100) * 100) / 100, 0);
-      return Math.round((grand - before) * 100) / 100;
-    }
-    return Math.round(grand * (qtNum(d.pct) / 100) * 100) / 100;
-  };
   const setDeposits = (next) => touch({ ...data, deposits: next });
+  /* Ticking "paid" freezes that row at the figure it was actually invoiced at.
+     Revising the quote afterwards leaves it alone and the remainder row swallows
+     the difference, so a deposit already collected is never restated. Payment
+     happens after a quote is sent, so this one control stays live when the rest
+     of the version is locked — and it writes straight to the row rather than
+     going through touch(), which refuses to save a locked quote. */
+  const setPaid = async (row, paid, amountNow) => {
+    const next = (data.deposits || []).map((x) =>
+      x.id === row.id
+        ? { ...x, paid, paidAmount: paid ? Math.round(qtNum(amountNow) * 100) / 100 : undefined, paidDate: paid ? new Date().toISOString().slice(0, 10) : "" }
+        : x
+    );
+    if (!locked) { setDeposits(next); return; }
+    const blob = { ...data, deposits: next };
+    setData(blob); dataRef.current = blob;
+    try {
+      await saveQuotePayments(quoteId, next);
+      if (onChanged) onChanged();
+    } catch (e) { setErr((e && e.message) || "Couldn't save that payment."); }
+  };
 
   // The stored T&C runs to a couple of hundred KB, so it is fetched at export
   // time rather than kept in the editor's state for every quote you open.
@@ -3406,10 +3716,116 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     } catch (e) { setErr((e && e.message) || "Couldn't create a revision."); }
   };
 
+  /* What the show's P&L starts from. Revenue is this quote's total. Costs are
+     only the things we actually know: each vendor's sub-rental estimate, and
+     trucking. Labour is left blank because a quote line says "A2 x 3 days", not
+     who is doing it or what they charge — that belongs to the roster. */
+  const costingSeed = () => {
+    const vendorCost = {};
+    for (const [v, amount] of Object.entries(subs.byVendor)) {
+      if (v === "Unassigned" || !amount) continue;
+      vendorCost[v] = { est: String(amount), act: "", paid: false, notes: "From quote v" + q.version };
+    }
+    const trucking = lines.filter((l) => l.kind === "trucking");
+    const vendorExtra = trucking.map((l) => ({
+      id: uid(), vendor: l.name, notes: "Quoted on v" + q.version, est: "", act: "", paid: false,
+    }));
+    const unassigned = subs.byVendor.Unassigned || 0;
+    return {
+      billableEst: String(Math.round(grand * 100) / 100),
+      vendorCost,
+      vendorExtra: unassigned
+        ? vendorExtra.concat([{ id: uid(), vendor: "Sub-rentals — vendor TBC", notes: "From quote v" + q.version, est: String(unassigned), act: "", paid: false }])
+        : vendorExtra,
+      misc: [],
+      laborExtra: [],
+    };
+  };
+
+  /* Won quote -> show. Everything that is a number or a date carries over on its
+     own; gear goes through the review sheet first, because a catalog name is not
+     always the model that ends up in the case. */
+  const doCreateShow = async (rows) => {
+    setBusyShow(true);
+    setErr("");
+    try {
+      const e = blankEvent();
+      e.name = q.name || "Untitled show";
+      e.client = (data.client && data.client.company) || "";
+      if (q.startDate) e.startDate = q.startDate;
+      e.endDate = q.endDate || q.startDate || e.endDate;
+      e.venue = {
+        name: (data.venue && data.venue.name) || "",
+        address: (data.venue && data.venue.address) || "",
+        mapLink: "",
+      };
+      const cl = data.client || {};
+      if (cl.contactName || cl.contactLabel || cl.email || cl.phone) {
+        e.contacts = e.contacts.map((c) =>
+          c.role === "Client"
+            ? { ...c, name: cl.contactLabel || cl.contactName || "", phone: cl.phone || "", email: cl.email || "" }
+            : c
+        );
+      }
+      e.pull = qtMergePull(e.pull, rows || []);
+      const today = new Date().toISOString().slice(0, 10);
+      e.pipeline = normPipe({
+        milestones: {
+          prelimQuote: { done: true, date: (q.sentAt || "").slice(0, 10) || today },
+          quoteAccepted: { done: true, date: today },
+        },
+        quotes: [{ id: uid(), name: (q.name || "Quote") + " v" + q.version, amount: String(grand), date: today }],
+        invoices: [],
+        notes: "Created from quote v" + q.version + ".",
+      });
+      // Kept on the show so it can always find the paperwork it came from.
+      e.quoteRef = { quoteId: q.id, familyId: q.familyId, version: q.version, total: grand };
+      if (data.notes) e.notes = [{ id: uid(), title: "From the quote", body: data.notes }];
+
+      const created = await createEvent({
+        name: e.name, client: e.client, startDate: e.startDate, endDate: e.endDate, data: e, password: "",
+      });
+      // The P&L lives in its own table, so it is a second write. If it fails the
+      // show still exists — better a show with an empty P&L than no show.
+      try { await saveCosting(created.id, costingSeed()); } catch (x) {}
+      try { await linkQuoteToShow(q.id, created.id); } catch (x) {}
+      if (onShowCreated) onShowCreated(created);
+      setConvert(null);
+      await load();
+      if (onChanged) onChanged();
+      setNotice("Show created. Gear is on the pull list and the quote total is in the P&L — set a show password before sharing it with crew.");
+    } catch (e2) {
+      setErr((e2 && e2.message) || "Couldn't create the show.");
+    }
+    setBusyShow(false);
+  };
+
+  /* Push into a show that already exists. Read the show, fold the rows into its
+     pull list, write it back — deliberately a merge, so a pull list someone has
+     already started is added to rather than overwritten. */
+  const doPushToShow = async (rows, showId) => {
+    if (!showId) return;
+    setBusyShow(true);
+    setErr("");
+    try {
+      const full = await getEvent(showId);
+      const merged = qtMergePull(full.pull, rows || []);
+      await updateEvent(showId, { data: { ...full, pull: merged } });
+      const n = (rows || []).filter((r) => r.include && String(r.item || "").trim()).length;
+      setPushOpen(false);
+      setNotice("Added " + n + " item" + (n === 1 ? "" : "s") + " to that show's pull list.");
+    } catch (e2) {
+      setErr((e2 && e2.message) || "Couldn't update that show's pull list.");
+    }
+    setBusyShow(false);
+  };
+
   const lineRow = (l) => {
     const on = sel.has(l.id);
+    const sub = subMap[l.id];
     return (
-      <div key={l.id} style={{ ...qtListRow, marginBottom: 4, background: on ? "var(--panel2)" : "var(--panel)" }}>
+      <div key={l.id} style={{ marginBottom: 4 }}>
+      <div style={{ ...qtListRow, marginBottom: 0, background: on ? "var(--panel2)" : "var(--panel)" }}>
         {!locked && <input type="checkbox" checked={on} onChange={() => toggleSel(l.id)} style={{ width: 15, height: 15, flex: "0 0 auto" }} />}
         <input value={l.name} onChange={(e) => patchLine(l.id, { name: e.target.value })} disabled={locked} style={{ flex: "1 1 180px", minWidth: 130 }} />
         <input value={l.qty} onChange={(e) => patchLine(l.id, { qty: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Qty" />
@@ -3424,6 +3840,40 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           </select>
         )}
         {!locked && <button className="btn ghost danger" onClick={() => removeLine(l.id)} style={{ padding: "4px 9px" }}>×</button>}
+      </div>
+      {/* Shown only when the quote asks for more of this item than we own. The
+          shortfall is what a vendor has to cover, so it is the only thing that
+          carries a cost — owned gear costs nothing extra to send out. */}
+      {sub ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "6px 12px 7px", marginLeft: 18, borderLeft: "2px solid #B45309", background: "rgba(180,83,9,.07)", borderRadius: "0 8px 8px 0" }}>
+          <span style={{ fontSize: 11, fontWeight: 800, color: "#B45309", textTransform: "uppercase", letterSpacing: ".04em" }}>Sub-rent {sub.short}</span>
+          <span style={{ fontSize: 12, color: "var(--dim)" }}>
+            {sub.owned > 0 ? "own " + sub.owned + ", quote uses " + sub.quoted : "we don't own this"}
+          </span>
+          <input
+            value={l.subVendor || ""}
+            onChange={(e) => patchLine(l.id, { subVendor: e.target.value })}
+            disabled={locked}
+            placeholder="Vendor"
+            style={{ width: 150, fontSize: 13 }}
+            title="Who we are renting the shortfall from — this becomes the vendor on the show's P&L"
+          />
+          <input
+            value={l.subCost == null ? "" : l.subCost}
+            onChange={(e) => patchLine(l.id, { subCost: e.target.value })}
+            disabled={locked}
+            inputMode="decimal"
+            placeholder="Cost/day"
+            style={{ width: 88, textAlign: "right", fontSize: 13 }}
+            title="What the vendor charges us per unit per day"
+          />
+          <span style={{ fontSize: 12, color: "var(--dim)" }}>
+            {qtNum(l.subCost)
+              ? sub.short + " × " + qtNum(l.days) + "d = " + qtMoney(qtSubCostOf(l, sub)) + " cost"
+              : "no cost yet"}
+          </span>
+        </div>
+      ) : null}
       </div>
     );
   };
@@ -3444,11 +3894,33 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           {q.status === "draft" ? <button className="btn" onClick={() => doStatus("sent")}>Mark sent</button> : null}
           {q.status === "sent" ? <button className="btn" onClick={() => doStatus("won")}>Mark won</button> : null}
           {q.status === "sent" ? <button className="btn ghost" onClick={() => doStatus("lost")}>Mark lost</button> : null}
+          {q.status === "won" && !q.eventId ? (
+            <button className="btn" onClick={() => setConvert({ rows: qtPullRows(data, catalog) })} disabled={busyShow}>Create show</button>
+          ) : null}
+          {q.eventId ? (
+            <button className="btn" onClick={() => onOpenShow && onOpenShow(q.eventId)}>Open show</button>
+          ) : null}
+          <button className="btn ghost" onClick={() => setPushOpen(true)} disabled={!lines.length} title="Add this quote's gear to an existing show's pull list">Push to pull list</button>
           <button className="btn ghost" onClick={() => onClose()}>Back to quotes</button>
         </div>
       </div>
 
       {err ? <div style={qtErr}>{err}</div> : null}
+      {notice ? (
+        <div style={{ background: "rgba(95,208,138,.1)", border: "1px solid var(--green)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span>{notice}</span>
+          <span style={{ display: "flex", gap: 8 }}>
+            {q.eventId && onOpenShow ? <button className="btn" onClick={() => onOpenShow(q.eventId)} style={{ padding: "5px 11px" }}>Open show</button> : null}
+            <button className="btn ghost" onClick={() => setNotice("")} style={{ padding: "5px 11px" }}>Dismiss</button>
+          </span>
+        </div>
+      ) : null}
+      {q.eventId && !notice ? (
+        <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "var(--dim)", display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span>This quote has already been turned into a show. Revisions stay here; the show keeps its own gear and P&amp;L.</span>
+          {onOpenShow ? <button className="btn ghost" onClick={() => onOpenShow(q.eventId)} style={{ padding: "5px 11px" }}>Open show</button> : null}
+        </div>
+      ) : null}
       {locked ? (
         <div style={{ background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 13, color: "var(--dim)" }}>
           This version is locked so it keeps matching what the client received. Make a revision to keep working.
@@ -3610,6 +4082,33 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{qtMoney(grand)}</div>
       </div>
 
+      {/* ---- sub-rentals ---- */}
+      {subs.count > 0 && (
+        <div className="panel" style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 15, fontWeight: 800 }}>Sub-rentals</span>
+            <span style={{ fontSize: 13, color: "var(--dim)" }}>
+              {subs.count} line{subs.count === 1 ? "" : "s"} · {qtMoney(subs.cost)} cost
+              {grand > 0 ? " · " + qtMoney(grand - subs.cost) + " left after vendors" : ""}
+            </span>
+          </div>
+          <p style={{ ...qtHint, marginTop: 0 }}>
+            Anything quoted beyond what we own. These carry across to the show's P&amp;L as vendor estimates when you create the show.
+          </p>
+          {Object.keys(subs.byVendor).sort().map((v) => (
+            <div key={v} style={{ ...qtListRow, marginBottom: 4 }}>
+              <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: v === "Unassigned" ? "var(--dim)" : "var(--ink)" }}>{v}</span>
+              <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{qtMoney(subs.byVendor[v])}</span>
+            </div>
+          ))}
+          {subs.unpriced > 0 && (
+            <p style={{ ...qtHint, color: "#FFB020", marginTop: 6 }}>
+              {subs.unpriced} sub-rented line{subs.unpriced === 1 ? " has" : "s have"} no cost yet, so the margin above is flattering. Fill in the cost per day on those lines.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* ---- deposit schedule ---- */}
       <div className="panel" style={{ marginTop: 14 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
@@ -3619,21 +4118,39 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         {!data.deposits.length ? (
           <p style={qtHint}>No schedule yet. Build the standard three and edit from there, or add rows for whatever this client's terms are.</p>
         ) : null}
-        {data.deposits.map((d, i, all) => (
-          <div key={d.id} style={{ ...qtListRow, marginBottom: 4 }}>
-            <input value={d.label} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, label: e.target.value } : x)))} disabled={locked} style={{ flex: "1 1 180px" }} />
-            <input value={d.pct} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, pct: e.target.value } : x)))} disabled={locked || i === all.length - 1} inputMode="decimal" style={{ width: 62, textAlign: "center" }} title={i === all.length - 1 ? "The last row is whatever is left over" : "Percent"} />
-            <span style={{ color: "var(--dim)", fontSize: 12, width: 14 }}>%</span>
-            <input type="date" value={d.dueDate || ""} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, dueDate: e.target.value } : x)))} disabled={locked} style={{ width: 148 }} />
-            <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{qtMoney(depAmount(d, i, all))}</span>
-            {!locked && <button className="btn ghost danger" onClick={() => setDeposits(all.filter((x) => x.id !== d.id))} style={{ padding: "4px 9px" }}>×</button>}
-          </div>
-        ))}
+        {data.deposits.map((d, i, all) => {
+          const amt = dep.amounts[i] || 0;
+          const isLast = i === all.length - 1;
+          return (
+            <div key={d.id} style={{ ...qtListRow, marginBottom: 4, background: d.paid ? "rgba(95,208,138,.08)" : undefined }}>
+              <input value={d.label} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, label: e.target.value } : x)))} disabled={locked || d.paid} style={{ flex: "1 1 180px" }} />
+              <input value={d.pct} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, pct: e.target.value } : x)))} disabled={locked || d.paid || isLast} inputMode="decimal" style={{ width: 62, textAlign: "center" }} title={isLast ? "The last row is whatever is left over" : "Percent"} />
+              <span style={{ color: "var(--dim)", fontSize: 12, width: 14 }}>%</span>
+              <input type="date" value={d.dueDate || ""} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, dueDate: e.target.value } : x)))} disabled={locked || d.paid} style={{ width: 148 }} />
+              <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }} title={d.paid ? "Locked at what was invoiced" : ""}>{qtMoney(amt)}</span>
+              {/* Deliberately live even on a locked version — see setPaid. */}
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: d.paid ? "var(--green)" : "var(--dim)", cursor: "pointer", width: 92 }} title={d.paid ? "Paid " + (d.paidDate || "") + " — this figure no longer moves" : "Tick when this one is invoiced and paid"}>
+                <input type="checkbox" checked={!!d.paid} onChange={(e) => setPaid(d, e.target.checked, amt)} />
+                {d.paid ? "Paid" : "Unpaid"}
+              </label>
+              {!locked && !d.paid && <button className="btn ghost danger" onClick={() => setDeposits(all.filter((x) => x.id !== d.id))} style={{ padding: "4px 9px" }}>×</button>}
+            </div>
+          );
+        })}
         {!locked && data.deposits.length > 0 && (
           <button className="btn ghost" onClick={() => setDeposits(data.deposits.concat([{ id: uid(), label: "", pct: 0, dueDate: "", paid: false }]))} style={{ padding: "5px 11px", marginTop: 4 }}>+ Row</button>
         )}
         {data.deposits.length > 0 && (
-          <p style={{ ...qtHint, marginTop: 8 }}>The last row is calculated as the remainder, so the schedule always adds up to {qtMoney(grand)} exactly.</p>
+          <p style={{ ...qtHint, marginTop: 8 }}>
+            {dep.paidTotal > 0
+              ? "Paid rows are frozen at " + qtMoney(dep.paidTotal) + " — what was actually invoiced. The remaining " + qtMoney(dep.remaining) + " is spread across the rows still open, and the last row absorbs any change to the total, so revising this quote can never restate a deposit you have already collected."
+              : "The last row is calculated as the remainder, so the schedule always adds up to " + qtMoney(grand) + " exactly."}
+          </p>
+        )}
+        {dep.remaining < 0 && (
+          <p style={{ ...qtHint, color: "#FF6B6B", marginTop: 4 }}>
+            Heads up: {qtMoney(dep.paidTotal)} has already been paid, which is more than this version's total of {qtMoney(grand)}. The balance shows as a credit of {qtMoney(Math.abs(dep.remaining))}.
+          </p>
         )}
       </div>
 
@@ -3643,6 +4160,26 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <textarea value={data.notes} onChange={(e) => touch({ ...data, notes: e.target.value })} disabled={locked} rows={3} style={{ width: "100%" }} placeholder="Never shown to the client." />
       </div>
 
+      {convert ? (
+        <QtGearSheet
+          mode="convert"
+          rows={convert.rows}
+          quoteName={q.name}
+          busy={busyShow}
+          onConfirm={(rows) => doCreateShow(rows)}
+          onClose={() => setConvert(null)}
+        />
+      ) : null}
+      {pushOpen ? (
+        <QtGearSheet
+          mode="push"
+          rows={qtPullRows(data, catalog)}
+          quoteName={q.name}
+          busy={busyShow}
+          onConfirm={(rows, showId) => doPushToShow(rows, showId)}
+          onClose={() => setPushOpen(false)}
+        />
+      ) : null}
       {truck ? <QtTruckModal rates={data.truckRates} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
       {browse ? (
         <QtCatalogBrowser
@@ -3659,7 +4196,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
 
 /* ---------- the list ---------- */
 
-function QuotesScreen({ onClose }) {
+function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
   const [rows, setRows] = useState([]);
   const [catalog, setCatalog] = useState([]);
   const [clients, setClients] = useState([]);
@@ -3716,6 +4253,8 @@ function QuotesScreen({ onClose }) {
         venues={venues}
         onChanged={loadList}
         onRefs={loadRefs}
+        onOpenShow={onOpenShow}
+        onShowCreated={onShowCreated}
         onClose={(nextId) => { if (nextId) { openQuote(nextId); } else { setOpenId(null); } loadList(); }}
       />
     );
