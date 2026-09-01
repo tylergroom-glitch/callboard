@@ -9,6 +9,11 @@
 //                    referenced it, so no package is left pointing at nothing.
 //
 // SETUP: run setup-catalog.sql in the Supabase SQL editor. No new env vars.
+//
+// qty_owned drives the sub-rental check on a quote: anything quoted beyond what
+// we own has to come from a vendor. sub_cost_per_day is what that shortfall
+// typically costs us — the only cost basis we keep, since owned gear has no
+// marginal cost per show.
 import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 
 const DEPTS = ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"];
@@ -23,6 +28,19 @@ function cleanRate(v) {
   if (typeof v === "number") return isFinite(v) ? Math.round(v * 100) / 100 : 0;
   const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
   return isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+function cleanQty(v) {
+  const n = parseInt(String(v == null ? "" : v).replace(/[^0-9]/g, ""), 10);
+  return isFinite(n) && n > 0 ? n : 0;
+}
+
+// Blank means "I have never priced a sub-rent for this" — stored as null so the
+// quote screen can tell it apart from a genuine $0.
+function cleanSubCost(v) {
+  if (v === "" || v == null) return null;
+  const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+  return isFinite(n) ? Math.round(n * 100) / 100 : null;
 }
 
 function cleanComponents(list) {
@@ -42,7 +60,8 @@ function row(r) {
     name: r.name || "",
     department: r.department || "Misc",
     rate: Number(r.rate_per_day || 0),
-    taxable: r.taxable !== false,
+    qtyOwned: r.qty_owned == null ? 0 : Number(r.qty_owned),
+    subCost: r.sub_cost_per_day == null ? null : Number(r.sub_cost_per_day),
     components: Array.isArray(r.components) ? r.components : [],
     notes: r.notes || "",
   };
@@ -102,7 +121,8 @@ export default async function handler(req, res) {
         name,
         department: cleanDept(it.department),
         rate_per_day: cleanRate(it.rate),
-        taxable: it.taxable !== false,
+        qty_owned: cleanQty(it.qtyOwned),
+        sub_cost_per_day: cleanSubCost(it.subCost),
         components: cleanComponents(it.components),
         notes: String(it.notes || ""),
         updated_at: new Date().toISOString(),

@@ -7,13 +7,17 @@
 // POST ?revise=<id>        duplicate a quote as the next version, back in draft
 // PATCH ?id= { ...quote }  save a quote. Refuses if it is not a draft.
 // PATCH ?id=&status=sent   change status only. Works on locked quotes.
+// PATCH ?id=&eventId=<id>  link the quote to the show it became. Works on locked
+//                          quotes, and refuses to overwrite an existing link.
+// PATCH ?id=&payments=1    save the payment schedule only. Works on locked quotes,
+//                          because deposits get ticked paid long after sending.
 // DELETE ?id=              delete one version
 //
 // SETUP: run setup-catalog.sql then setup-quotes.sql. No new env vars.
 import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 
 const STATUSES = ["draft", "sent", "won", "lost"];
-const LIST_COLS = "id,family_id,version,status,name,client_id,contact_id,venue_id,start_date,end_date,total,sent_at,created_at,updated_at";
+const LIST_COLS = "id,family_id,version,status,name,client_id,contact_id,venue_id,start_date,end_date,total,sent_at,event_id,created_at,updated_at";
 
 function num(v) {
   if (typeof v === "number") return isFinite(v) ? v : 0;
@@ -52,6 +56,9 @@ function shape(r, withData) {
     endDate: r.end_date || "",
     total: Number(r.total || 0),
     sentAt: r.sent_at || null,
+    // The show this quote was turned into, once it is won. Set once and kept,
+    // so the button becomes "Open show" instead of making a second show.
+    eventId: r.event_id || null,
     updatedAt: r.updated_at || null,
   };
   if (withData) out.data = (r.data && typeof r.data === "object") ? r.data : {};
@@ -192,6 +199,34 @@ export default async function handler(req, res) {
     if (req.method === "PATCH") {
       if (!q.id) return json(res, 400, { error: "id required" });
       const cur = await getOne(q.id);
+
+      // ---- payment schedule only (allowed even when locked) ----
+      // Money comes in after a quote has gone out, so ticking a deposit paid
+      // cannot require a revision. Only `deposits` inside the blob is touched,
+      // and `total` is left exactly as it was — nothing priced changes here.
+      if (q.payments) {
+        const b = await readBody(req);
+        const cur_data = (cur.data && typeof cur.data === "object") ? cur.data : {};
+        const deposits = Array.isArray(b.deposits) ? b.deposits : [];
+        await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), {
+          data: { ...cur_data, deposits },
+          updated_at: new Date().toISOString(),
+        });
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- link to the show this quote became (allowed even when locked) ----
+      // A won quote is locked, and linking happens after it is won, so this
+      // has to sit above the draft check like the status branch does.
+      if (q.eventId) {
+        if (cur.event_id && cur.event_id !== q.eventId)
+          return json(res, 409, { error: "This quote is already linked to a show." });
+        await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), {
+          event_id: String(q.eventId),
+          updated_at: new Date().toISOString(),
+        });
+        return json(res, 200, { ok: true, eventId: String(q.eventId) });
+      }
 
       // ---- status change only (allowed even when locked) ----
       if (q.status) {
