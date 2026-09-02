@@ -1337,7 +1337,7 @@ function Callboard({ auth, onLogout }) {
           </div>
           <main className={"content" + (tab === "rundown" ? " content-wide" : "")} data-show={event.name} data-tab={SECTION_LABEL[tab] || tab}>
             {tab === "mycall" && <MyCallTab event={event} showId={currentId} update={update} />}
-            {tab === "brief" && <LockWrapper canEdit={tabCanEdit("briefUnlocked")} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} showId={currentId} /></LockWrapper>}
+            {tab === "brief" && <LockWrapper canEdit={tabCanEdit("briefUnlocked")} label="Brief"><BriefTab event={event} update={update} isAdmin={isShowAdmin} isTcg={isSuperAdmin} showId={currentId} /></LockWrapper>}
             {tab === "schedule" && <ScheduleTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("scheduleUnlocked")} showId={currentId} />}
             {tab === "rundown" && <RundownTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("rundownUnlocked")} myDepts={myDepts} showId={currentId} />}
             {tab === "todos" && <TodoTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("todosUnlocked")} />}
@@ -1595,12 +1595,60 @@ function normPipe(p) {
   PIPE_MILESTONES.forEach(([k]) => { if (!out.milestones[k] || typeof out.milestones[k] !== "object") out.milestones[k] = { done: false, date: "" }; });
   return out;
 }
+/* Milestones the app can work out for itself, from what is already on the show
+   and on the quote linked to it.
+
+   Nothing in here is ever written. The board renders `manual OR derived`, so:
+   opening the page fires no writes, an inferred tick can never overwrite one
+   you set by hand, and if the evidence goes away — you empty a pull list — the
+   tick goes with it instead of leaving a stale "done" behind. What is stored
+   stays a record of what a person actually confirmed.
+
+   Site Visit is absent on purpose: nothing in the app knows whether you walked
+   the room, so guessing at it would be worse than leaving it to you. */
+function pipeDerive(row, quote) {
+  const d = row.data || {};
+  const out = {};
+  const set = (k, why) => { out[k] = why; };
+
+  if (row.start && row.end) set("datesHeld", "Dates are on the show");
+
+  const crew = (d.crew || []).filter((c) => c && String(c.name || "").trim());
+  if (crew.length) set("crewBooked", crew.length + " named on the crew list");
+
+  const pull = d.pull || {};
+  const gear = ((pull.cases || []).reduce((n, c) => n + ((c.items || []).length), 0)) + ((pull.loose || []).length);
+  if (gear) set("gearReserved", gear + " items on the pull list");
+
+  const it = d.itinerary || {};
+  const legs = ((it.stays || []).length) + ((it.flights || []).length);
+  if (String(it.hotelName || "").trim() || legs) {
+    set("logistics", String(it.hotelName || "").trim() ? "Hotel on the itinerary" : legs + " travel legs booked");
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  if (row.end && row.end < today) set("show", "End date has passed");
+
+  // The rest need a quote linked to this show. Shows that predate the quoting
+  // system have no link until you attach one from the quote screen.
+  if (quote) {
+    if (quote.sentAt || quote.status !== "draft") set("prelimQuote", "Quote v" + quote.version + " sent");
+    if (quote.status === "won") set("quoteAccepted", "Quote v" + quote.version + " marked won");
+    const deps = (quote.data && Array.isArray(quote.data.deposits)) ? quote.data.deposits : [];
+    if (quote.status === "won" && deps.length && deps.every((x) => x && x.paid)) {
+      set("finalBilling", "Every payment ticked paid");
+    }
+  }
+  return out;
+}
+
 function PipelineBoard({ onClose, onOpenShow }) {
   const [rows, setRows] = useState(null);
   const [expand, setExpand] = useState(null);
   const [busy, setBusy] = useState({});
   const [filter, setFilter] = useState("all");
   const [q, setQ] = useState("");
+  const [quotes, setQuotes] = useState({}); // showId -> newest linked quote
   useEffect(() => {
     (async () => {
       try {
@@ -1609,6 +1657,23 @@ function PipelineBoard({ onClose, onOpenShow }) {
         const mapped = full.map(({ sm, d }) => ({ id: sm.id, name: sm.name, client: sm.client || "", start: sm.startDate || "", end: sm.endDate || "", data: d || {}, pipe: normPipe(d && d.pipeline) }));
         mapped.sort((a, b) => (a.start || "9999-99-99").localeCompare(b.start || "9999-99-99"));
         setRows(mapped);
+        /* Quotes are loaded separately and only for the newest version of each
+           linked family. The list response leaves out the heavy blob, so the
+           won ones are re-fetched in full to read their payment schedule —
+           that is a handful of requests, not one per show. */
+        try {
+          const qs = await listQuotes();
+          const best = {};
+          for (const qq of qs || []) {
+            if (!qq.eventId) continue;
+            const cur = best[qq.eventId];
+            if (!cur || qq.version > cur.version) best[qq.eventId] = qq;
+          }
+          const won = Object.values(best).filter((qq) => qq.status === "won");
+          const fat = await Promise.all(won.map((qq) => getQuote(qq.id).catch(() => null)));
+          for (const f of fat) if (f && f.eventId) best[f.eventId] = f;
+          setQuotes(best);
+        } catch (e) { setQuotes({}); }
       } catch (e) { setRows([]); }
     })();
   }, []);
@@ -1647,8 +1712,21 @@ function PipelineBoard({ onClose, onOpenShow }) {
       setRows((rs) => [{ id: (created && created.id) || nid, name: name.trim(), client: "", start: "", end: "", data: { pipeline: normPipe(null) }, pipe: normPipe(null) }, ...(rs || [])]);
     } catch (e) { window.alert("Could not create the show."); }
   };
-  const doneCount = (r) => PIPE_MILESTONES.reduce((n, [k]) => n + (r.pipe.milestones[k] && r.pipe.milestones[k].done ? 1 : 0), 0);
-  const stageOf = (r) => { const m = r.pipe.milestones; if (m.finalBilling && m.finalBilling.done) return "done"; if (m.quoteAccepted && m.quoteAccepted.done) return "confirmed"; return "lead"; };
+  /* One place decides whether a milestone counts as done: ticked by hand, or
+     backed by evidence. Everything below — the count, the stage, the filters —
+     reads through here, so an inferred milestone moves a show out of "Leads"
+     exactly as a manual tick would. */
+  const derivedFor = (r) => pipeDerive(r, quotes[r.id]);
+  const msDone = (r, k, der) => !!(r.pipe.milestones[k] && r.pipe.milestones[k].done) || !!(der || derivedFor(r))[k];
+  const doneCount = (r) => { const der = derivedFor(r); return PIPE_MILESTONES.reduce((n, [k]) => n + (msDone(r, k, der) ? 1 : 0), 0); };
+  const stageOf = (r) => { const der = derivedFor(r); if (msDone(r, "finalBilling", der)) return "done"; if (msDone(r, "quoteAccepted", der)) return "confirmed"; return "lead"; };
+  /* Clicking an inferred pill pins it: it becomes a real, stored tick rather
+     than toggling off something that was never on. */
+  const clickMs = (r, k) => {
+    const manual = !!(r.pipe.milestones[k] && r.pipe.milestones[k].done);
+    if (!manual && derivedFor(r)[k]) { toggleMs(r.id, k); return; }
+    toggleMs(r.id, k);
+  };
   const filtered = (rows || []).filter((r) => { if (filter !== "all" && stageOf(r) !== filter) return false; if (q) { const hay = ((r.name || "") + " " + (r.client || "")).toLowerCase(); if (hay.indexOf(q.toLowerCase()) < 0) return false; } return true; });
   const todayStr = new Date().toISOString().slice(0, 10);
   const dueList = [];
@@ -1694,6 +1772,7 @@ function PipelineBoard({ onClose, onOpenShow }) {
         <div className="pipe-list">
           {filtered.map((r) => {
             const open = expand === r.id;
+            const der = derivedFor(r);
             const qTotal = r.pipe.quotes.reduce((s2, q) => s2 + money(q.amount), 0);
             const iTotal = r.pipe.invoices.reduce((s2, x) => s2 + money(x.amount), 0);
             return (
@@ -1701,9 +1780,18 @@ function PipelineBoard({ onClose, onOpenShow }) {
                 <div className="pipe-cardhead" onClick={() => setExpand(open ? null : r.id)}>
                   <div className="pipe-cardname"><span className="pipe-nm">{r.name || "Untitled"}</span>{r.client ? <span className="pipe-cl">{r.client}</span> : null}</div>
                   <div className="pipe-strip">
-                    {PIPE_MILESTONES.map(([k, label]) => (
-                      <span key={k} className={"pipe-pill" + (r.pipe.milestones[k].done ? " done" : "")} title={label} onClick={(e) => { e.stopPropagation(); toggleMs(r.id, k); }}>{label}</span>
-                    ))}
+                    {PIPE_MILESTONES.map(([k, label]) => {
+                      const manual = !!r.pipe.milestones[k].done;
+                      const why = der[k];
+                      return (
+                        <span
+                          key={k}
+                          className={"pipe-pill" + (manual ? " done" : why ? " auto" : "")}
+                          title={manual ? label + " — confirmed" : why ? label + " — " + why + ". Click to confirm." : label}
+                          onClick={(e) => { e.stopPropagation(); clickMs(r, k); }}
+                        >{label}</span>
+                      );
+                    })}
                   </div>
                   <div className="pipe-meta">{doneCount(r)}/{PIPE_MILESTONES.length}{busy[r.id] ? " · saving…" : ""}</div>
                 </div>
@@ -1716,12 +1804,20 @@ function PipelineBoard({ onClose, onOpenShow }) {
                     <div className="pipe-cols">
                       <div className="pipe-col">
                         <div className="pipe-col-h">Milestones</div>
-                        {PIPE_MILESTONES.map(([k, label]) => (
-                          <div className="pipe-ms" key={k}>
-                            <label className="pipe-ms-l"><input type="checkbox" checked={!!r.pipe.milestones[k].done} onChange={() => toggleMs(r.id, k)} /> {label}</label>
-                            <input className="pipe-ms-d" type="date" value={r.pipe.milestones[k].date || ""} onChange={(e) => setMsDate(r.id, k, e.target.value)} />
-                          </div>
-                        ))}
+                        {PIPE_MILESTONES.map(([k, label]) => {
+                          const manual = !!r.pipe.milestones[k].done;
+                          const why = der[k];
+                          return (
+                            <div className="pipe-ms" key={k}>
+                              <label className="pipe-ms-l">
+                                <input type="checkbox" checked={manual || !!why} onChange={() => clickMs(r, k)} />
+                                {label}
+                                {!manual && why ? <span className="pipe-auto" title="Worked out from the show — click to confirm it">{why}</span> : null}
+                              </label>
+                              <input className="pipe-ms-d" type="date" value={r.pipe.milestones[k].date || ""} onChange={(e) => setMsDate(r.id, k, e.target.value)} />
+                            </div>
+                          );
+                        })}
                       </div>
                       <div className="pipe-col">
                         <div className="pipe-col-h">Quotes {qTotal > 0 ? <span className="pipe-tot">{fmt$(qTotal)}</span> : null}</div>
@@ -3391,6 +3487,39 @@ function qtExportQuotePdf(opts) {
 
 /* ---------- the editor ---------- */
 
+/* Attach a quote to a show that already exists — the other direction of
+   "Create show". Every show that predates the quoting system has no quote
+   behind it, so its Prelim Quote / Quote Accepted / Final Billing milestones
+   can never fill in. Linking one is a one-off fix per show. Nothing is copied
+   across: the show keeps its own gear and P&L, and this only says which
+   paperwork it came from. */
+function QtShowPicker({ busy, onConfirm, onClose }) {
+  const [shows, setShows] = useState(null);
+  const [showId, setShowId] = useState("");
+  useEffect(() => { listEvents().then((l) => setShows(l || [])).catch(() => setShows([])); }, []);
+  return (
+    <CtgModal title="Link to an existing show" onClose={onClose}>
+      <p style={{ ...qtHint, marginTop: 0 }}>
+        Use this for a job that was already in Crew Call before you quoted it here. It records which show this quote belongs to, so the
+        pipeline can fill in Prelim Quote, Quote Accepted and Final Billing on its own. Gear and P&amp;L are left alone — push the gear
+        separately if you want it.
+      </p>
+      {shows === null ? (
+        <div style={qtHint}>Loading shows…</div>
+      ) : (
+        <select value={showId} onChange={(e) => setShowId(e.target.value)} style={{ width: "100%" }}>
+          <option value="">Choose a show…</option>
+          {shows.map((sh) => <option key={sh.id} value={sh.id}>{sh.name}{sh.startDate ? " · " + sh.startDate : ""}</option>)}
+        </select>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+        <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn amber" onClick={() => onConfirm(showId)} disabled={busy || !showId}>{busy ? "Linking…" : "Link quote"}</button>
+      </div>
+    </CtgModal>
+  );
+}
+
 /* The review step between a quote and a pull list. Packages are already broken
    into parts by the time rows arrive here. Anything typed on a blank quote line
    has no catalog entry behind it, so it is flagged: "Premium Audio Mixer" is a
@@ -3508,6 +3637,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [bulk, setBulk] = useState({ qty: "", days: "", discount: "" });
   const [exporting, setExporting] = useState(false);
   const [pushOpen, setPushOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
   const [convert, setConvert] = useState(null); // { rows } while the convert sheet is open
   const [busyShow, setBusyShow] = useState(false);
   const [notice, setNotice] = useState("");
@@ -3820,6 +3950,22 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     setBusyShow(false);
   };
 
+  const doLinkShow = async (showId) => {
+    if (!showId) return;
+    setBusyShow(true);
+    setErr("");
+    try {
+      await linkQuoteToShow(q.id, showId);
+      setLinkOpen(false);
+      await load();
+      if (onChanged) onChanged();
+      setNotice("Linked. That show's pipeline will now fill in its quote milestones on its own.");
+    } catch (e2) {
+      setErr((e2 && e2.message) || "Couldn't link that show.");
+    }
+    setBusyShow(false);
+  };
+
   const lineRow = (l) => {
     const on = sel.has(l.id);
     const sub = subMap[l.id];
@@ -3896,6 +4042,9 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           {q.status === "sent" ? <button className="btn ghost" onClick={() => doStatus("lost")}>Mark lost</button> : null}
           {q.status === "won" && !q.eventId ? (
             <button className="btn" onClick={() => setConvert({ rows: qtPullRows(data, catalog) })} disabled={busyShow}>Create show</button>
+          ) : null}
+          {q.status === "won" && !q.eventId ? (
+            <button className="btn ghost" onClick={() => setLinkOpen(true)} disabled={busyShow} title="This job is already a show in Crew Call">Link to existing show</button>
           ) : null}
           {q.eventId ? (
             <button className="btn" onClick={() => onOpenShow && onOpenShow(q.eventId)}>Open show</button>
@@ -4169,6 +4318,9 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           onConfirm={(rows) => doCreateShow(rows)}
           onClose={() => setConvert(null)}
         />
+      ) : null}
+      {linkOpen ? (
+        <QtShowPicker busy={busyShow} onConfirm={doLinkShow} onClose={() => setLinkOpen(false)} />
       ) : null}
       {pushOpen ? (
         <QtGearSheet
@@ -5131,7 +5283,140 @@ function MyCallTab({ event, showId, update }) {
 }
 
 
-function BriefTab({ event, update, isAdmin, showId }) {
+/* Booking details for the crew on this show. TCG admin only — it is the one
+   place in the app that puts dates of birth and Known Traveler Numbers on
+   screen, so it is behind the admin check and folded shut until asked for.
+
+   The details are not copied onto the show. They are read live from the roster
+   each time, so a corrected KTN is right everywhere at once and a person's
+   documents are not left lying around inside old shows.
+
+   Grouped by home airport because booking is done a route at a time, not a
+   person at a time: three people out of SFO is one search, not three. */
+function BriefTravel({ event, roster }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState("");
+  const flash = (k) => { setCopied(k); window.setTimeout(() => setCopied((c) => (c === k ? "" : c)), 1600); };
+  const copy = (text, k) => { navigator.clipboard?.writeText(text).catch(() => {}); flash(k); };
+
+  const byId = {};
+  const byName = {};
+  for (const m of roster || []) {
+    byId[m.id] = m;
+    if (m.name) byName[m.name.trim().toLowerCase()] = m;
+  }
+  // rosterId is set when a name is picked from the autocomplete; the name match
+  // is the fallback for crew typed in by hand.
+  const people = (event.crew || [])
+    .filter((c) => String(c.name || "").trim())
+    .map((c) => {
+      const m = byId[c.rosterId] || byName[c.name.trim().toLowerCase()] || null;
+      const d = (m && m.data) || {};
+      const missing = [];
+      if (!d.legalName && !c.name) missing.push("legal name");
+      if (!d.birthday) missing.push("birthday");
+      if (!d.gender) missing.push("gender");
+      if (!d.homeAirport) missing.push("home airport");
+      return {
+        id: c.id,
+        display: c.name,
+        position: c.position || "",
+        onRoster: !!m,
+        legalName: d.legalName || c.name,
+        differs: !!(d.legalName && d.legalName.trim().toLowerCase() !== c.name.trim().toLowerCase()),
+        birthday: d.birthday || "",
+        gender: d.gender || "",
+        ktn: d.tsaPrecheck || "",
+        airport: (d.homeAirport || "").toUpperCase(),
+        passportExp: d.passportExp || "",
+        missing,
+      };
+    });
+
+  if (!people.length) return null;
+
+  const groups = {};
+  for (const p of people) (groups[p.airport || "No airport on file"] = groups[p.airport || "No airport on file"] || []).push(p);
+  const airports = Object.keys(groups).sort((a, b) => (a === "No airport on file" ? 1 : b === "No airport on file" ? -1 : a.localeCompare(b)));
+  const incomplete = people.filter((p) => p.missing.length);
+
+  const nice = (iso) => { if (!iso) return "—"; try { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return iso; } };
+  const block = (p) => [
+    p.legalName,
+    "DOB: " + (p.birthday || "—"),
+    "Gender: " + (p.gender || "—"),
+    "KTN: " + (p.ktn || "—"),
+    "From: " + (p.airport || "—"),
+  ].join("\n");
+
+  return (
+    <Panel
+      title="Travel details"
+      sub="Admin only — read live from the roster"
+      action={
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {open && (
+            <button className="copy-emails-btn" onClick={() => copy(people.map(block).join("\n\n"), "all")}>
+              {copied === "all" ? "✓ Copied!" : "Copy everyone"}
+            </button>
+          )}
+          <button className="ts-batchbtn" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show " + people.length + " travellers"}</button>
+        </div>
+      }
+    >
+      {!open ? (
+        <div className="trav-shut">
+          Birthdays and Known Traveler Numbers stay hidden until you ask for them.
+          {incomplete.length > 0 ? " " + incomplete.length + " of " + people.length + " are missing something needed to book." : " Everyone has what a booking needs."}
+        </div>
+      ) : (
+        <>
+          {incomplete.length > 0 && (
+            <div className="trav-warn">
+              <b>Not bookable yet:</b>{" "}
+              {incomplete.map((p) => p.display + " (" + p.missing.join(", ") + ")").join(" · ")}
+              <div className="trav-warn-sub">Send them the onboarding link from the Roster screen and they can fill it in themselves.</div>
+            </div>
+          )}
+          {airports.map((ap) => (
+            <div key={ap} className="trav-group">
+              <div className="trav-group-h">
+                <span className="trav-ap">{ap}</span>
+                <span className="trav-n">{groups[ap].length} {groups[ap].length === 1 ? "person" : "people"}</span>
+                <button className="copy-emails-btn" onClick={() => copy(groups[ap].map(block).join("\n\n"), ap)}>
+                  {copied === ap ? "✓ Copied!" : "Copy group"}
+                </button>
+              </div>
+              <div className="rows">
+                <div className="rowhead trav-grid">
+                  <span>Name for the ticket</span><span>Date of birth</span><span>Gender</span><span>Known Traveler</span><span>Passport</span><span />
+                </div>
+                {groups[ap].map((p) => (
+                  <div className="row trav-grid" key={p.id}>
+                    <span className="trav-nm">
+                      {p.legalName}
+                      {p.differs && <span className="trav-alias" title="Differs from the name on the crew list — flights go under the ID name">crew list: {p.display}</span>}
+                      {!p.onRoster && <span className="trav-alias trav-bad" title="No roster record — nothing to book from">not on the roster</span>}
+                      {p.position ? <span className="trav-pos">{p.position}</span> : null}
+                    </span>
+                    <span className={p.birthday ? "" : "trav-miss"}>{p.birthday ? nice(p.birthday) : "missing"}</span>
+                    <span className={p.gender ? "" : "trav-miss"}>{p.gender || "missing"}</span>
+                    <span className={p.ktn ? "trav-mono" : "trav-miss"}>{p.ktn || "none"}</span>
+                    <span className={p.passportExp ? "" : "trav-miss"}>{p.passportExp ? "exp " + nice(p.passportExp) : "—"}</span>
+                    <button className="copy-emails-btn" onClick={() => copy(block(p), p.id)}>{copied === p.id ? "✓" : "Copy"}</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </Panel>
+  );
+}
+
+function BriefTab({ event, update, isAdmin, isTcg, showId }) {
+  const { roster } = React.useContext(RosterCtx);
   const [emailsCopied, setEmailsCopied] = useState(false);
   const [phonesCopied, setPhonesCopied] = useState(false);
   const copyEmails = () => {
@@ -5408,6 +5693,10 @@ function BriefTab({ event, update, isAdmin, showId }) {
           {!event.contacts.length && <Empty>No contacts yet. Add your PM, venue CSM, and client.</Empty>}
         </div>
       </Panel>
+
+      {/* TCG admin only, deliberately not isAdmin: a producer holding a show
+          admin password should not get the crew's dates of birth and KTNs. */}
+      {isTcg && <BriefTravel event={event} roster={roster} />}
 
       <Panel
         title="Crew roster"
@@ -8647,6 +8936,19 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
 
       <div className="roster-sect-lbl" style={{ marginTop: 14 }}>Personal &amp; travel</div>
       <div className="roster-form-grid">
+        <div className="roster-form-col full">
+          <label className="roster-lbl">Legal name (as printed on their ID)</label>
+          <input className="roster-inp" value={vals.legalName || ""} placeholder="Leave blank if it matches the name above" onChange={(e) => onChange("legalName", e.target.value)} />
+        </div>
+        <div className="roster-form-col">
+          <label className="roster-lbl">Gender (for the ticket)</label>
+          <select className="roster-inp" value={vals.gender || ""} onChange={(e) => onChange("gender", e.target.value)}>
+            <option value="">—</option>
+            <option value="M">M</option>
+            <option value="F">F</option>
+            <option value="X">X</option>
+          </select>
+        </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Birthday</label>
           <input className="roster-inp" type="date" value={vals.birthday || ""} onChange={(e) => onChange("birthday", e.target.value)} />
@@ -8900,11 +9202,12 @@ function RosterTab() {
                       <button className="daysort" onClick={() => startEdit(m)}>Edit</button>
                       <button className="pl-x" style={{ width: 28, height: 28 }} onClick={() => deleteMember(m)} title="Remove">×</button>
                     </div>
-                    {(d.birthday || d.shirtSize || d.homeAirport || d.tsaPrecheck || d.passportExp || d.dietary || d.emergencyName || d.w9 === "yes") && (
+                    {(d.birthday || d.shirtSize || d.homeAirport || d.tsaPrecheck || d.legalName || d.passportExp || d.dietary || d.emergencyName || d.w9 === "yes") && (
                       <div className="roster-extras">
                         {d.birthday && <span className="roster-chip">🎂 {new Date(d.birthday + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>}
                         {d.shirtSize && <span className="roster-chip">👕 {d.shirtSize}</span>}
                         {d.homeAirport && <span className="roster-chip">✈ {d.homeAirport.toUpperCase()}</span>}
+                        {d.legalName && <span className="roster-chip" title="Name as printed on their ID — what flights are booked under">🪪 {d.legalName}</span>}
                         {d.tsaPrecheck && <span className="roster-chip">🔒 TSA {d.tsaPrecheck}</span>}
                         {d.passportExp && <span className="roster-chip">🛂 exp {new Date(d.passportExp + "T12:00:00").toLocaleDateString("en-US", { month: "short", year: "numeric" })}</span>}
                         {d.dietary && <span className="roster-chip">🍽 {d.dietary}</span>}
@@ -11013,6 +11316,25 @@ const CSS = `
 .cb .pipe-pill{font-size:10px; font-weight:700; padding:4px 8px; border-radius:20px; border:1px solid var(--line); color:var(--dim); background:var(--panel2); white-space:nowrap; cursor:pointer; user-select:none;}
 .cb .pipe-pill:hover{border-color:var(--accent);}
 .cb .pipe-pill.done{background:var(--green); border-color:var(--green); color:#062012;}
+/* Inferred rather than confirmed: the same green, quietened, so the strip reads
+   at a glance but you can still see which ones a person actually ticked. */
+.cb .pipe-pill.auto{background:rgba(95,208,138,.16); border-color:rgba(95,208,138,.5); color:var(--green);}
+.cb .pipe-auto{font-size:11px; color:var(--dim); font-weight:500; font-style:italic;}
+.cb .trav-shut{font-size:13px; color:var(--dim); padding:4px 2px;}
+.cb .trav-warn{background:rgba(255,176,32,.1); border:1px solid #FFB020; border-radius:10px; padding:10px 13px; font-size:13px; margin-bottom:12px;}
+.cb .trav-warn-sub{font-size:12px; color:var(--dim); margin-top:4px;}
+.cb .trav-group{margin-bottom:16px;}
+.cb .trav-group-h{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+.cb .trav-ap{font-size:14px; font-weight:800; letter-spacing:.02em;}
+.cb .trav-n{font-size:12px; color:var(--dim); flex:1;}
+.cb .trav-grid{display:grid; grid-template-columns:minmax(180px,1.6fr) 130px 70px 150px 120px 70px; gap:10px; align-items:center;}
+.cb .trav-nm{display:flex; flex-direction:column; gap:2px; font-weight:600;}
+.cb .trav-alias{font-size:11px; font-weight:500; color:var(--dim); font-style:italic;}
+.cb .trav-alias.trav-bad{color:#FF6B6B; font-style:normal; font-weight:700;}
+.cb .trav-pos{font-size:11px; font-weight:500; color:var(--faint);}
+.cb .trav-mono{font-variant-numeric:tabular-nums; letter-spacing:.02em;}
+.cb .trav-miss{color:var(--faint); font-style:italic; font-size:12px;}
+@media (max-width:860px){ .cb .trav-grid{grid-template-columns:1fr 1fr; row-gap:4px;} }
 .cb .pipe-meta{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; min-width:60px; text-align:right;}
 .cb .pipe-detail{padding:14px; border-top:1px solid var(--line); background:var(--panel2);}
 .cb .pipe-dates{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; font-size:13px; color:var(--dim);}
