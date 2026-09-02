@@ -5,7 +5,7 @@
 //
 // Token is HMAC-signed with APP_SECRET and carries the show id, so edits can only ever
 // land on the show the link was made for. Valid 365 days; regenerate to invalidate.
-import { auth, canManageShow, airtable, signToken, verifyToken } from "./_lib.js";
+import { auth, canManageShow, supabaseRest, signToken, verifyToken } from "./_lib.js";
 
 const DURATION = 1000 * 60 * 60 * 24 * 365;
 
@@ -20,12 +20,24 @@ function j(res, code, obj) {
   res.status(code).setHeader("Content-Type", "application/json").end(JSON.stringify(obj));
 }
 
+// Reads straight from Supabase with the service key. Share links are
+// unauthenticated by design — the HMAC token is the credential — so this
+// deliberately bypasses RLS and is only ever reached after verify().
 async function loadShow(id) {
-  const rec = await airtable("GET", "/" + id);
-  const f = rec.fields || {};
-  let data = {};
-  try { data = f.Data ? JSON.parse(f.Data) : {}; } catch { data = {}; }
-  return { name: f.Name || "", data };
+  const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=name,data", null);
+  const row = rows && rows[0];
+  if (!row) { const e = new Error("Show not found"); e.status = 404; throw e; }
+  const data = row.data && typeof row.data === "object" ? row.data : {};
+  return { name: row.name || "", data };
+}
+
+async function saveShowData(id, data) {
+  await supabaseRest(
+    "PATCH",
+    "/shows?id=eq." + encodeURIComponent(id),
+    { data, updated_at: new Date().toISOString() },
+    "return=minimal"
+  );
 }
 
 function shell(inner) {
@@ -187,7 +199,7 @@ export default async function handler(req, res) {
       const show = await loadShow(p.id);
       const data = show.data || {};
       data.schedule = clean;
-      await airtable("PATCH", "/" + p.id, { fields: { Data: JSON.stringify(data), UpdatedAt: new Date().toISOString() } });
+      await saveShowData(p.id, data);
       return j(res, 200, { ok: true });
     } catch (e) {
       return j(res, 500, { error: e.message || "Server error" });

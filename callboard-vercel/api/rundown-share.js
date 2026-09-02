@@ -6,7 +6,7 @@
 //
 // Token is HMAC-signed with APP_SECRET and carries the show id + share id, so a link
 // can only ever touch its own show, and only the columns the admin marked editable.
-import { auth, canManageShow, airtable, signToken, verifyToken } from "./_lib.js";
+import { auth, canManageShow, supabaseRest, signToken, verifyToken } from "./_lib.js";
 
 const DURATION = 1000 * 60 * 60 * 24 * 180; // 180 days
 
@@ -19,12 +19,24 @@ const verify = (t) => {
 const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 const j = (res, code, obj) => res.status(code).setHeader("Content-Type", "application/json").end(JSON.stringify(obj));
 
+// Reads straight from Supabase with the service key. Share links are
+// unauthenticated by design — the HMAC token is the credential — so this
+// deliberately bypasses RLS and is only ever reached after verify().
 async function loadShow(id) {
-  const rec = await airtable("GET", "/" + id);
-  const f = rec.fields || {};
-  let data = {};
-  try { data = f.Data ? JSON.parse(f.Data) : {}; } catch { data = {}; }
-  return { name: f.Name || "", data };
+  const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=name,data", null);
+  const row = rows && rows[0];
+  if (!row) { const e = new Error("Show not found"); e.status = 404; throw e; }
+  const data = row.data && typeof row.data === "object" ? row.data : {};
+  return { name: row.name || "", data };
+}
+
+async function saveShowData(id, data) {
+  await supabaseRest(
+    "PATCH",
+    "/shows?id=eq." + encodeURIComponent(id),
+    { data, updated_at: new Date().toISOString() },
+    "return=minimal"
+  );
 }
 
 // --- time parsing (server-side so the browser view needs no regex) ---
@@ -409,7 +421,7 @@ export default async function handler(req, res) {
           const i = sh.cols.indexOf(body.colId), dir = body.dir === "left" ? -1 : 1, nj = i + dir;
           if (i >= 0 && nj >= 0 && nj < sh.cols.length) { const [x] = sh.cols.splice(i, 1); sh.cols.splice(nj, 0, x); }
         }
-        await airtable("PATCH", "/" + p.id, { fields: { Data: JSON.stringify(fresh.data), UpdatedAt: new Date().toISOString() } });
+        await saveShowData(p.id, fresh.data);
         return j(res, 200, { ok: true });
       } catch (e) { return j(res, 500, { error: e.message || "Server error" }); }
     }
@@ -424,7 +436,7 @@ export default async function handler(req, res) {
       if (!row) return j(res, 404, { error: "Row not found" });
       if (colId === "dur") row.dur = value;
       else { if (!row.cells) row.cells = {}; row.cells[colId] = value; }
-      await airtable("PATCH", "/" + p.id, { fields: { Data: JSON.stringify(fresh.data), UpdatedAt: new Date().toISOString() } });
+      await saveShowData(p.id, fresh.data);
       return j(res, 200, { ok: true });
     } catch (e) { return j(res, 500, { error: e.message || "Server error" }); }
   }

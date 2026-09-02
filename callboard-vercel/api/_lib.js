@@ -77,15 +77,21 @@ export function isAdmin(p) {
   return !!p && (p.is_tcg === true || p.scope === "admin");
 }
 export function canAccessShow(p, id) {
-  return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id));
+  return !!p && (isAdmin(p) || (p.scope === "show" && p.id === id));
 }
-// Show "manager" = the account admin, OR a show token whose password was that
+// Show "manager" = a TCG admin, OR a show token whose password was that
 // show's ADMIN password. Managers may open the P&L and Roster tabs.
+//
+// NOTE: these all go through isAdmin() rather than testing p.scope directly.
+// Account tokens minted by /api/auth carry { sub, is_tcg } and no `scope` at
+// all — the scope is only sent to the browser, never signed into the token.
+// Testing p.scope === "admin" here therefore never matched a signed-in TCG
+// admin, which 403'd them out of costing, share links and surveys.
 export function isShowManager(p) {
-  return !!p && (p.scope === "admin" || (p.scope === "show" && p.level === "admin"));
+  return !!p && (isAdmin(p) || (p.scope === "show" && p.level === "admin"));
 }
 export function canManageShow(p, id) {
-  return !!p && (p.scope === "admin" || (p.scope === "show" && p.id === id && p.level === "admin"));
+  return !!p && (isAdmin(p) || (p.scope === "show" && p.id === id && p.level === "admin"));
 }
 // --- Account membership (Supabase show_members) ---
 export async function memberRole(p, showId) {
