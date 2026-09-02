@@ -70,6 +70,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .msg-icon{font-size:48px;margin-bottom:16px}
 .msg-title{font-size:20px;font-weight:700;color:#0F1E35;margin-bottom:8px}
 .msg-body{font-size:14px;color:#64748B;line-height:1.6}
+.hint{font-size:12.5px;color:#64748B;line-height:1.55;margin:-2px 0 12px}
 .err{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px 14px;font-size:13px;color:#DC2626;margin-top:12px;display:none}
 @media(max-width:480px){.grid{grid-template-columns:1fr}}
 </style></head><body>
@@ -97,8 +98,13 @@ function formPage(token, positions) {
     <div class="fld full"><label>Email</label><input id="email" type="email" placeholder="you@email.com"></div>
   </div>
   <div class="sect">Personal &amp; travel</div>
+  <div class="hint">Airlines check these against your ID, so the name, birthday and gender have to match it exactly — not a nickname or a shortened first name. We only use them to book your travel.</div>
   <div class="grid">
+    <div class="fld full"><label>Name exactly as printed on your ID</label><input id="legalName" placeholder="Leave blank if it is the same as above"></div>
     <div class="fld"><label>Birthday</label><input id="birthday" type="date"></div>
+    <div class="fld"><label>Gender on your ID</label>
+      <select id="gender"><option value="">—</option><option value="M">M</option><option value="F">F</option><option value="X">X</option></select>
+    </div>
     <div class="fld"><label>Shirt size</label>
       <select id="shirtSize"><option value="">—</option>
         <option>XS</option><option>S</option><option>M</option><option>L</option>
@@ -129,6 +135,7 @@ document.getElementById('sub').onclick=async()=>{
   try{
     const r=await fetch('/api/onboard?token=${token}',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({name,position:get('position'),phone:get('phone'),email:get('email'),
+        legalName:get('legalName'),gender:get('gender'),
         birthday:get('birthday'),shirtSize:get('shirtSize'),homeAirport:get('homeAirport'),
         tsaPrecheck:get('tsaPrecheck'),passportExp:get('passportExp'),dietary:get('dietary'),
         emergencyName:get('emergencyName'),emergencyPhone:get('emergencyPhone')})});
@@ -192,6 +199,8 @@ export default async function handler(req, res) {
         position: body.position || "",
         phone: body.phone || "",
         email: body.email || "",
+        legalName: body.legalName || "",
+        gender: body.gender || "",
         birthday: body.birthday || "",
         shirtSize: body.shirtSize || "",
         homeAirport: body.homeAirport || "",
