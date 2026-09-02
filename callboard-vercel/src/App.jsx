@@ -5285,128 +5285,146 @@ function MyCallTab({ event, showId, update }) {
 
 /* Booking details for the crew on this show. TCG admin only — it is the one
    place in the app that puts dates of birth and Known Traveler Numbers on
-   screen, so it is behind the admin check and folded shut until asked for.
+   screen, so it sits behind the admin check and stays folded shut until asked
+   for.
 
-   The details are not copied onto the show. They are read live from the roster
-   each time, so a corrected KTN is right everywhere at once and a person's
-   documents are not left lying around inside old shows.
+   Read live from the roster, never copied onto the show: correcting a KTN once
+   fixes it everywhere, and nobody's documents are left inside old shows.
 
-   Grouped by home airport because booking is done a route at a time, not a
-   person at a time: three people out of SFO is one search, not three. */
+   Grouped by home airport and sorted by surname — booking is done a route at a
+   time, and a surname list is what you are reading against on the airline side. */
 function BriefTravel({ event, roster }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState("");
-  const flash = (k) => { setCopied(k); window.setTimeout(() => setCopied((c) => (c === k ? "" : c)), 1600); };
-  const copy = (text, k) => { navigator.clipboard?.writeText(text).catch(() => {}); flash(k); };
+  const copy = (text, k) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(k);
+    window.setTimeout(() => setCopied((c) => (c === k ? "" : c)), 1600);
+  };
 
-  const byId = {};
-  const byName = {};
+  const byId = {}, byName = {};
   for (const m of roster || []) {
     byId[m.id] = m;
     if (m.name) byName[m.name.trim().toLowerCase()] = m;
   }
-  // rosterId is set when a name is picked from the autocomplete; the name match
-  // is the fallback for crew typed in by hand.
+  const surname = (n) => { const p = String(n || "").trim().split(/\s+/).filter(Boolean); return p.length > 1 ? p[p.length - 1] : (p[0] || ""); };
+  const forename = (n) => { const p = String(n || "").trim().split(/\s+/).filter(Boolean); return p.length > 1 ? p.slice(0, -1).join(" ") : ""; };
+  const nice = (iso) => { if (!iso) return ""; try { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" }); } catch { return iso; } };
+
+  const showEnd = event.endDate || "";
   const people = (event.crew || [])
     .filter((c) => String(c.name || "").trim())
     .map((c) => {
+      // rosterId is set when the name was picked from the autocomplete; the
+      // name match catches crew typed in by hand.
       const m = byId[c.rosterId] || byName[c.name.trim().toLowerCase()] || null;
       const d = (m && m.data) || {};
-      const missing = [];
-      if (!d.legalName && !c.name) missing.push("legal name");
-      if (!d.birthday) missing.push("birthday");
-      if (!d.gender) missing.push("gender");
-      if (!d.homeAirport) missing.push("home airport");
+      const ticket = d.legalName || c.name;
+      const gaps = [];
+      if (!d.birthday) gaps.push("birthday");
+      if (!d.gender) gaps.push("gender");
+      if (!d.homeAirport) gaps.push("home airport");
+      if (!m) gaps.length = 0; // not on the roster at all is its own problem
       return {
         id: c.id,
-        display: c.name,
-        position: c.position || "",
+        crewName: c.name,
+        ticket,
+        last: surname(ticket),
+        first: forename(ticket),
         onRoster: !!m,
-        legalName: d.legalName || c.name,
         differs: !!(d.legalName && d.legalName.trim().toLowerCase() !== c.name.trim().toLowerCase()),
         birthday: d.birthday || "",
         gender: d.gender || "",
         ktn: d.tsaPrecheck || "",
-        airport: (d.homeAirport || "").toUpperCase(),
+        airport: (d.homeAirport || "").trim().toUpperCase(),
         passportExp: d.passportExp || "",
-        missing,
+        gaps,
       };
-    });
+    })
+    .sort((a, b) => a.last.localeCompare(b.last) || a.first.localeCompare(b.first));
 
   if (!people.length) return null;
 
+  const NO_AP = "No airport on file";
   const groups = {};
-  for (const p of people) (groups[p.airport || "No airport on file"] = groups[p.airport || "No airport on file"] || []).push(p);
-  const airports = Object.keys(groups).sort((a, b) => (a === "No airport on file" ? 1 : b === "No airport on file" ? -1 : a.localeCompare(b)));
-  const incomplete = people.filter((p) => p.missing.length);
+  for (const p of people) (groups[p.airport || NO_AP] = groups[p.airport || NO_AP] || []).push(p);
+  const airports = Object.keys(groups).sort((a, b) => (a === NO_AP ? 1 : b === NO_AP ? -1 : a.localeCompare(b)));
 
-  const nice = (iso) => { if (!iso) return "—"; try { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }); } catch { return iso; } };
+  const offRoster = people.filter((p) => !p.onRoster);
+  const shortOf = people.filter((p) => p.onRoster && p.gaps.length);
+  // Only worth mentioning if it lapses before they travel.
+  const expiring = people.filter((p) => p.passportExp && showEnd && p.passportExp <= showEnd);
+
   const block = (p) => [
-    p.legalName,
-    "DOB: " + (p.birthday || "—"),
-    "Gender: " + (p.gender || "—"),
-    "KTN: " + (p.ktn || "—"),
-    "From: " + (p.airport || "—"),
+    p.ticket,
+    "DOB " + (p.birthday || "—"),
+    (p.gender || "—") + " · KTN " + (p.ktn || "none"),
+    "From " + (p.airport || "—"),
   ].join("\n");
+  const allText = () => airports.map((ap) => ap + "\n" + groups[ap].map(block).join("\n\n")).join("\n\n");
 
   return (
     <Panel
       title="Travel details"
-      sub="Admin only — read live from the roster"
+      sub="Admin only · live from the roster"
       action={
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {open && (
-            <button className="copy-emails-btn" onClick={() => copy(people.map(block).join("\n\n"), "all")}>
-              {copied === "all" ? "✓ Copied!" : "Copy everyone"}
-            </button>
-          )}
-          <button className="ts-batchbtn" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show " + people.length + " travellers"}</button>
+          {open && <button className="copy-emails-btn" onClick={() => copy(allText(), "all")}>{copied === "all" ? "✓ Copied" : "Copy all"}</button>}
+          <button className="ts-batchbtn" onClick={() => setOpen(!open)}>{open ? "Hide" : "Show " + people.length}</button>
         </div>
       }
     >
       {!open ? (
-        <div className="trav-shut">
-          Birthdays and Known Traveler Numbers stay hidden until you ask for them.
-          {incomplete.length > 0 ? " " + incomplete.length + " of " + people.length + " are missing something needed to book." : " Everyone has what a booking needs."}
-        </div>
+        <p className="trav-shut">
+          {people.length} travelling.{" "}
+          {shortOf.length || offRoster.length
+            ? (shortOf.length + offRoster.length) + " not ready to book."
+            : "All have what a booking needs."}
+        </p>
       ) : (
         <>
-          {incomplete.length > 0 && (
+          {(shortOf.length > 0 || offRoster.length > 0 || expiring.length > 0) && (
             <div className="trav-warn">
-              <b>Not bookable yet:</b>{" "}
-              {incomplete.map((p) => p.display + " (" + p.missing.join(", ") + ")").join(" · ")}
-              <div className="trav-warn-sub">Send them the onboarding link from the Roster screen and they can fill it in themselves.</div>
+              {offRoster.length > 0 && (
+                <div><b>Not on the roster:</b> {offRoster.map((p) => p.crewName).join(", ")} — add them there first.</div>
+              )}
+              {shortOf.length > 0 && (
+                <div><b>Missing details:</b> {shortOf.map((p) => p.ticket + " (" + p.gaps.join(", ") + ")").join(" · ")}</div>
+              )}
+              {expiring.length > 0 && (
+                <div><b>Passport lapses before the show ends:</b> {expiring.map((p) => p.ticket + " " + nice(p.passportExp)).join(" · ")}</div>
+              )}
+              <div className="trav-warn-sub">Send the onboarding link from the Roster screen and they can fill their own details in.</div>
             </div>
           )}
+
           {airports.map((ap) => (
             <div key={ap} className="trav-group">
               <div className="trav-group-h">
                 <span className="trav-ap">{ap}</span>
-                <span className="trav-n">{groups[ap].length} {groups[ap].length === 1 ? "person" : "people"}</span>
+                <span className="trav-n">{groups[ap].length}</span>
                 <button className="copy-emails-btn" onClick={() => copy(groups[ap].map(block).join("\n\n"), ap)}>
-                  {copied === ap ? "✓ Copied!" : "Copy group"}
+                  {copied === ap ? "✓ Copied" : "Copy"}
                 </button>
               </div>
-              <div className="rows">
-                <div className="rowhead trav-grid">
-                  <span>Name for the ticket</span><span>Date of birth</span><span>Gender</span><span>Known Traveler</span><span>Passport</span><span />
-                </div>
-                {groups[ap].map((p) => (
-                  <div className="row trav-grid" key={p.id}>
-                    <span className="trav-nm">
-                      {p.legalName}
-                      {p.differs && <span className="trav-alias" title="Differs from the name on the crew list — flights go under the ID name">crew list: {p.display}</span>}
-                      {!p.onRoster && <span className="trav-alias trav-bad" title="No roster record — nothing to book from">not on the roster</span>}
-                      {p.position ? <span className="trav-pos">{p.position}</span> : null}
-                    </span>
-                    <span className={p.birthday ? "" : "trav-miss"}>{p.birthday ? nice(p.birthday) : "missing"}</span>
-                    <span className={p.gender ? "" : "trav-miss"}>{p.gender || "missing"}</span>
-                    <span className={p.ktn ? "trav-mono" : "trav-miss"}>{p.ktn || "none"}</span>
-                    <span className={p.passportExp ? "" : "trav-miss"}>{p.passportExp ? "exp " + nice(p.passportExp) : "—"}</span>
-                    <button className="copy-emails-btn" onClick={() => copy(block(p), p.id)}>{copied === p.id ? "✓" : "Copy"}</button>
-                  </div>
-                ))}
+              <div className="trav-head">
+                <span>Name for the ticket</span><span>Born</span><span>Sex</span><span>Known Traveler</span><span />
               </div>
+              {groups[ap].map((p) => (
+                <div className="trav-row" key={p.id}>
+                  <span className="trav-nm">
+                    <span>{p.last}{p.first ? <span className="trav-first">, {p.first}</span> : null}</span>
+                    {p.differs && <span className="trav-sub">on the crew list as {p.crewName}</span>}
+                    {!p.onRoster && <span className="trav-sub trav-bad">no roster record</span>}
+                  </span>
+                  <span className={p.birthday ? "" : "trav-gap"}>{p.birthday ? nice(p.birthday) : "—"}</span>
+                  <span className={p.gender ? "" : "trav-gap"}>{p.gender || "—"}</span>
+                  <span className={p.ktn ? "trav-mono" : "trav-gap"}>{p.ktn || "—"}</span>
+                  <button className="trav-copy" onClick={() => copy(block(p), p.id)} title="Copy this person's booking details">
+                    {copied === p.id ? "✓" : "Copy"}
+                  </button>
+                </div>
+              ))}
             </div>
           ))}
         </>
@@ -11320,21 +11338,29 @@ const CSS = `
    at a glance but you can still see which ones a person actually ticked. */
 .cb .pipe-pill.auto{background:rgba(95,208,138,.16); border-color:rgba(95,208,138,.5); color:var(--green);}
 .cb .pipe-auto{font-size:11px; color:var(--dim); font-weight:500; font-style:italic;}
-.cb .trav-shut{font-size:13px; color:var(--dim); padding:4px 2px;}
-.cb .trav-warn{background:rgba(255,176,32,.1); border:1px solid #FFB020; border-radius:10px; padding:10px 13px; font-size:13px; margin-bottom:12px;}
-.cb .trav-warn-sub{font-size:12px; color:var(--dim); margin-top:4px;}
-.cb .trav-group{margin-bottom:16px;}
-.cb .trav-group-h{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
-.cb .trav-ap{font-size:14px; font-weight:800; letter-spacing:.02em;}
-.cb .trav-n{font-size:12px; color:var(--dim); flex:1;}
-.cb .trav-grid{display:grid; grid-template-columns:minmax(180px,1.6fr) 130px 70px 150px 120px 70px; gap:10px; align-items:center;}
-.cb .trav-nm{display:flex; flex-direction:column; gap:2px; font-weight:600;}
-.cb .trav-alias{font-size:11px; font-weight:500; color:var(--dim); font-style:italic;}
-.cb .trav-alias.trav-bad{color:#FF6B6B; font-style:normal; font-weight:700;}
-.cb .trav-pos{font-size:11px; font-weight:500; color:var(--faint);}
-.cb .trav-mono{font-variant-numeric:tabular-nums; letter-spacing:.02em;}
-.cb .trav-miss{color:var(--faint); font-style:italic; font-size:12px;}
-@media (max-width:860px){ .cb .trav-grid{grid-template-columns:1fr 1fr; row-gap:4px;} }
+.cb .trav-shut{font-size:13px; color:var(--dim); margin:0; padding:2px 0;}
+.cb .trav-warn{background:rgba(255,176,32,.09); border:1px solid rgba(255,176,32,.5); border-radius:10px; padding:10px 13px; font-size:12.5px; line-height:1.6; margin-bottom:14px;}
+.cb .trav-warn-sub{font-size:11.5px; color:var(--dim); margin-top:5px;}
+.cb .trav-group{margin-bottom:18px;}
+.cb .trav-group-h{display:flex; align-items:center; gap:9px; margin-bottom:7px;}
+.cb .trav-ap{font-size:13px; font-weight:800; letter-spacing:.06em;}
+.cb .trav-n{font-size:11px; color:var(--faint); flex:1;}
+/* One grid for the heading and every row, so the columns cannot drift apart. */
+.cb .trav-head, .cb .trav-row{display:grid; grid-template-columns:minmax(170px,1.5fr) 118px 44px minmax(110px,1fr) 62px; gap:12px; align-items:center;}
+.cb .trav-head{font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--faint); font-weight:700; padding:0 11px 5px;}
+.cb .trav-row{background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:8px 11px; margin-bottom:4px; font-size:13px; min-height:38px;}
+.cb .trav-nm{display:flex; flex-direction:column; gap:1px; font-weight:700;}
+.cb .trav-first{font-weight:500; color:var(--dim);}
+.cb .trav-sub{font-size:11px; font-weight:500; color:var(--faint);}
+.cb .trav-sub.trav-bad{color:#FF6B6B; font-weight:700;}
+.cb .trav-mono{font-variant-numeric:tabular-nums; letter-spacing:.03em;}
+.cb .trav-gap{color:var(--faint);}
+.cb .trav-copy{background:none; border:1px solid var(--line); color:var(--dim); border-radius:6px; padding:4px 9px; font-size:11px; font-family:inherit; font-weight:700; cursor:pointer;}
+.cb .trav-copy:hover{border-color:var(--accent); color:var(--ink);}
+@media (max-width:860px){
+  .cb .trav-head{display:none;}
+  .cb .trav-row{grid-template-columns:1fr auto; row-gap:3px;}
+}
 .cb .pipe-meta{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; min-width:60px; text-align:right;}
 .cb .pipe-detail{padding:14px; border-top:1px solid var(--line); background:var(--panel2);}
 .cb .pipe-dates{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px; font-size:13px; color:var(--dim);}
