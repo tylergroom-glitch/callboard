@@ -3587,7 +3587,7 @@ function qtQuoteHtml(opts) {
     "@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800;900&display=swap');" +
     "*{box-sizing:border-box}body{margin:0;font-family:'Avenir Next','Avenir','Nunito Sans',system-ui,sans-serif;color:#23201F;background:#fff;-webkit-font-smoothing:antialiased}" +
     "@page{size:letter;margin:0.5in}" +
-    ".page{width:7.4in;max-width:7.4in;margin:0 auto;padding:0 0 20pt;overflow:hidden}" +
+    ".page{width:7.4in;max-width:7.4in;margin:0 auto;padding:0 8pt 20pt}" +
     ".hdr-bar{height:7pt;background:linear-gradient(90deg,#00699F,#007AC1,#00A4D7)}" +
     ".hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16pt 0 12pt;margin-bottom:12pt}" +
     ".hdr-logo img{height:36pt}" +
@@ -3677,7 +3677,7 @@ function qtQuoteHtml(opts) {
     "setTimeout(function(){URL.revokeObjectURL(u);window.close();},1500);}" +
     "function fail(m){document.body.innerHTML=\"<div style='font:14px sans-serif;padding:40px;color:#333'>\"+m+\"</div>\";}" +
     "load('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js').then(function(){" +
-    "return window.html2pdf().set({margin:[0.5,0.4],filename:FNAME," +
+    "return window.html2pdf().set({margin:[0.5,0.5],filename:FNAME," +
     "image:{type:'jpeg',quality:0.97},html2canvas:{scale:2,useCORS:true,logging:false,allowTaint:true}," +
     "pagebreak:{mode:['css','legacy']},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}})" +
     ".from(document.getElementById('quote-content')).outputPdf('arraybuffer');})" +
