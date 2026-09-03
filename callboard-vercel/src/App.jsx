@@ -2105,6 +2105,8 @@ function CtgItemForm({ draft, setDraft, catalog, onSave, onCancel, busy }) {
   const rateOf = (id) => { const h = catalog.find((c) => c.id === id); return h ? h.rate : 0; };
   const compTotal = comps.reduce((sum, c) => sum + rateOf(c.itemId) * (c.qty || 1), 0);
   const setComps = (next) => setDraft({ ...draft, components: next });
+  const subs = Array.isArray(draft.substitutes) ? draft.substitutes : [];
+  const setSubs = (next) => setDraft({ ...draft, substitutes: next });
   return (
     <div>
       <div style={{ ...ctgRow, marginBottom: 10 }}>
@@ -2139,6 +2141,36 @@ function CtgItemForm({ draft, setDraft, catalog, onSave, onCancel, busy }) {
       <div style={{ marginBottom: 12 }}>
         <label style={ctgLabel}>Notes</label>
         <input value={draft.notes || ""} onChange={(e) => setDraft({ ...draft, notes: e.target.value })} placeholder="For your reference only — never shown to the client" style={{ width: "100%" }} />
+      </div>
+
+      <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12, marginBottom: 12 }}>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+          <input type="checkbox" checked={!!draft.isGeneric} onChange={(e) => setDraft({ ...draft, isGeneric: e.target.checked })} />
+          This is a placeholder, not a real item
+        </label>
+        <p style={{ ...ctgHint, marginTop: 5, marginBottom: draft.isGeneric ? 8 : 0 }}>
+          For lines you quote on purpose without naming a model — "Premium Audio Mixer" rather than a specific desk — so the client is not locked
+          to one box. It is a price, not something in the shop, so it never reaches a pull list as-is: the push sheet makes you pick the actual
+          model first. Placeholders are also left out of the sub-rental check, because whether you own it depends on what you send.
+        </p>
+        {draft.isGeneric && (
+          <>
+            <label style={ctgLabel}>Models that can stand in for it</label>
+            {subs.map((c, i) => (
+              <div key={c.itemId + "-" + i} style={{ ...ctgListRow, marginBottom: 5, padding: "7px 10px" }}>
+                <span style={{ flex: 1, fontSize: 13 }}>{nameOf(c.itemId)}</span>
+                <span style={{ color: "var(--dim)", fontSize: 12 }}>{ctgMoney(rateOf(c.itemId))}</span>
+                <button className="btn ghost danger" onClick={() => setSubs(subs.filter((_, j) => j !== i))} style={{ padding: "5px 9px" }}>Remove</button>
+              </div>
+            ))}
+            <CtgPicker
+              catalog={catalog}
+              excludeIds={[draft.id].concat(subs.map((c) => c.itemId)).filter(Boolean)}
+              onPick={(h) => setSubs(subs.concat([{ itemId: h.id }]))}
+            />
+            {!subs.length && <p style={{ ...ctgHint, marginTop: 6 }}>None yet — with no substitutes you can still type a model by hand when you push it.</p>}
+          </>
+        )}
       </div>
 
       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 12 }}>
@@ -2266,6 +2298,7 @@ function CatalogItems() {
   const [busy, setBusy] = useState(false);
   const [wizard, setWizard] = useState(false);
   const [notice, setNotice] = useState("");
+  const [sel, setSel] = useState(() => new Set());
 
   const load = async () => {
     setLoading(true);
@@ -2290,6 +2323,30 @@ function CatalogItems() {
     setBusy(false);
   };
 
+  /* Marking a few hundred catalog rows one modal at a time is the sort of job
+     that never gets done, so the flag batches. Substitutes stay per-item —
+     those genuinely differ from one placeholder to the next. */
+  const markPlaceholder = async (on) => {
+    const targets = items.filter((it) => sel.has(it.id));
+    if (!targets.length) return;
+    setBusy(true);
+    let done = 0;
+    for (const it of targets) {
+      try {
+        // The whole item goes back, not just the flag: the endpoint replaces
+        // the row's editable fields, so a partial payload would blank the rest.
+        await saveCatalogItem({ ...it, rate: it.rate, subCost: it.subCost == null ? "" : String(it.subCost), isGeneric: on });
+        done += 1;
+      } catch (e) { setErr((e && e.message) || "Couldn't update " + it.name); }
+    }
+    setBusy(false);
+    setSel(new Set());
+    setNotice(on
+      ? done + " item" + (done === 1 ? "" : "s") + " marked as placeholders. Open any of them to list the models that can stand in."
+      : done + " item" + (done === 1 ? "" : "s") + " are no longer placeholders.");
+    await load();
+  };
+
   const remove = async (it) => {
     if (!window.confirm("Delete " + it.name + "? It will also be removed from any package that contains it.")) return;
     try { await deleteCatalogItem(it.id); await load(); }
@@ -2306,7 +2363,7 @@ function CatalogItems() {
     <div>
       <div style={{ ...ctgRow, marginBottom: 12 }}>
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search items…" style={{ flex: "1 1 200px" }} />
-        <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", qtyOwned: "", subCost: "", components: [], notes: "" })}>+ Add item</button>
+        <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", qtyOwned: "", subCost: "", isGeneric: false, substitutes: [], components: [], notes: "" })}>+ Add item</button>
         <button className="btn ghost" onClick={() => setWizard(true)}>Import from quote PDF</button>
       </div>
       <div style={{ ...ctgRow, marginBottom: 14 }}>
@@ -2318,6 +2375,29 @@ function CatalogItems() {
         })}
       </div>
 
+      {sel.size > 0 && (
+        <div style={{ ...ctgRow, background: "var(--panel2)", border: "1px solid var(--amber)", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+          <span style={{ fontSize: 13, fontWeight: 700 }}>{sel.size} selected</span>
+          <button className="btn amber" onClick={() => markPlaceholder(true)} disabled={busy} style={{ padding: "6px 12px" }}>Mark as placeholder</button>
+          <button className="btn ghost" onClick={() => markPlaceholder(false)} disabled={busy} style={{ padding: "6px 12px" }}>Clear placeholder</button>
+          <button className="btn ghost" onClick={() => setSel(new Set())} disabled={busy} style={{ padding: "6px 12px" }}>Clear selection</button>
+          <span style={{ ...ctgHint, flexBasis: "100%", marginTop: 2 }}>
+            A placeholder prices and prints exactly as it does now — it only changes what happens when the line reaches a pull list, where you pick the real model.
+          </span>
+        </div>
+      )}
+      {shown.length > 0 && (
+        <div style={{ ...ctgRow, marginBottom: 8 }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, color: "var(--dim)", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={shown.every((it) => sel.has(it.id))}
+              onChange={(e) => setSel(e.target.checked ? new Set(shown.map((it) => it.id)) : new Set())}
+            />
+            Select all {dept ? dept.toLowerCase() + " " : ""}({shown.length})
+          </label>
+        </div>
+      )}
       {notice ? <div style={{ ...ctgHint, color: "var(--green)" }}>{notice}</div> : null}
       {err ? <div style={ctgErr}>{err}</div> : null}
       {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Loading…</div> : null}
@@ -2329,11 +2409,18 @@ function CatalogItems() {
       ) : null}
 
       {shown.map((it) => (
-        <div key={it.id} style={ctgListRow}>
+        <div key={it.id} style={{ ...ctgListRow, background: sel.has(it.id) ? "var(--panel2)" : undefined }}>
+          <input
+            type="checkbox"
+            checked={sel.has(it.id)}
+            onChange={() => setSel((prev) => { const n = new Set(prev); if (n.has(it.id)) n.delete(it.id); else n.add(it.id); return n; })}
+            style={{ width: 15, height: 15, flex: "0 0 auto" }}
+          />
           <span style={{ width: 8, height: 8, borderRadius: "50%", background: CTG_DEPT_COLOR[it.department] || "#96A0B2", flex: "0 0 auto" }} />
           <span style={{ flex: 1, minWidth: 140, fontSize: 14, fontWeight: 600 }}>
             {it.name}
             {it.components && it.components.length ? <span style={{ color: "var(--dim)", fontWeight: 500, fontSize: 12 }}> · package of {it.components.length}</span> : null}
+            {it.isGeneric ? <span style={{ color: "#FFB020", fontWeight: 700, fontSize: 11, marginLeft: 6 }} title={"Placeholder — " + ((it.substitutes || []).length ? (it.substitutes || []).length + " substitute(s)" : "no substitutes listed yet")}>PLACEHOLDER</span> : null}
           </span>
           <span style={{ color: "var(--dim)", fontSize: 12, width: 72 }}>{it.department}</span>
           <span style={{ fontVariantNumeric: "tabular-nums", fontSize: 14, width: 96, textAlign: "right" }}>{ctgMoney(it.rate)}</span>
@@ -2742,11 +2829,47 @@ const QT_STATUS = {
   won: { label: "Won", color: "#5FD08A" },
   lost: { label: "Lost", color: "#FF6B6B" },
 };
-const QT_DEFAULT_DEPOSITS = [
-  { label: "On signature", pct: 25 },
-  { label: "30 days before load-in", pct: 50 },
-  { label: "Balance after show", pct: 25 },
+/* A milestone says WHEN it is due as a rule, not as a typed date, so the label
+   and the date can no longer disagree. The old quotes stored a bare dueDate and
+   still work: no trigger means "fixed date", exactly what they were. */
+const QT_TRIGGERS = [
+  { key: "signature", label: "On signature", needsOffset: false, needsDate: false },
+  { key: "before_loadin", label: "days before load-in", needsOffset: true, needsDate: false },
+  { key: "after_strike", label: "days after strike", needsOffset: true, needsDate: false },
+  { key: "date", label: "On a fixed date", needsOffset: false, needsDate: true },
 ];
+const QT_DEFAULT_DEPOSITS = [
+  { label: "On signature", pct: 25, trigger: "signature", offset: 0 },
+  { label: "Deposit", pct: 50, trigger: "before_loadin", offset: 30 },
+  { label: "Balance", pct: 25, trigger: "after_strike", offset: 30 },
+];
+
+const qtShiftDate = (iso, days) => {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso + "T12:00:00");
+    d.setDate(d.getDate() + days);
+    return d.toISOString().slice(0, 10);
+  } catch (e) { return ""; }
+};
+/* start = load-in, end = strike. With no show dates yet a relative milestone
+   simply has no date, which is honest — it is not due until the show is real. */
+function qtDueDate(d, startDate, endDate) {
+  if (!d) return "";
+  const t = d.trigger || "date";
+  if (t === "signature") return "";
+  if (t === "before_loadin") return qtShiftDate(startDate, -Math.abs(qtNum(d.offset)));
+  if (t === "after_strike") return qtShiftDate(endDate, Math.abs(qtNum(d.offset)));
+  return d.dueDate || "";
+}
+function qtDueLabel(d) {
+  const t = d.trigger || "date";
+  if (t === "signature") return "On signature";
+  const n = Math.abs(qtNum(d.offset)) || 0;
+  if (t === "before_loadin") return n + " day" + (n === 1 ? "" : "s") + " before load-in";
+  if (t === "after_strike") return n + " day" + (n === 1 ? "" : "s") + " after strike";
+  return "";
+}
 
 const qtNum = (v) => {
   if (typeof v === "number") return isFinite(v) ? v : 0;
@@ -2792,8 +2915,13 @@ function qtNormalize(data) {
    back out to those lines largest-first. */
 function qtSubrentMap(lines, catalog) {
   const byCat = {};
+  const generic = new Set((catalog || []).filter((c) => c.isGeneric).map((c) => c.id));
   for (const l of lines || []) {
     if (!l || l.kind === "trucking" || !l.catalogId) continue;
+    // A placeholder has no fixed model, so whether we own one is unknowable
+    // until it is resolved on the push sheet. Counting it either way would be
+    // a guess: as owned it hides a real sub-rent, as short it invents one.
+    if (generic.has(l.catalogId)) continue;
     const qty = qtNum(l.qty);
     if (qty <= 0) continue;
     if (!byCat[l.catalogId]) byCat[l.catalogId] = { quoted: 0, lines: [] };
@@ -2900,23 +3028,35 @@ function qtPullRows(data, catalog) {
           rentedFrom: info ? vendor : "",
           notes: "From quote — " + hit.name,
           include: true,
-          // No catalog match means the name came from a blank line and is very
-          // likely generic ("Premium Audio Mixer"), so it wants a real model.
           ambiguous: false,
+          placeholder: "",
+          options: [],
         });
       }
       continue;
     }
+    const isPlaceholder = !!(hit && hit.isGeneric);
+    const options = isPlaceholder
+      ? (hit.substitutes || [])
+          .map((sub) => find(sub.itemId))
+          .filter(Boolean)
+          .map((o) => ({ id: o.id, name: o.name, department: qtCat(o.department) }))
+      : [];
     rows.push({
       key: l.id,
-      item: (hit && hit.name) || l.name || "",
+      item: isPlaceholder ? "" : (hit && hit.name) || l.name || "",
       qty,
       category: qtCat((hit && hit.department) || l.department),
       source: info ? "Sub Rental" : "TCG",
       rentedFrom: info ? vendor : "",
-      notes: "From quote",
+      // Keep what the client was quoted, so the crew can see what it was sold as.
+      notes: isPlaceholder ? "Quoted as " + hit.name : "From quote",
       include: true,
-      ambiguous: !hit,
+      // A placeholder is deliberately not a model, so it always needs resolving;
+      // a typed line has no catalog entry behind it and probably needs it too.
+      ambiguous: isPlaceholder || !hit,
+      placeholder: isPlaceholder ? hit.name : "",
+      options,
     });
   }
   return rows;
@@ -3259,7 +3399,21 @@ function qtQuoteHtml(opts) {
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const mode = data.displayMode === "groups" ? "groups" : data.displayMode === "summary" ? "summary" : "itemized";
   const itemized = mode === "itemized";
+  // A column of em dashes tells the client nothing; only show it if it is used.
+  const anyDisc = (Array.isArray(data.lines) ? data.lines : []).some((l) => qtNum(l.discount) > 0);
   const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
+  // Same palette the app uses on screen, so paperwork and pull list agree.
+  const DEPT_HEX = { Audio: "#2563EB", Video: "#7C3AED", Lighting: "#D97706", Power: "#DC2626", Scenic: "#059669", Misc: "#64748B" };
+  const deptOf = (l) => DEPT_HEX[l && l.department] || DEPT_HEX.Misc;
+  // A group's spine takes the colour of whatever it is mostly made of.
+  const spineFor = (list) => {
+    const tally = {};
+    for (const l of list) { const d = (l && l.department) || "Misc"; tally[d] = (tally[d] || 0) + qtLineTotal(l); }
+    let best = "Misc", top = -1;
+    for (const k of Object.keys(tally)) if (tally[k] > top) { top = tally[k]; best = k; }
+    return DEPT_HEX[best] || DEPT_HEX.Misc;
+  };
+  const dot = (l) => "<span class='dot' style='background:" + deptOf(l) + "'></span>";
   const money = (n) =>
     "$" + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const day = (iso) => {
@@ -3276,11 +3430,11 @@ function qtQuoteHtml(opts) {
     list
       .map(
         (l) =>
-          "<tr><td>" + qtEsc(l.name) + "</td>" +
+          "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
           "<td class='n'>" + qtEsc(l.qty) + "</td>" +
           "<td class='n'>" + qtEsc(l.days) + "</td>" +
           "<td class='n'>" + money(l.rate) + "</td>" +
-          "<td class='n'>" + (qtNum(l.discount) ? qtNum(l.discount) + "%" : "—") + "</td>" +
+          (anyDisc ? "<td class='n'>" + (qtNum(l.discount) ? qtNum(l.discount) + "%" : "—") + "</td>" : "") +
           "<td class='n b'>" + money(qtLineTotal(l)) + "</td></tr>"
       )
       .join("");
@@ -3291,7 +3445,7 @@ function qtQuoteHtml(opts) {
     list
       .map(
         (l) =>
-          "<tr><td>" + qtEsc(l.name) + "</td>" +
+          "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
           "<td class='n'>" + qtEsc(l.qty) + "</td>" +
           "<td class='n'>" + qtEsc(l.days) + "</td></tr>"
       )
@@ -3303,8 +3457,9 @@ function qtQuoteHtml(opts) {
     const block = (label, list) => {
       const t = list.reduce((acc, l) => acc + qtLineTotal(l), 0);
       return (
-        "<div class='grp'><div class='grp-h'><span>" + label + "</span><span>" + money(t) + "</span></div>" +
-        "<table>" + head + "<tbody>" + namesFor(list) + "</tbody></table></div>"
+        "<div class='grp' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
+        "<table class='t-sum'>" + head + "<tbody>" + namesFor(list) + "</tbody></table>" +
+        "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(t) + "</span></div>" + "</div>"
       );
     };
     for (const g of groups) {
@@ -3316,21 +3471,24 @@ function qtQuoteHtml(opts) {
     if (un.length) body += block(groups.length ? "Additional" : "Equipment &amp; Labor", un);
   } else if (itemized) {
     const head =
-      "<thead><tr><th>Item</th><th class='n'>Qty</th><th class='n'>Days</th><th class='n'>Rate</th><th class='n'>Disc</th><th class='n'>Total</th></tr></thead>";
+      "<thead><tr><th>Item</th><th class='n'>Qty</th><th class='n'>Days</th><th class='n'>Rate</th>" +
+      (anyDisc ? "<th class='n'>Disc</th>" : "") + "<th class='n'>Total</th></tr></thead>";
     for (const g of groups) {
       const gl = lines.filter((l) => l.groupId === g.id);
       if (!gl.length) continue;
       const gt = gl.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp'><div class='grp-h'><span>" + qtEsc(g.name) + "</span><span>" + money(gt) + "</span></div>" +
-        "<table>" + head + "<tbody>" + rowsFor(gl) + "</tbody></table></div>";
+        "<div class='grp' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
+        "<table>" + head + "<tbody>" + rowsFor(gl) + "</tbody></table>" +
+        "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(gt) + "</span></div>" + "</div>";
     }
     const un = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
     if (un.length) {
       const ut = un.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp'><div class='grp-h'><span>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</span><span>" + money(ut) + "</span></div>" +
-        "<table>" + head + "<tbody>" + rowsFor(un) + "</tbody></table></div>";
+        "<div class='grp' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
+        "<table>" + head + "<tbody>" + rowsFor(un) + "</tbody></table>" +
+        "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(ut) + "</span></div>" + "</div>";
     }
   } else {
     let rows = "";
@@ -3348,21 +3506,24 @@ function qtQuoteHtml(opts) {
   const deps = Array.isArray(data.deposits) ? data.deposits : [];
   let depBlock = "";
   if (deps.length) {
-    const amt = (d, i) => {
-      if (i === deps.length - 1) {
-        const before = deps.slice(0, -1).reduce((t, x) => t + Math.round(grand * (qtNum(x.pct) / 100) * 100) / 100, 0);
-        return Math.round((grand - before) * 100) / 100;
-      }
-      return Math.round(grand * (qtNum(d.pct) / 100) * 100) / 100;
-    };
+    // Same maths as the editor, paid rows frozen and all — a client looking at
+    // a revised quote must see the deposit they already paid, not a restated one.
+    const depCalc = qtDepositRows(deps, grand);
+    const amt = (d, i) => depCalc.amounts[i] || 0;
+    // The "when" is the rule, and the date is worked out from it — so the row
+    // can no longer say "30 days before load-in" next to the load-in date.
     depBlock =
       "<div class='sect'><div class='sect-title'>Payment Schedule</div><table>" +
-      "<thead><tr><th>Milestone</th><th class='n'>Due</th><th class='n'>Amount</th></tr></thead><tbody>" +
+      "<thead><tr><th>Milestone</th><th>When</th><th class='n'>Due</th><th class='n'>Amount</th></tr></thead><tbody>" +
       deps
-        .map(
-          (d, i) =>
-            "<tr><td>" + qtEsc(d.label) + "</td><td class='n'>" + (d.dueDate ? day(d.dueDate) : "—") + "</td><td class='n b'>" + money(amt(d, i)) + "</td></tr>"
-        )
+        .map((d, i) => {
+          const when = qtDueLabel(d);
+          const due = qtDueDate(d, q.startDate, q.endDate);
+          return "<tr><td>" + qtEsc(d.label || when || "Payment") + "</td>" +
+            "<td>" + (when ? "<span class='when'>" + qtEsc(when) + "</span>" : "") + "</td>" +
+            "<td class='n'>" + (due ? day(due) : "—") + "</td>" +
+            "<td class='n b'>" + money(amt(d, i)) + "</td></tr>";
+        })
         .join("") +
       "</tbody></table></div>";
   }
@@ -3376,63 +3537,134 @@ function qtQuoteHtml(opts) {
       "</div>"
     : "";
 
+  // "Sep 29 – Oct 2, 2026" rather than repeating the year on both ends, so the
+  // band cell holds it on one line.
+  const datesShort = (function () {
+    if (!q.startDate) return "";
+    const a = new Date(q.startDate + "T12:00:00");
+    if (!q.endDate || q.endDate === q.startDate) return day(q.startDate);
+    const b = new Date(q.endDate + "T12:00:00");
+    const short = (d) => d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return a.getFullYear() === b.getFullYear()
+      ? short(a) + " – " + short(b) + ", " + b.getFullYear()
+      : day(q.startDate) + " – " + day(q.endDate);
+  })();
+
+  const validUntil = (function () {
+    const base = q.sentAt ? new Date(q.sentAt) : new Date();
+    base.setDate(base.getDate() + 30);
+    return base.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  })();
+
+  const acceptBlock =
+    "<div class='accept'><div class='accept-h'>Acceptance</div>" +
+    "<p class='accept-p'>Signing below accepts this quotation and the attached terms and conditions, and authorises Touchstone Creative Group to proceed.</p>" +
+    "<div class='sig'>" +
+    "<div class='sig-f'><div class='sig-l'></div><div class='sig-c'>Signature</div></div>" +
+    "<div class='sig-f'><div class='sig-l'></div><div class='sig-c'>Name and title</div></div>" +
+    "<div class='sig-f' style='flex:.55'><div class='sig-l'></div><div class='sig-c'>Date</div></div>" +
+    "</div></div>";
+
+  // The four things anyone checks before reading a line of it.
+  const bandBlock = (function () {
+    const cell = (k, v, sub, cls) =>
+      "<div class='band-c" + (cls ? " " + cls : "") + "'><div class='band-k'>" + k + "</div>" +
+      "<div class='band-v'>" + qtEsc(v) + "</div>" +
+      (sub ? "<div class='band-s'>" + qtEsc(sub).replace(/\n/g, "<br>") + "</div>" : "") + "</div>";
+    const contact = c.contactLabel || c.contactName || "";
+    const cells = [];
+    if (c.company) cells.push(cell("Client", c.company, c.billingAddress || ""));
+    if (contact) cells.push(cell("Contact", contact, [c.email, c.phone].filter(Boolean).join(" · ")));
+    if (v.name) cells.push(cell("Venue", v.name, v.address || ""));
+    if (datesShort) cells.push(cell("Dates", datesShort, "", "nw"));
+    return cells.length ? "<div class='band'>" + cells.join("") + "</div>" : "";
+  })();
+
   const title = (q.name || "Quotation") + " — v" + q.version;
 
   return (
     "<!doctype html><html><head><meta charset='utf-8'><title>" + qtEsc(title) + "</title><style>" +
     "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');" +
     "*{box-sizing:border-box}body{margin:0;font-family:'Inter',system-ui,sans-serif;color:#111;background:#fff}" +
-    ".page{width:7.5in;margin:0 auto;padding:0 0 20pt}" +
+    "@page{size:letter;margin:0.5in}" +
+    ".page{width:7.4in;margin:0 auto;padding:0 0 20pt}" +
     ".hdr-bar{height:7pt;background:linear-gradient(90deg,#0D4F8C,#0077B6,#00B4D8)}" +
-    ".hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16pt 0 12pt;border-bottom:0.5pt solid #c8ddf0;margin-bottom:14pt}" +
-    ".hdr-logo img{height:34pt}" +
+    ".hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16pt 0 12pt;margin-bottom:12pt}" +
+    ".hdr-logo img{height:36pt}" +
     ".hdr-right{text-align:right}" +
-    ".hdr-doc{font-size:17pt;font-weight:800;color:#0D4F8C;letter-spacing:-.01em}" +
-    ".hdr-meta{font-size:8.5pt;color:#7d8a99;margin-top:3pt}" +
+    ".hdr-doc{font-size:20pt;font-weight:800;color:#0D4F8C;letter-spacing:-.02em;line-height:1}" +
+    ".hdr-name{font-size:10.5pt;font-weight:700;color:#26384a;margin-top:5pt}" +
+    ".hdr-meta{font-size:8pt;color:#8a97a6;margin-top:2pt}" +
+    // At-a-glance band. A quote gets skimmed before it gets read, and these are
+    // the four things anyone looks for first.
+    ".band{display:flex;gap:1pt;background:#d9e6f2;border-radius:6pt;overflow:hidden;margin-bottom:18pt;align-items:stretch}" +
+    ".band-c{flex:1;background:#F4F8FC;padding:9pt 11pt;min-width:0}" +
+    ".band-s{word-break:break-word}" +
+    ".band-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#7d8a99;margin-bottom:3pt}" +
+    ".band-c.hi .band-k{color:#8fc3ea}" +
+    ".band-v{font-size:10pt;font-weight:700;color:#1c2b3a;line-height:1.3}" +
+    ".band-c.nw .band-v{white-space:nowrap}" +
+    ".band-c.hi .band-v{color:#fff;font-size:14pt;font-variant-numeric:tabular-nums}" +
+    ".band-s{font-size:7.5pt;color:#7d8a99;font-weight:500;margin-top:1pt}" +
     ".meta{display:flex;gap:26pt;margin-bottom:16pt}" +
     ".meta-col{flex:1}" +
-    ".meta-k{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#0077B6;margin-bottom:4pt}" +
-    ".meta-v{font-size:9.5pt;line-height:1.45}" +
-    ".meta-v .nm{font-weight:700}" +
-    ".sect-title{font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#0077B6;border-bottom:1.5pt solid #0077B6;padding-bottom:4pt;margin-bottom:9pt}" +
-    ".grp{margin-bottom:13pt;break-inside:avoid}" +
-    ".grp-h{display:flex;justify-content:space-between;font-size:10pt;font-weight:700;color:#0D4F8C;padding-bottom:3pt;margin-bottom:4pt;border-bottom:0.5pt solid #c8ddf0}" +
+    ".meta-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#0077B6;margin-bottom:4pt}" +
+    ".meta-v{font-size:9.5pt;line-height:1.45;color:#2b3a4a}" +
+    ".meta-v .nm{font-weight:700;color:#111}" +
+    ".sect-title{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#0077B6;margin-bottom:8pt}" +
+    // Each group is a card with a spine in its dominant department colour, so
+    // the eye can find "the lighting one" without reading every heading.
+    ".grp{margin-bottom:19pt;break-inside:avoid;border:0.5pt solid #e3ecf4;border-left:2.5pt solid #0077B6;border-radius:5pt;overflow:hidden}" +
+    // Header carries the name only. The number now sits at the foot, where the
+    // eye lands after reading the list rather than before.
+    ".grp-h{font-size:10.5pt;font-weight:700;color:#12395f;padding:9pt 11pt 2pt}" +
+    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F7FAFD;border-top:0.5pt solid #e3ecf4}" +
+    ".grp-f .k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8a97a6}" +
+    ".grp-f .amt{font-size:10.5pt;font-weight:700;font-variant-numeric:tabular-nums;color:#0D4F8C}" +
     "table{width:100%;border-collapse:collapse}" +
-    "thead tr{background:#0077B6}" +
-    "thead th{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#fff;padding:5pt 7pt;text-align:left}" +
-    "tbody tr:nth-child(even){background:#F4F8FC}" +
-    "tbody td{font-size:9pt;padding:5pt 7pt;border-bottom:0.25pt solid #dde8f0;vertical-align:top}" +
+    // Ruled head rather than a solid blue bar. Six of those on a page read like
+    // a spreadsheet; a hairline reads like a document.
+    "thead th{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#8a97a6;padding:6pt 11pt 5pt;text-align:left;border-bottom:0.75pt solid #d9e6f2;background:#fff}" +
+    "tbody td{font-size:9pt;padding:5.5pt 11pt;border-bottom:0.25pt solid #eef3f8;vertical-align:top;color:#26384a}" +
+    "tbody tr:last-child td{border-bottom:0}" +
     "td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
-    "td.b{font-weight:700}" +
-    ".total{display:flex;justify-content:flex-end;align-items:baseline;gap:16pt;margin-top:10pt;padding-top:9pt;border-top:1.5pt solid #0D4F8C}" +
-    ".total-k{font-size:9pt;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#0D4F8C}" +
-    ".total-v{font-size:17pt;font-weight:800;color:#0D4F8C;font-variant-numeric:tabular-nums}" +
-    ".sect{margin-top:18pt;break-inside:avoid}" +
+    ".t-sum td.n,.t-sum th.n{width:56pt}" +
+    "td.b{font-weight:700;color:#111}" +
+    ".dot{display:inline-block;width:5pt;height:5pt;border-radius:50%;margin-right:6pt;vertical-align:middle}" +
+    // Total as a panel, not a line of text — it is the number they are deciding on.
+    ".total{display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#0D4F8C;border-radius:6pt}" +
+    ".total-k{font-size:8.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8fc3ea}" +
+    ".total-sub{font-size:7.5pt;color:#8fc3ea;font-weight:500;margin-top:2pt}" +
+    ".total-v{font-size:21pt;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em}" +
+    ".sect{margin-top:20pt;break-inside:avoid}" +
+    ".when{display:inline-block;font-size:7.5pt;font-weight:600;color:#0077B6;background:#EAF3FA;border-radius:9pt;padding:2pt 7pt;white-space:nowrap}" +
     ".terms{page-break-before:always;padding-top:14pt}" +
     ".terms p{font-size:8.5pt;line-height:1.5;margin:0 0 7pt;text-align:justify}" +
+    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F7FAFD;border:0.5pt solid #e3ecf4;border-radius:6pt;break-inside:avoid}" +
+    ".accept-h{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#0077B6;margin-bottom:5pt}" +
+    ".accept-p{font-size:8pt;color:#5a6a7a;line-height:1.5;margin:0 0 14pt}" +
+    ".sig{display:flex;gap:22pt}" +
+    ".sig-f{flex:1}" +
+    ".sig-l{border-bottom:0.75pt solid #9dabbb;height:24pt}" +
+    ".sig-c{font-size:7pt;color:#8a97a6;margin-top:3pt;text-transform:uppercase;letter-spacing:.1em;font-weight:600}" +
     ".footer{margin-top:22pt;padding-top:7pt;border-top:0.5pt solid #c8ddf0;display:flex;justify-content:space-between;font-size:7.5pt;color:#aaa}" +
     "</style></head><body><div class='page' id='quote-content'>" +
     "<div class='hdr-bar'></div>" +
     "<div class='hdr'><div class='hdr-logo'><img src='" + TCG_LOGO + "' alt='TCG'></div>" +
     "<div class='hdr-right'><div class='hdr-doc'>Quotation</div>" +
-    "<div class='hdr-meta'>" + qtEsc(q.name || "Untitled") + " &nbsp;·&nbsp; Rev " + q.version + "</div>" +
-    "<div class='hdr-meta'>" + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) + "</div>" +
+    "<div class='hdr-name'>" + qtEsc(q.name || "Untitled") + "</div>" +
+    "<div class='hdr-meta'>Rev " + q.version + " &nbsp;·&nbsp; " + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) + "</div>" +
+    // The terms already promise 30 days; saying so on page one starts the clock
+    // where the client is actually looking.
+    "<div class='hdr-meta'>Valid until " + validUntil + "</div>" +
     "</div></div>" +
-    "<div class='meta'>" +
-    "<div class='meta-col'><div class='meta-k'>Prepared For</div><div class='meta-v'>" +
-    (c.company ? "<span class='nm'>" + qtEsc(c.company) + "</span><br>" : "") +
-    (c.contactName ? qtEsc(c.contactName) + "<br>" : "") +
-    (c.email ? qtEsc(c.email) + "<br>" : "") +
-    (c.billingAddress ? qtEsc(c.billingAddress).replace(/\n/g, "<br>") : "") +
-    "</div></div>" +
-    "<div class='meta-col'><div class='meta-k'>Event</div><div class='meta-v'>" +
-    (v.name ? "<span class='nm'>" + qtEsc(v.name) + "</span><br>" : "") +
-    (v.address ? qtEsc(v.address) + "<br>" : "") +
-    (dates ? dates : "") +
-    "</div></div></div>" +
+    bandBlock +
     body +
-    "<div class='total'><span class='total-k'>Total</span><span class='total-v'>" + money(grand) + "</span></div>" +
+    "<div class='total'><div><div class='total-k'>Total</div>" +
+    (deps.length ? "<div class='total-sub'>Payable to the schedule below</div>" : "") +
+    "</div><div class='total-v'>" + money(grand) + "</div></div>" +
     depBlock +
+    acceptBlock +
     "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + "</span></div>" +
     termsBlock +
     "</div><script>" +
@@ -3445,10 +3677,23 @@ function qtQuoteHtml(opts) {
     "setTimeout(function(){URL.revokeObjectURL(u);window.close();},1500);}" +
     "function fail(m){document.body.innerHTML=\"<div style='font:14px sans-serif;padding:40px;color:#333'>\"+m+\"</div>\";}" +
     "load('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js').then(function(){" +
-    "return window.html2pdf().set({margin:[0.45,0.5],filename:FNAME," +
+    "return window.html2pdf().set({margin:[0.45,0.55],filename:FNAME," +
     "image:{type:'jpeg',quality:0.97},html2canvas:{scale:2,useCORS:true,logging:false,allowTaint:true}," +
     "pagebreak:{mode:['css','legacy']},jsPDF:{unit:'in',format:'letter',orientation:'portrait'}})" +
     ".from(document.getElementById('quote-content')).outputPdf('arraybuffer');})" +
+    ".then(function(quoteBytes){" +
+    "return load('https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js')" +
+    ".then(function(){return PDFLib.PDFDocument.load(quoteBytes);})" +
+    ".then(function(doc){" +
+    "return doc.embedFont(PDFLib.StandardFonts.Helvetica).then(function(font){" +
+    "var pages=doc.getPages();var n=pages.length;" +
+    "if(n>1){pages.forEach(function(pg,i){" +
+    "var t='Page '+(i+1)+' of '+n;var size=7.5;var w=font.widthOfTextAtSize(t,size);" +
+    "pg.drawText(t,{x:pg.getWidth()-w-40,y:26,size:size,font:font,color:PDFLib.rgb(0.67,0.67,0.67)});" +
+    "});}" +
+    "return doc.save();});})" +
+    // Numbering is cosmetic: if it throws, hand over the unstamped quote.
+    ".catch(function(){return quoteBytes;});})" +
     ".then(function(quoteBytes){" +
     "if(!TERMS_B64){dl(quoteBytes);return;}" +
     // Terms are a bonus, not the deliverable: if the merge library or the
@@ -3486,6 +3731,8 @@ function qtExportQuotePdf(opts) {
 }
 
 /* ---------- the editor ---------- */
+
+const NEW_SHOW = "__new__";
 
 /* Attach a quote to a show that already exists — the other direction of
    "Create show". Every show that predates the quoting system has no quote
@@ -3525,21 +3772,26 @@ function QtShowPicker({ busy, onConfirm, onClose }) {
    has no catalog entry behind it, so it is flagged: "Premium Audio Mixer" is a
    price, not something you can pack, and wants a real model before it goes to
    the crew. Used for both creating a show and pushing into one that exists. */
-function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose }) {
+function QtGearSheet({ mode, rows: initial, quoteName, quoteSeed, isWon, allowNew, busy, onConfirm, onClose }) {
   const [rows, setRows] = useState(initial);
   const [showId, setShowId] = useState("");
   const [shows, setShows] = useState(null);
+  // Filled in when the destination is a show that does not exist yet.
+  const [fresh, setFresh] = useState(() => ({ ...(quoteSeed || { name: "", startDate: "", endDate: "" }) }));
+  const makingNew = showId === NEW_SHOW;
   useEffect(() => {
     if (mode !== "push") return;
     listEvents().then((l) => setShows(l || [])).catch(() => setShows([]));
   }, [mode]);
   const patch = (key, p) => setRows(rows.map((r) => (r.key === key ? { ...r, ...p } : r)));
   const on = rows.filter((r) => r.include);
-  const flagged = on.filter((r) => r.ambiguous);
+  const flagged = on.filter((r) => r.ambiguous || !String(r.item || "").trim());
   const byCat = {};
   for (const r of rows) (byCat[r.category] = byCat[r.category] || []).push(r);
   const cats = PULL_CAT_ORDER.filter((c) => byCat[c] && byCat[c].length);
-  const ready = on.length > 0 && (mode !== "push" || !!showId);
+  // Nothing unresolved goes to a pull list: an empty or unpicked line would
+  // reach the crew as a blank row they cannot act on.
+  const ready = on.length > 0 && flagged.length === 0 && (mode !== "push" || (makingNew ? !!String(fresh.name || "").trim() : !!showId));
   return (
     <CtgModal title={mode === "push" ? "Push gear to a pull list" : "Create a show from this quote"} onClose={onClose} wide>
       {mode === "convert" ? (
@@ -3548,7 +3800,7 @@ function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose 
           and any sub-rentals become vendor estimates. Check the gear below — it becomes the pull list.
         </p>
       ) : (
-        <p style={{ ...qtHint, marginTop: 0 }}>Pick a show, then check the gear. These rows are added to whatever is already on its pull list — nothing is replaced.</p>
+        <p style={{ ...qtHint, marginTop: 0 }}>Pick a show — or make a new one — then check the gear. On an existing show the rows are added to whatever is already on its pull list, never replacing it.</p>
       )}
 
       {mode === "push" && (
@@ -3559,17 +3811,44 @@ function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose 
           ) : (
             <select value={showId} onChange={(e) => setShowId(e.target.value)} style={{ width: "100%" }}>
               <option value="">Choose a show…</option>
+              {allowNew ? <option value={NEW_SHOW}>+ Create a new show for this quote</option> : null}
+              {shows.length ? <option disabled>──────────</option> : null}
               {shows.map((sh) => (
                 <option key={sh.id} value={sh.id}>{sh.name}{sh.startDate ? " · " + sh.startDate : ""}</option>
               ))}
             </select>
+          )}
+          {makingNew && (
+            <div style={{ marginTop: 10, padding: "12px 13px", background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10 }}>
+              <div style={{ ...qtRow, marginBottom: 8 }}>
+                <div style={{ flex: "1 1 220px" }}>
+                  <label style={qtLabel}>Show name</label>
+                  <input value={fresh.name} onChange={(e) => setFresh({ ...fresh, name: e.target.value })} style={{ width: "100%" }} placeholder="Name this show" />
+                </div>
+                <div style={{ flex: "0 0 150px" }}>
+                  <label style={qtLabel}>Start</label>
+                  <input type="date" value={fresh.startDate || ""} onChange={(e) => setFresh({ ...fresh, startDate: e.target.value })} style={{ width: "100%" }} />
+                </div>
+                <div style={{ flex: "0 0 150px" }}>
+                  <label style={qtLabel}>End</label>
+                  <input type="date" value={fresh.endDate || ""} onChange={(e) => setFresh({ ...fresh, endDate: e.target.value })} style={{ width: "100%" }} />
+                </div>
+              </div>
+              <p style={{ ...qtHint, margin: 0 }}>
+                Client, venue and contact come across from the quote, and the gear below becomes its pull list.
+                {isWon
+                  ? " This quote is marked won, so the show also gets the quote total as its P&L revenue estimate, sub-rentals as vendor estimates, and its pipeline ticked to Quote Accepted."
+                  : " The P&L and pipeline are left empty until the quote is marked won — the numbers are not final yet. The quote is still linked to the show, so marking it won later fills those in."}
+              </p>
+            </div>
           )}
         </div>
       )}
 
       {flagged.length > 0 && (
         <div style={{ background: "rgba(255,176,32,.1)", border: "1px solid #FFB020", borderRadius: 10, padding: "9px 13px", marginBottom: 12, fontSize: 13 }}>
-          {flagged.length} item{flagged.length === 1 ? "" : "s"} came from a typed line rather than the catalog, so the name may be a category rather than a model. Set the actual model before the crew packs from this.
+          <b>{flagged.length} line{flagged.length === 1 ? "" : "s"} still needs a model.</b> Placeholders were quoted without naming a box, so the
+          crew has nothing to pack until you pick one. Choose a substitute, or type whatever you are actually sending.
         </div>
       )}
 
@@ -3584,12 +3863,27 @@ function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose 
             {byCat[cat].map((r) => (
               <div key={r.key} style={{ ...qtListRow, marginBottom: 4, opacity: r.include ? 1 : 0.45 }}>
                 <input type="checkbox" checked={r.include} onChange={(e) => patch(r.key, { include: e.target.checked })} style={{ width: 15, height: 15, flex: "0 0 auto" }} />
-                <input
-                  value={r.item}
-                  onChange={(e) => patch(r.key, { item: e.target.value, ambiguous: false })}
-                  style={{ flex: "1 1 200px", minWidth: 150, borderColor: r.include && r.ambiguous ? "#FFB020" : undefined }}
-                  placeholder="Model"
-                />
+                {r.options && r.options.length ? (
+                  <select
+                    value={r.item}
+                    onChange={(e) => {
+                      const pick = r.options.find((o) => o.name === e.target.value);
+                      patch(r.key, { item: e.target.value, ambiguous: !e.target.value, category: pick ? pick.category || pick.department : r.category });
+                    }}
+                    style={{ flex: "1 1 200px", minWidth: 150, borderColor: r.include && r.ambiguous ? "#FFB020" : undefined }}
+                    title={r.placeholder ? "Quoted as " + r.placeholder : ""}
+                  >
+                    <option value="">{r.placeholder ? "Pick a model for " + r.placeholder + "…" : "Pick a model…"}</option>
+                    {r.options.map((o) => <option key={o.id} value={o.name}>{o.name}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    value={r.item}
+                    onChange={(e) => patch(r.key, { item: e.target.value, ambiguous: !e.target.value.trim() })}
+                    style={{ flex: "1 1 200px", minWidth: 150, borderColor: r.include && r.ambiguous ? "#FFB020" : undefined }}
+                    placeholder={r.placeholder ? "Model for " + r.placeholder : "Model"}
+                  />
+                )}
                 <input value={r.qty} onChange={(e) => patch(r.key, { qty: e.target.value.replace(/[^0-9]/g, "") })} inputMode="numeric" style={{ width: 58, textAlign: "center" }} title="Qty" />
                 <select value={r.source || "TCG"} onChange={(e) => patch(r.key, { source: e.target.value })} style={{ width: 116 }} title="Where it comes from">
                   <option>TCG</option>
@@ -3611,11 +3905,16 @@ function QtGearSheet({ mode, rows: initial, quoteName, busy, onConfirm, onClose 
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginTop: 14, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "var(--dim)" }}>{on.length} item{on.length === 1 ? "" : "s"} selected{quoteName ? " from " + quoteName : ""}</span>
+        <span style={{ fontSize: 13, color: flagged.length ? "#FFB020" : "var(--dim)" }}>
+          {flagged.length
+            ? flagged.length + " of " + on.length + " still need a model"
+            : on.length + " item" + (on.length === 1 ? "" : "s") + " selected" + (quoteName ? " from " + quoteName : "")}
+        </span>
         <div style={{ display: "flex", gap: 8 }}>
           <button className="btn ghost" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="btn amber" onClick={() => onConfirm(rows, showId)} disabled={busy || !ready}>
-            {busy ? "Working…" : mode === "push" ? "Add to pull list" : "Create show"}
+          <button className="btn amber" onClick={() => onConfirm(rows, showId, makingNew ? fresh : null)} disabled={busy || !ready}
+            title={flagged.length ? flagged.length + " line(s) still need a model" : ""}>
+            {busy ? "Working…" : makingNew ? "Create show & add gear" : mode === "push" ? "Add to pull list" : "Create show"}
           </button>
         </div>
       </div>
@@ -3713,6 +4012,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   // Worked out across the whole quote, not line by line — see qtSubrentMap.
   const subMap = qtSubrentMap(lines, catalog);
   const subs = qtSubrentTotals(lines, subMap);
+  const placeholders = lines.filter((l) => l.catalogId && (catalog || []).some((c) => c.id === l.catalogId && c.isGeneric)).length;
   const dep = qtDepositRows(data.deposits, grand);
 
   const setLines = (next) => touch({ ...data, lines: next });
@@ -3792,7 +4092,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   };
 
   const buildDeposits = () => {
-    const rows = QT_DEFAULT_DEPOSITS.map((d, i) => ({ id: uid(), label: d.label, pct: d.pct, dueDate: "", paid: false, _i: i }));
+    const rows = QT_DEFAULT_DEPOSITS.map((d, i) => ({ id: uid(), label: d.label, pct: d.pct, trigger: d.trigger, offset: d.offset, dueDate: "", paid: false, _i: i }));
     touch({ ...data, deposits: rows.map(({ _i, ...r }) => r) });
   };
   const setDeposits = (next) => touch({ ...data, deposits: next });
@@ -3875,15 +4175,22 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   /* Won quote -> show. Everything that is a number or a date carries over on its
      own; gear goes through the review sheet first, because a catalog name is not
      always the model that ends up in the case. */
-  const doCreateShow = async (rows) => {
+  const doCreateShow = async (rows, override) => {
     setBusyShow(true);
     setErr("");
+    // A show made from a quote that is still in play gets the gear and the
+    // header, but no money: the figures are not final, so seeding a P&L from
+    // them would put numbers in front of you that look agreed and are not.
+    // The link is still written, so marking the quote won later fills them in.
+    const won = q.status === "won";
     try {
       const e = blankEvent();
-      e.name = q.name || "Untitled show";
+      e.name = (override && String(override.name || "").trim()) || q.name || "Untitled show";
       e.client = (data.client && data.client.company) || "";
-      if (q.startDate) e.startDate = q.startDate;
-      e.endDate = q.endDate || q.startDate || e.endDate;
+      const sd = (override && override.startDate) || q.startDate;
+      const ed = (override && override.endDate) || q.endDate;
+      if (sd) e.startDate = sd;
+      e.endDate = ed || sd || e.endDate;
       e.venue = {
         name: (data.venue && data.venue.name) || "",
         address: (data.venue && data.venue.address) || "",
@@ -3900,11 +4207,13 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       e.pull = qtMergePull(e.pull, rows || []);
       const today = new Date().toISOString().slice(0, 10);
       e.pipeline = normPipe({
-        milestones: {
-          prelimQuote: { done: true, date: (q.sentAt || "").slice(0, 10) || today },
-          quoteAccepted: { done: true, date: today },
-        },
-        quotes: [{ id: uid(), name: (q.name || "Quote") + " v" + q.version, amount: String(grand), date: today }],
+        milestones: won
+          ? {
+              prelimQuote: { done: true, date: (q.sentAt || "").slice(0, 10) || today },
+              quoteAccepted: { done: true, date: today },
+            }
+          : {},
+        quotes: won ? [{ id: uid(), name: (q.name || "Quote") + " v" + q.version, amount: String(grand), date: today }] : [],
         invoices: [],
         notes: "Created from quote v" + q.version + ".",
       });
@@ -3917,13 +4226,16 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       });
       // The P&L lives in its own table, so it is a second write. If it fails the
       // show still exists — better a show with an empty P&L than no show.
-      try { await saveCosting(created.id, costingSeed()); } catch (x) {}
+      if (won) { try { await saveCosting(created.id, costingSeed()); } catch (x) {} }
       try { await linkQuoteToShow(q.id, created.id); } catch (x) {}
       if (onShowCreated) onShowCreated(created);
       setConvert(null);
+      setPushOpen(false);
       await load();
       if (onChanged) onChanged();
-      setNotice("Show created. Gear is on the pull list and the quote total is in the P&L — set a show password before sharing it with crew.");
+      setNotice(won
+        ? "Show created. Gear is on the pull list and the quote total is in the P&L — set a show password before sharing it with crew."
+        : "Show created with the gear on its pull list. The P&L stays empty until you mark this quote won. Set a show password before sharing it with crew.");
     } catch (e2) {
       setErr((e2 && e2.message) || "Couldn't create the show.");
     }
@@ -3933,8 +4245,9 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   /* Push into a show that already exists. Read the show, fold the rows into its
      pull list, write it back — deliberately a merge, so a pull list someone has
      already started is added to rather than overwritten. */
-  const doPushToShow = async (rows, showId) => {
-    if (!showId) return;
+  const doPushToShow = async (rows, showId, fresh) => {
+    if (fresh) return doCreateShow(rows, fresh);
+    if (!showId || showId === NEW_SHOW) return;
     setBusyShow(true);
     setErr("");
     try {
@@ -4232,7 +4545,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       </div>
 
       {/* ---- sub-rentals ---- */}
-      {subs.count > 0 && (
+      {(subs.count > 0 || placeholders > 0) && (
         <div className="panel" style={{ marginTop: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
             <span style={{ fontSize: 15, fontWeight: 800 }}>Sub-rentals</span>
@@ -4243,6 +4556,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           </div>
           <p style={{ ...qtHint, marginTop: 0 }}>
             Anything quoted beyond what we own. These carry across to the show's P&amp;L as vendor estimates when you create the show.
+            {placeholders > 0 ? " " + placeholders + " placeholder line" + (placeholders === 1 ? " is" : "s are") + " left out — whether you own one depends on which model you send." : ""}
           </p>
           {Object.keys(subs.byVendor).sort().map((v) => (
             <div key={v} style={{ ...qtListRow, marginBottom: 4 }}>
@@ -4275,7 +4589,33 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
               <input value={d.label} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, label: e.target.value } : x)))} disabled={locked || d.paid} style={{ flex: "1 1 180px" }} />
               <input value={d.pct} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, pct: e.target.value } : x)))} disabled={locked || d.paid || isLast} inputMode="decimal" style={{ width: 62, textAlign: "center" }} title={isLast ? "The last row is whatever is left over" : "Percent"} />
               <span style={{ color: "var(--dim)", fontSize: 12, width: 14 }}>%</span>
-              <input type="date" value={d.dueDate || ""} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, dueDate: e.target.value } : x)))} disabled={locked || d.paid} style={{ width: 148 }} />
+              <select
+                value={d.trigger || "date"}
+                onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, trigger: e.target.value } : x)))}
+                disabled={locked || d.paid}
+                style={{ width: 150 }}
+                title="When this one falls due"
+              >
+                {QT_TRIGGERS.map((t) => <option key={t.key} value={t.key}>{t.key === "before_loadin" ? "Before load-in" : t.key === "after_strike" ? "After strike" : t.label}</option>)}
+              </select>
+              {(d.trigger === "before_loadin" || d.trigger === "after_strike") && (
+                <input
+                  value={d.offset == null ? "" : d.offset}
+                  onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, offset: e.target.value.replace(/[^0-9]/g, "") } : x)))}
+                  disabled={locked || d.paid}
+                  inputMode="numeric"
+                  style={{ width: 50, textAlign: "center" }}
+                  title="How many days"
+                />
+              )}
+              {(d.trigger || "date") === "date" && (
+                <input type="date" value={d.dueDate || ""} onChange={(e) => setDeposits(all.map((x) => (x.id === d.id ? { ...x, dueDate: e.target.value } : x)))} disabled={locked || d.paid} style={{ width: 148 }} />
+              )}
+              <span style={{ width: 110, fontSize: 12, color: "var(--dim)", fontVariantNumeric: "tabular-nums" }} title="Worked out from the show dates on this quote">
+                {(d.trigger || "date") === "signature"
+                  ? "on signing"
+                  : qtDueDate(d, q.startDate, q.endDate) || (d.trigger === "date" ? "—" : "needs show dates")}
+              </span>
               <span style={{ width: 110, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 700 }} title={d.paid ? "Locked at what was invoiced" : ""}>{qtMoney(amt)}</span>
               {/* Deliberately live even on a locked version — see setPaid. */}
               <label style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: d.paid ? "var(--green)" : "var(--dim)", cursor: "pointer", width: 92 }} title={d.paid ? "Paid " + (d.paidDate || "") + " — this figure no longer moves" : "Tick when this one is invoiced and paid"}>
@@ -4287,7 +4627,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           );
         })}
         {!locked && data.deposits.length > 0 && (
-          <button className="btn ghost" onClick={() => setDeposits(data.deposits.concat([{ id: uid(), label: "", pct: 0, dueDate: "", paid: false }]))} style={{ padding: "5px 11px", marginTop: 4 }}>+ Row</button>
+          <button className="btn ghost" onClick={() => setDeposits(data.deposits.concat([{ id: uid(), label: "", pct: 0, trigger: "date", offset: 0, dueDate: "", paid: false }]))} style={{ padding: "5px 11px", marginTop: 4 }}>+ Row</button>
         )}
         {data.deposits.length > 0 && (
           <p style={{ ...qtHint, marginTop: 8 }}>
@@ -4327,8 +4667,11 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           mode="push"
           rows={qtPullRows(data, catalog)}
           quoteName={q.name}
+          quoteSeed={{ name: q.name || "", startDate: q.startDate || "", endDate: q.endDate || "" }}
+          isWon={q.status === "won"}
+          allowNew={!q.eventId}
           busy={busyShow}
-          onConfirm={(rows, showId) => doPushToShow(rows, showId)}
+          onConfirm={(rows, showId, fresh) => doPushToShow(rows, showId, fresh)}
           onClose={() => setPushOpen(false)}
         />
       ) : null}
@@ -12829,7 +13172,43 @@ function Login({ onDone }) {
   );
 }
 
-function SupabaseLogin() {
+/* Supabase hands the result of an invite or a reset back in the URL fragment,
+   not the query string: on success #access_token=...&type=invite, and on
+   failure #error=access_denied&error_code=otp_expired. Nothing used to read it,
+   so a dud link dropped people on a plain sign-in box with no clue why —
+   which is exactly what it looks like when nothing happened at all. */
+function authFromUrl() {
+  let hash = {};
+  try {
+    const raw = (window.location.hash || "").replace(/^#/, "");
+    if (raw) hash = Object.fromEntries(new URLSearchParams(raw).entries());
+  } catch (e) {}
+  let search = {};
+  try { search = Object.fromEntries(new URLSearchParams(window.location.search || "").entries()); } catch (e) {}
+  const type = hash.type || search.type || "";
+  return {
+    // Either signal is enough. The query param is ours and can be lost if the
+    // redirect URL is not allow-listed and Supabase falls back to the Site URL;
+    // the hash type comes from Supabase and survives that.
+    setPw: search.setpw === "1" || type === "invite" || type === "recovery" || type === "signup",
+    type,
+    error: hash.error || search.error || "",
+    errorCode: hash.error_code || search.error_code || "",
+    errorText: hash.error_description || search.error_description || "",
+  };
+}
+
+function authErrorMessage(a) {
+  if (!a.error) return "";
+  const code = String(a.errorCode || "").toLowerCase();
+  if (code.indexOf("expired") >= 0 || code === "otp_expired")
+    return "That invite link has expired or had already been used. Email links can also be used up by security scanners before you click them — ask a Touchstone admin to send a fresh one.";
+  if (String(a.error).toLowerCase() === "access_denied")
+    return "That link could not be used. It may have expired, already been opened, or been meant for a different email address. Ask a Touchstone admin to send a fresh one.";
+  return (a.errorText || "That link could not be used.").replace(/\+/g, " ");
+}
+
+function SupabaseLogin({ notice: incoming }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -12861,6 +13240,9 @@ function SupabaseLogin() {
   return (<div style={wrap}><div style={card}>
     <h2 style={{ marginTop: 0 }}>Crew Call</h2>
     <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Sign in</p>
+    {incoming ? (
+      <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid #f87171", borderRadius: 9, padding: "10px 12px", fontSize: 13, lineHeight: 1.5, marginBottom: 14, color: "#fca5a5" }}>{incoming}</div>
+    ) : null}
     <input style={inp} type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
     <input style={inp} type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
     {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 10 }}>{err}</div> : null}
@@ -12915,7 +13297,8 @@ export default function Root() {
   const [session, setSession] = useState(undefined);
   const [auth, setAuth] = useState(null);
   const [authErr, setAuthErr] = useState("");
-  const [inviteMode, setInviteMode] = useState(() => (typeof window !== "undefined" && (window.location.search || "").includes("setpw=1")));
+  const urlAuth = useRef(typeof window !== "undefined" ? authFromUrl() : { setPw: false, error: "" });
+  const [inviteMode, setInviteMode] = useState(() => urlAuth.current.setPw && !urlAuth.current.error);
   useEffect(() => {
     if (!supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession((data && data.session) || null));
@@ -12937,7 +13320,9 @@ export default function Root() {
   if (!hasSupabaseConfig || !supabase) return <CenterMsg><b>Backend not configured.</b><br />Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in Vercel (Preview) and redeploy.</CenterMsg>;
   if (session === undefined) return <CenterMsg>Loading…</CenterMsg>;
   if (inviteMode && session) return <SetPassword onDone={() => { try { window.history.replaceState({}, "", window.location.pathname); } catch (e) {} setInviteMode(false); }} />;
-  if (!session) return <SupabaseLogin />;
+  // Arrived from an invite or reset link but with no session: the link itself
+  // failed. Say so on the sign-in card rather than leaving them to guess.
+  if (!session) return <SupabaseLogin notice={authErrorMessage(urlAuth.current) || (urlAuth.current.setPw ? "That invite link did not sign you in — it may have expired or already been used. Ask a Touchstone admin to send a fresh one." : "")} />;
   if (authErr) return <CenterMsg><b style={{ color: "#f87171" }}>{authErr}</b><br /><br /><button onClick={signOutAll} style={{ padding: "10px 18px", borderRadius: 9, border: "1px solid #2d3a55", background: "#141b2e", color: "#e7ecf3", cursor: "pointer" }}>Sign out</button></CenterMsg>;
   if (!auth) return <CenterMsg>Signing in…</CenterMsg>;
   return (
