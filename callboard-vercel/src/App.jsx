@@ -3584,70 +3584,70 @@ function qtQuoteHtml(opts) {
 
   return (
     "<!doctype html><html><head><meta charset='utf-8'><title>" + qtEsc(title) + "</title><style>" +
-    "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');" +
-    "*{box-sizing:border-box}body{margin:0;font-family:'Inter',system-ui,sans-serif;color:#111;background:#fff}" +
+    "@import url('https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@400;600;700;800;900&display=swap');" +
+    "*{box-sizing:border-box}body{margin:0;font-family:'Avenir Next','Avenir','Nunito Sans',system-ui,sans-serif;color:#23201F;background:#fff;-webkit-font-smoothing:antialiased}" +
     "@page{size:letter;margin:0.5in}" +
     ".page{width:7.4in;margin:0 auto;padding:0 0 20pt}" +
-    ".hdr-bar{height:7pt;background:linear-gradient(90deg,#0D4F8C,#0077B6,#00B4D8)}" +
+    ".hdr-bar{height:7pt;background:linear-gradient(90deg,#00699F,#007AC1,#00A4D7)}" +
     ".hdr{display:flex;justify-content:space-between;align-items:flex-start;padding:16pt 0 12pt;margin-bottom:12pt}" +
     ".hdr-logo img{height:36pt}" +
     ".hdr-right{text-align:right}" +
-    ".hdr-doc{font-size:20pt;font-weight:800;color:#0D4F8C;letter-spacing:-.02em;line-height:1}" +
-    ".hdr-name{font-size:10.5pt;font-weight:700;color:#26384a;margin-top:5pt}" +
-    ".hdr-meta{font-size:8pt;color:#8a97a6;margin-top:2pt}" +
+    ".hdr-doc{font-size:20pt;font-weight:800;color:#00699F;letter-spacing:-.02em;line-height:1}" +
+    ".hdr-name{font-size:10.5pt;font-weight:700;color:#3A3634;margin-top:5pt}" +
+    ".hdr-meta{font-size:8pt;color:#8A8683;margin-top:2pt}" +
     // At-a-glance band. A quote gets skimmed before it gets read, and these are
     // the four things anyone looks for first.
-    ".band{display:flex;gap:1pt;background:#d9e6f2;border-radius:6pt;overflow:hidden;margin-bottom:18pt;align-items:stretch}" +
-    ".band-c{flex:1;background:#F4F8FC;padding:9pt 11pt;min-width:0}" +
+    ".band{display:flex;gap:1pt;background:#D6E6EF;border-radius:6pt;overflow:hidden;margin-bottom:18pt;align-items:stretch}" +
+    ".band-c{flex:1;background:#F2F7FA;padding:9pt 11pt;min-width:0}" +
     ".band-s{word-break:break-word}" +
-    ".band-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#7d8a99;margin-bottom:3pt}" +
-    ".band-c.hi .band-k{color:#8fc3ea}" +
-    ".band-v{font-size:10pt;font-weight:700;color:#1c2b3a;line-height:1.3}" +
+    ".band-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8A8683;margin-bottom:3pt}" +
+    ".band-c.hi .band-k{color:#9BD0EA}" +
+    ".band-v{font-size:10pt;font-weight:700;color:#23201F;line-height:1.3}" +
     ".band-c.nw .band-v{white-space:nowrap}" +
     ".band-c.hi .band-v{color:#fff;font-size:14pt;font-variant-numeric:tabular-nums}" +
-    ".band-s{font-size:7.5pt;color:#7d8a99;font-weight:500;margin-top:1pt}" +
+    ".band-s{font-size:7.5pt;color:#8A8683;font-weight:500;margin-top:1pt}" +
     ".meta{display:flex;gap:26pt;margin-bottom:16pt}" +
     ".meta-col{flex:1}" +
-    ".meta-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#0077B6;margin-bottom:4pt}" +
-    ".meta-v{font-size:9.5pt;line-height:1.45;color:#2b3a4a}" +
-    ".meta-v .nm{font-weight:700;color:#111}" +
-    ".sect-title{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#0077B6;margin-bottom:8pt}" +
+    ".meta-k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#007AC1;margin-bottom:4pt}" +
+    ".meta-v{font-size:9.5pt;line-height:1.45;color:#3A3634}" +
+    ".meta-v .nm{font-weight:700;color:#23201F}" +
+    ".sect-title{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#007AC1;margin-bottom:8pt}" +
     // Each group is a card with a spine in its dominant department colour, so
     // the eye can find "the lighting one" without reading every heading.
-    ".grp{margin-bottom:19pt;break-inside:avoid;border:0.5pt solid #e3ecf4;border-left:2.5pt solid #0077B6;border-radius:5pt;overflow:hidden}" +
+    ".grp{margin-bottom:19pt;break-inside:avoid;border:0.5pt solid #DEEAF1;border-left:2.5pt solid #007AC1;border-radius:5pt;overflow:hidden}" +
     // Header carries the name only. The number now sits at the foot, where the
     // eye lands after reading the list rather than before.
-    ".grp-h{font-size:10.5pt;font-weight:700;color:#12395f;padding:9pt 11pt 2pt}" +
-    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F7FAFD;border-top:0.5pt solid #e3ecf4}" +
-    ".grp-f .k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8a97a6}" +
-    ".grp-f .amt{font-size:10.5pt;font-weight:700;font-variant-numeric:tabular-nums;color:#0D4F8C}" +
+    ".grp-h{font-size:10.5pt;font-weight:700;color:#005A87;padding:9pt 11pt 2pt}" +
+    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F6FAFC;border-top:0.5pt solid #DEEAF1}" +
+    ".grp-f .k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8A8683}" +
+    ".grp-f .amt{font-size:10.5pt;font-weight:700;font-variant-numeric:tabular-nums;color:#00699F}" +
     "table{width:100%;border-collapse:collapse}" +
     // Ruled head rather than a solid blue bar. Six of those on a page read like
     // a spreadsheet; a hairline reads like a document.
-    "thead th{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#8a97a6;padding:6pt 11pt 5pt;text-align:left;border-bottom:0.75pt solid #d9e6f2;background:#fff}" +
-    "tbody td{font-size:9pt;padding:5.5pt 11pt;border-bottom:0.25pt solid #eef3f8;vertical-align:top;color:#26384a}" +
+    "thead th{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#8A8683;padding:6pt 11pt 5pt;text-align:left;border-bottom:0.75pt solid #D6E6EF;background:#fff}" +
+    "tbody td{font-size:9pt;padding:5.5pt 11pt;border-bottom:0.25pt solid #EDF3F7;vertical-align:top;color:#3A3634}" +
     "tbody tr:last-child td{border-bottom:0}" +
     "td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
     ".t-sum td.n,.t-sum th.n{width:56pt}" +
-    "td.b{font-weight:700;color:#111}" +
+    "td.b{font-weight:700;color:#23201F}" +
     ".dot{display:inline-block;width:5pt;height:5pt;border-radius:50%;margin-right:6pt;vertical-align:middle}" +
     // Total as a panel, not a line of text — it is the number they are deciding on.
-    ".total{display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#0D4F8C;border-radius:6pt}" +
-    ".total-k{font-size:8.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8fc3ea}" +
-    ".total-sub{font-size:7.5pt;color:#8fc3ea;font-weight:500;margin-top:2pt}" +
+    ".total{display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
+    ".total-k{font-size:8.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#9BD0EA}" +
+    ".total-sub{font-size:7.5pt;color:#9BD0EA;font-weight:500;margin-top:2pt}" +
     ".total-v{font-size:21pt;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em}" +
     ".sect{margin-top:20pt;break-inside:avoid}" +
-    ".when{display:inline-block;font-size:7.5pt;font-weight:600;color:#0077B6;background:#EAF3FA;border-radius:9pt;padding:2pt 7pt;white-space:nowrap}" +
+    ".when{display:inline-block;font-size:7.5pt;font-weight:600;color:#007AC1;background:#E8F3F9;border-radius:9pt;padding:2pt 7pt;white-space:nowrap}" +
     ".terms{page-break-before:always;padding-top:14pt}" +
     ".terms p{font-size:8.5pt;line-height:1.5;margin:0 0 7pt;text-align:justify}" +
-    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F7FAFD;border:0.5pt solid #e3ecf4;border-radius:6pt;break-inside:avoid}" +
-    ".accept-h{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#0077B6;margin-bottom:5pt}" +
-    ".accept-p{font-size:8pt;color:#5a6a7a;line-height:1.5;margin:0 0 14pt}" +
+    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F6FAFC;border:0.5pt solid #DEEAF1;border-radius:6pt;break-inside:avoid}" +
+    ".accept-h{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#007AC1;margin-bottom:5pt}" +
+    ".accept-p{font-size:8pt;color:#5C5754;line-height:1.5;margin:0 0 14pt}" +
     ".sig{display:flex;gap:22pt}" +
     ".sig-f{flex:1}" +
-    ".sig-l{border-bottom:0.75pt solid #9dabbb;height:24pt}" +
-    ".sig-c{font-size:7pt;color:#8a97a6;margin-top:3pt;text-transform:uppercase;letter-spacing:.1em;font-weight:600}" +
-    ".footer{margin-top:22pt;padding-top:7pt;border-top:0.5pt solid #c8ddf0;display:flex;justify-content:space-between;font-size:7.5pt;color:#aaa}" +
+    ".sig-l{border-bottom:0.75pt solid #A5A09C;height:24pt}" +
+    ".sig-c{font-size:7pt;color:#8A8683;margin-top:3pt;text-transform:uppercase;letter-spacing:.1em;font-weight:600}" +
+    ".footer{margin-top:22pt;padding-top:7pt;border-top:0.5pt solid #C6DDEA;display:flex;justify-content:space-between;font-size:7.5pt;color:#A5A09C}" +
     "</style></head><body><div class='page' id='quote-content'>" +
     "<div class='hdr-bar'></div>" +
     "<div class='hdr'><div class='hdr-logo'><img src='" + TCG_LOGO + "' alt='TCG'></div>" +
