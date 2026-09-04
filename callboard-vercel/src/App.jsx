@@ -3432,6 +3432,10 @@ function qtQuoteHtml(opts) {
   const DEPT_HEX = { Audio: "#2563EB", Video: "#7C3AED", Lighting: "#D97706", Power: "#DC2626", Scenic: "#059669", Misc: "#64748B" };
   const deptOf = (l) => DEPT_HEX[l && l.department] || DEPT_HEX.Misc;
   // A group's spine takes the colour of whatever it is mostly made of.
+  // Eight rows is about a third of a page; below that a section is better moved
+  // whole than split, and above it splitting is what keeps the pages full.
+  const KEEP_WHOLE = 8;
+  const grpCls = (list) => "grp" + (list.length <= KEEP_WHOLE ? " keep" : "");
   const spineFor = (list) => {
     const tally = {};
     for (const l of list) { const d = (l && l.department) || "Misc"; tally[d] = (tally[d] || 0) + qtLineTotal(l); }
@@ -3483,7 +3487,7 @@ function qtQuoteHtml(opts) {
     const block = (label, list) => {
       const t = list.reduce((acc, l) => acc + qtLineTotal(l), 0);
       return (
-        "<div class='grp' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
+        "<div class='" + grpCls(list) + "' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
         "<table class='t-sum'>" + head + "<tbody>" + namesFor(list) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(t) + "</span></div>" + "</div>"
       );
@@ -3504,7 +3508,7 @@ function qtQuoteHtml(opts) {
       if (!gl.length) continue;
       const gt = gl.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
+        "<div class='" + grpCls(gl) + "' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(gl) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(gt) + "</span></div>" + "</div>";
     }
@@ -3512,7 +3516,7 @@ function qtQuoteHtml(opts) {
     if (un.length) {
       const ut = un.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
+        "<div class='" + grpCls(un) + "' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(un) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(ut) + "</span></div>" + "</div>";
     }
@@ -3649,11 +3653,12 @@ function qtQuoteHtml(opts) {
     ".sect-title{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#007AC1;margin-bottom:8pt}" +
     // Each group is a card with a spine in its dominant department colour, so
     // the eye can find "the lighting one" without reading every heading.
-    ".grp{margin-bottom:19pt;break-inside:avoid;border:0.5pt solid #DEEAF1;border-left:2.5pt solid #007AC1;border-radius:5pt;overflow:hidden}" +
+    ".grp{margin-bottom:19pt;border:0.5pt solid #DEEAF1;border-left:2.5pt solid #007AC1;border-radius:5pt;overflow:hidden}" +
+    ".grp.keep{break-inside:avoid;page-break-inside:avoid}" +
     // Header carries the name only. The number now sits at the foot, where the
     // eye lands after reading the list rather than before.
     ".grp-h{font-size:10.5pt;font-weight:700;color:#005A87;padding:9pt 11pt 2pt}" +
-    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F6FAFC;border-top:0.5pt solid #DEEAF1}" +
+    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F6FAFC;border-top:0.5pt solid #DEEAF1;break-inside:avoid;page-break-inside:avoid}" +
     ".grp-f .k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8A8683}" +
     ".grp-f .amt{font-size:10.5pt;font-weight:700;font-variant-numeric:tabular-nums;color:#00699F}" +
     "table{width:100%;border-collapse:collapse}" +
@@ -3661,21 +3666,22 @@ function qtQuoteHtml(opts) {
     // a spreadsheet; a hairline reads like a document.
     "thead th{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#8A8683;padding:6pt 11pt 5pt;text-align:left;border-bottom:0.75pt solid #D6E6EF;background:#fff}" +
     "tbody td{font-size:9pt;padding:5.5pt 11pt;border-bottom:0.25pt solid #EDF3F7;vertical-align:top;color:#3A3634}" +
+    "tbody tr,thead tr{break-inside:avoid;page-break-inside:avoid}" +
     "tbody tr:last-child td{border-bottom:0}" +
     "td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
     ".t-sum td.n,.t-sum th.n{width:56pt}" +
     "td.b{font-weight:700;color:#23201F}" +
     ".dot{display:inline-block;width:5pt;height:5pt;border-radius:50%;margin-right:6pt;vertical-align:middle}" +
     // Total as a panel, not a line of text — it is the number they are deciding on.
-    ".total{display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
+    ".total{break-inside:avoid;page-break-inside:avoid;display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
     ".total-k{font-size:8.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#9BD0EA}" +
     ".total-sub{font-size:7.5pt;color:#9BD0EA;font-weight:500;margin-top:2pt}" +
     ".total-v{font-size:21pt;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em}" +
-    ".sect{margin-top:20pt;break-inside:avoid}" +
+    ".sect{margin-top:20pt;break-inside:avoid;page-break-inside:avoid}" +
     ".when{display:inline-block;font-size:7.5pt;font-weight:600;color:#007AC1;background:#E8F3F9;border-radius:9pt;padding:2pt 7pt;white-space:nowrap}" +
     ".terms{page-break-before:always;padding-top:14pt}" +
     ".terms p{font-size:8.5pt;line-height:1.5;margin:0 0 7pt;text-align:justify}" +
-    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F6FAFC;border:0.5pt solid #DEEAF1;border-radius:6pt;break-inside:avoid}" +
+    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F6FAFC;border:0.5pt solid #DEEAF1;border-radius:6pt;break-inside:avoid;page-break-inside:avoid}" +
     ".accept-h{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#007AC1;margin-bottom:5pt}" +
     ".accept-p{font-size:8pt;color:#5C5754;line-height:1.5;margin:0 0 14pt}" +
     ".sig{display:flex;gap:22pt}" +
