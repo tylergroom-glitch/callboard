@@ -3706,7 +3706,7 @@ function qtQuoteHtml(opts) {
     "</div><div class='total-v'>" + money(grand) + "</div></div>" +
     depBlock +
     acceptBlock +
-    "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + "</span></div>" +
+    "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + " &nbsp;·&nbsp; " + QT_BUILD + "</span></div>" +
     termsBlock +
     "</div><script>" +
     "var TERMS_B64=" + JSON.stringify(opts.termsPdfB64 || "") + ";" +
@@ -3772,6 +3772,11 @@ function qtExportQuotePdf(opts) {
 }
 
 /* ---------- the editor ---------- */
+
+/* Bumped whenever the quote builder or its PDF changes. It appears in the PDF
+   footer and beside the version in the editor, so an export always says which
+   build made it — and a deploy can be confirmed without exporting anything. */
+const QT_BUILD = "b11";
 
 const NEW_SHOW = "__new__";
 
@@ -4632,6 +4637,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 className="cal-h1" style={{ margin: 0 }}>{q.name || "Untitled quote"}</h1>
           <span style={{ color: "var(--dim)", fontSize: 13 }}>v{q.version}</span>
+          <span style={{ color: "var(--faint)", fontSize: 11, fontVariantNumeric: "tabular-nums" }} title="Which build of the quote tools this page is running">{QT_BUILD}</span>
           <QtBadge status={q.status} />
           {q.sentAt ? (
             <span style={{ color: "var(--dim)", fontSize: 12 }} title={"Sent " + new Date(q.sentAt).toLocaleString()}>
