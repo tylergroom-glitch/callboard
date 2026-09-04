@@ -2918,6 +2918,9 @@ function qtNormalize(data) {
     lines: Array.isArray(d.lines) ? d.lines : [],
     deposits: Array.isArray(d.deposits) ? d.deposits : [],
     truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : { van: 0.75, box: 3, semi: 4 },
+    // How many days a new line bills for. Set once per quote instead of typed
+    // on every row; each line can still be changed on its own afterwards.
+    defaultDays: qtNum(d.defaultDays) > 0 ? qtNum(d.defaultDays) : 1,
     // itemized = every line with prices
     // summary  = every line by name, priced only at the group level
     // groups   = one row per group, contents hidden
@@ -3573,6 +3576,15 @@ function qtQuoteHtml(opts) {
       : day(q.startDate) + " – " + day(q.endDate);
   })();
 
+  /* A sent quote is a record of something that went out on a particular day, so
+     the date on it has to be that day — not whenever it happens to be printed
+     again. Re-exporting a sent quote now produces the same document it did the
+     first time. A draft has no send date yet, so it is stamped with today's. */
+  const sentOn = q.sentAt ? new Date(q.sentAt) : null;
+  const dateLine = sentOn
+    ? "Sent " + sentOn.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "Drafted " + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
   const validUntil = (function () {
     const base = q.sentAt ? new Date(q.sentAt) : new Date();
     base.setDate(base.getDate() + 30);
@@ -3676,7 +3688,7 @@ function qtQuoteHtml(opts) {
     "<div class='hdr'><div class='hdr-logo'><img src='" + TCG_LOGO + "' alt='TCG'></div>" +
     "<div class='hdr-right'><div class='hdr-doc'>Quotation</div>" +
     "<div class='hdr-name'>" + qtEsc(q.name || "Untitled") + "</div>" +
-    "<div class='hdr-meta'>Rev " + q.version + " &nbsp;·&nbsp; " + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) + "</div>" +
+    "<div class='hdr-meta'>Rev " + q.version + " &nbsp;·&nbsp; " + dateLine + "</div>" +
     // The terms already promise 30 days; saying so on page one starts the clock
     // where the client is actually looking.
     "<div class='hdr-meta'>Valid until " + validUntil + "</div>" +
@@ -4097,6 +4109,11 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [pushOpen, setPushOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
   const [presetsOpen, setPresetsOpen] = useState(false);
+  // Dragging is armed from the handle rather than the card, so the card can be
+  // the drag image without the inputs inside it losing text selection.
+  const [armed, setArmed] = useState(null);
+  const [dragId, setDragId] = useState(null);
+  const [overId, setOverId] = useState(null);
   const [convert, setConvert] = useState(null); // { rows } while the convert sheet is open
   const [busyShow, setBusyShow] = useState(false);
   const [notice, setNotice] = useState("");
@@ -4183,7 +4200,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     setLines(lines.concat([{
       id: uid(), kind: "item", groupId: groupId || null, catalogId: hit.id,
       name: hit.name, department: hit.department,
-      qty: 1, days: 1, rate: hit.rate, discount: 0,
+      qty: 1, days: data.defaultDays, rate: hit.rate, discount: 0,
       // Snapshot like the rate: the catalog figure is a starting point, and
       // re-pricing the catalog later must not rewrite a quote already out.
       subVendor: "", subCost: hit.subCost == null ? "" : String(hit.subCost),
@@ -4194,12 +4211,12 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     setLines(lines.concat(hits.map((h) => ({
       id: uid(), kind: "item", groupId: groupId || null, catalogId: h.id,
       name: h.name, department: h.department,
-      qty: 1, days: 1, rate: h.rate, discount: 0,
+      qty: 1, days: data.defaultDays, rate: h.rate, discount: 0,
       subVendor: "", subCost: h.subCost == null ? "" : String(h.subCost),
     }))));
   };
   const addBlank = (groupId) => {
-    setLines(lines.concat([{ id: uid(), kind: "item", groupId: groupId || null, catalogId: null, name: "", department: "Misc", qty: 1, days: 1, rate: 0, discount: 0 }]));
+    setLines(lines.concat([{ id: uid(), kind: "item", groupId: groupId || null, catalogId: null, name: "", department: "Misc", qty: 1, days: data.defaultDays, rate: 0, discount: 0 }]));
   };
   /* Groups and lines come in with fresh ids so a preset can be used twice on
      one quote without the two copies sharing an id. Rates and departments are
@@ -4238,6 +4255,61 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     touch({ ...data, groups: groups.concat(newGroups), lines: lines.concat(newLines) });
     setPresetsOpen(false);
     setNotice("Added " + newGroups.length + " group" + (newGroups.length === 1 ? "" : "s") + " and " + newLines.length + " line" + (newLines.length === 1 ? "" : "s") + " from " + p.name + ", priced at today's catalog rates.");
+  };
+
+  /* Setting every line at once is destructive and there is no undo, so it says
+     how many rows it is about to change and what they currently hold — the
+     labour rows on a typical quote sit at a different number to the gear, and
+     wiping that silently would be worse than the typing it saves. */
+  const setDaysOn = (targetLines, label) => {
+    const n = qtNum(data.defaultDays) || 1;
+    const differing = targetLines.filter((l) => qtNum(l.days) !== n);
+    if (!targetLines.length) return;
+    if (differing.length) {
+      const spread = Array.from(new Set(differing.map((l) => qtNum(l.days)))).sort((a, b) => a - b);
+      if (!window.confirm(
+        "Set " + differing.length + " line" + (differing.length === 1 ? "" : "s") + " in " + label + " to " + n + " day" + (n === 1 ? "" : "s") + "?\n\n" +
+        (differing.length === 1 ? "It is" : "They are") + " currently on " + spread.join(", ") + "."
+      )) return;
+    }
+    const ids = new Set(targetLines.map((l) => l.id));
+    setLines(lines.map((l) => (ids.has(l.id) ? { ...l, days: n } : l)));
+  };
+
+  const moveGroup = (id, to) => {
+    const from = groups.findIndex((g) => g.id === id);
+    if (from < 0) return;
+    const t = Math.max(0, Math.min(groups.length - 1, to));
+    if (t === from) return;
+    const next = groups.slice();
+    const [g] = next.splice(from, 1);
+    next.splice(t, 0, g);
+    touch({ ...data, groups: next });
+  };
+  const dropOnGroup = (targetId) => {
+    if (!dragId || dragId === targetId) { setDragId(null); setOverId(null); return; }
+    moveGroup(dragId, groups.findIndex((g) => g.id === targetId));
+    setDragId(null); setOverId(null); setArmed(null);
+  };
+
+  /* Copy lands directly under the original, because the reason to duplicate is
+     almost always a second room or a second day — "Breakout A" then "Breakout B"
+     — and you want them adjacent. Discounts and sub-rental vendors come across:
+     unlike a preset, this is the same job, so they still apply. */
+  const duplicateGroup = (g) => {
+    const src = lines.filter((l) => l.groupId === g.id);
+    const nid = uid();
+    const clash = groups.filter((x) => x.name === g.name || x.name.indexOf(g.name + " (") === 0).length;
+    const copy = { id: nid, name: clash ? g.name + " (" + (clash + 1) + ")" : g.name };
+    const at = groups.findIndex((x) => x.id === g.id);
+    const nextGroups = groups.slice();
+    nextGroups.splice(at + 1, 0, copy);
+    touch({
+      ...data,
+      groups: nextGroups,
+      lines: lines.concat(src.map((l) => ({ ...l, id: uid(), groupId: nid }))),
+    });
+    setNotice("Copied " + g.name + " as " + copy.name + " with " + src.length + " line" + (src.length === 1 ? "" : "s") + ". Rename it from its header.");
   };
 
   const addGroup = () => {
@@ -4555,6 +4627,11 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           <h1 className="cal-h1" style={{ margin: 0 }}>{q.name || "Untitled quote"}</h1>
           <span style={{ color: "var(--dim)", fontSize: 13 }}>v{q.version}</span>
           <QtBadge status={q.status} />
+          {q.sentAt ? (
+            <span style={{ color: "var(--dim)", fontSize: 12 }} title={"Sent " + new Date(q.sentAt).toLocaleString()}>
+              Sent {new Date(q.sentAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+            </span>
+          ) : null}
           {save === "saving" ? <span style={{ color: "var(--dim)", fontSize: 12 }}>Saving…</span> : null}
           {save === "saved" ? <span style={{ color: "var(--green)", fontSize: 12 }}>Saved</span> : null}
         </div>
@@ -4671,7 +4748,25 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           <button className="btn ghost" onClick={addGroup}>+ Group</button>
           <button className="btn ghost" onClick={() => setPresetsOpen(true)} title="Saved bundles of groups and gear">Presets…</button>
           <button className="btn ghost" onClick={() => setTruck(true)}>Trucking…</button>
+          <span style={{ flex: 1 }} />
+          <span style={{ ...qtLabel, marginBottom: 0 }}>Days</span>
+          <input
+            value={data.defaultDays}
+            onChange={(e) => touch({ ...data, defaultDays: e.target.value.replace(/[^0-9.]/g, "") })}
+            inputMode="decimal"
+            style={{ width: 54, textAlign: "center" }}
+            title="How many days a new line bills for on this quote"
+          />
+          <button className="btn ghost" onClick={() => setDaysOn(lines, "this quote")} disabled={!lines.length} style={{ padding: "6px 11px" }} title="Set every line on the quote to this many days">
+            Apply to all
+          </button>
         </div>
+      )}
+      {!locked && (
+        <p style={{ ...qtHint, marginTop: -6, marginBottom: 12 }}>
+          New lines bill for {data.defaultDays} day{qtNum(data.defaultDays) === 1 ? "" : "s"}. Each group has its own <b>Days</b> button for
+          the rows that differ — labour usually runs longer than the gear.
+        </p>
       )}
 
       {/* ---- bulk edit bar ---- */}
@@ -4704,11 +4799,51 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       )}
 
       {/* ---- grouped lines ---- */}
-      {groups.map((g) => (
-        <div key={g.id} style={{ marginBottom: 16 }}>
+      {groups.map((g, gi) => (
+        <div
+          key={g.id}
+          style={{
+            marginBottom: 16,
+            opacity: dragId === g.id ? 0.45 : 1,
+            borderTop: overId === g.id && dragId && dragId !== g.id ? "2px solid var(--amber)" : "2px solid transparent",
+            paddingTop: 2,
+          }}
+          draggable={armed === g.id}
+          onDragStart={(e) => { setDragId(g.id); try { e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", g.id); } catch (x) {} }}
+          onDragEnd={() => { setDragId(null); setOverId(null); setArmed(null); }}
+          onDragOver={(e) => { if (dragId) { e.preventDefault(); if (overId !== g.id) setOverId(g.id); } }}
+          onDrop={(e) => { e.preventDefault(); dropOnGroup(g.id); }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, marginTop: 6 }}>
+            {!locked && (
+              <span
+                onMouseDown={() => setArmed(g.id)}
+                onMouseUp={() => setArmed(null)}
+                title="Drag to reorder this section"
+                style={{ cursor: "grab", color: "var(--faint)", fontSize: 15, lineHeight: 1, padding: "0 2px", userSelect: "none" }}
+              >
+                ⠿
+              </span>
+            )}
             <span style={{ fontSize: 15, fontWeight: 800 }}>{g.name}</span>
             <span style={{ color: "var(--dim)", fontSize: 13 }}>{qtMoney(groupTotal(g.id))}</span>
+            {!locked && (
+              <button
+                className="btn ghost"
+                onClick={() => setDaysOn(lines.filter((l) => l.groupId === g.id), g.name)}
+                style={{ padding: "3px 8px", fontSize: 12 }}
+                title={"Set every line in " + g.name + " to " + data.defaultDays + " day(s)"}
+              >
+                Days → {data.defaultDays}
+              </button>
+            )}
+            {!locked && groups.length > 1 && (
+              <span style={{ display: "inline-flex", gap: 2 }}>
+                <button className="btn ghost" onClick={() => moveGroup(g.id, gi - 1)} disabled={gi === 0} style={{ padding: "3px 7px", fontSize: 12 }} title="Move up">▲</button>
+                <button className="btn ghost" onClick={() => moveGroup(g.id, gi + 1)} disabled={gi === groups.length - 1} style={{ padding: "3px 7px", fontSize: 12 }} title="Move down">▼</button>
+              </span>
+            )}
+            {!locked && <button className="btn ghost" onClick={() => duplicateGroup(g)} style={{ padding: "3px 8px", fontSize: 12 }} title={"Copy this section and its " + lines.filter((l) => l.groupId === g.id).length + " line(s) directly below"}>Duplicate</button>}
             {!locked && <button className="btn ghost" onClick={() => renameGroup(g)} style={{ padding: "3px 8px", fontSize: 12 }}>Rename</button>}
             {!locked && <button className="btn ghost danger" onClick={() => removeGroup(g)} style={{ padding: "3px 8px", fontSize: 12 }}>Delete</button>}
           </div>
