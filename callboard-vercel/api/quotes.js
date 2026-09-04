@@ -1,0 +1,305 @@
+// /api/quotes — the quoting pipeline (Supabase `quotes`). TCG admin only.
+//
+// GET                      list every quote (newest first), without the heavy blob
+// GET  ?id=                one quote in full
+// GET  ?family=            every revision of one quote, oldest first
+// POST { ...quote }        create a new quote (v1 of a new family)
+// POST ?revise=<id>        duplicate a quote as the next version, back in draft
+// PATCH ?id= { ...quote }  save a quote. Refuses if it is not a draft.
+// PATCH ?id=&status=sent   change status only. Works on locked quotes.
+// PATCH ?id=&eventId=<id>  link the quote to the show it became. Works on locked
+//                          quotes, and refuses to overwrite an existing link.
+// PATCH ?id=&payments=1    save the payment schedule only. Works on locked quotes,
+//                          because deposits get ticked paid long after sending.
+// DELETE ?id=              delete one version
+//
+// GET  ?presets=1          list saved gear presets
+// POST ?presets=1          save one { name, notes, data } — upserts on name
+// DELETE ?presets=1&id=    delete one
+//
+// SETUP: run setup-catalog.sql, setup-quotes.sql, then setup-quotes-v4.sql for
+// presets. No new env vars.
+import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
+
+const STATUSES = ["draft", "sent", "won", "lost"];
+const LIST_COLS = "id,family_id,version,status,name,client_id,contact_id,venue_id,start_date,end_date,total,sent_at,event_id,created_at,updated_at";
+
+function num(v) {
+  if (typeof v === "number") return isFinite(v) ? v : 0;
+  const n = parseFloat(String(v == null ? "" : v).replace(/[^0-9.\-]/g, ""));
+  return isFinite(n) ? n : 0;
+}
+
+// The one place line maths is defined on the server. The browser mirrors this;
+// the server recalculates on every save so `total` can never drift from the lines.
+function lineTotal(l) {
+  if (!l) return 0;
+  const qty = num(l.qty) || 0;
+  const days = num(l.days) || 0;
+  const rate = num(l.rate) || 0;
+  const disc = Math.min(Math.max(num(l.discount) || 0, 0), 100);
+  return Math.round(qty * days * rate * (1 - disc / 100) * 100) / 100;
+}
+
+function grandTotal(data) {
+  const lines = (data && Array.isArray(data.lines)) ? data.lines : [];
+  const sum = lines.reduce((t, l) => t + lineTotal(l), 0);
+  return Math.round(sum * 100) / 100;
+}
+
+function shape(r, withData) {
+  const out = {
+    id: r.id,
+    familyId: r.family_id,
+    version: r.version,
+    status: r.status || "draft",
+    name: r.name || "",
+    clientId: r.client_id || null,
+    contactId: r.contact_id || null,
+    venueId: r.venue_id || null,
+    startDate: r.start_date || "",
+    endDate: r.end_date || "",
+    total: Number(r.total || 0),
+    sentAt: r.sent_at || null,
+    // The show this quote was turned into, once it is won. Set once and kept,
+    // so the button becomes "Open show" instead of making a second show.
+    eventId: r.event_id || null,
+    updatedAt: r.updated_at || null,
+  };
+  if (withData) out.data = (r.data && typeof r.data === "object") ? r.data : {};
+  return out;
+}
+
+// Only the fields a caller is allowed to set. Anything else is ignored.
+function writable(b, data) {
+  return {
+    name: String(b.name || "").trim(),
+    client_id: b.clientId || null,
+    contact_id: b.contactId || null,
+    venue_id: b.venueId || null,
+    start_date: b.startDate || null,
+    end_date: b.endDate || null,
+    data,
+    total: grandTotal(data),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+async function getOne(id) {
+  const rows = await supabaseRest("GET", "/quotes?id=eq." + encodeURIComponent(id) + "&select=*", null);
+  if (!rows || !rows[0]) { const e = new Error("Quote not found"); e.status = 404; throw e; }
+  return rows[0];
+}
+
+export default async function handler(req, res) {
+  const p = auth(req);
+  if (!p) return json(res, 401, { error: "Not signed in" });
+  if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+
+  const q = req.query || {};
+
+  try {
+    // ---- gear presets: saved bundles of groups and their line items ----
+    // Only the recipe is kept. Rates are re-read from the catalog when a preset
+    // is used, so a preset cannot go stale and quote an old price.
+    if (q.presets) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/quote_presets?select=*&order=name.asc", null);
+        return json(res, 200, (rows || []).map((r) => ({
+          id: r.id,
+          name: r.name || "",
+          notes: r.notes || "",
+          data: (r.data && typeof r.data === "object") ? r.data : {},
+          updatedAt: r.updated_at || null,
+        })));
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        const name = String(b.name || "").trim();
+        if (!name) return json(res, 400, { error: "Name required" });
+        const data = (b.data && typeof b.data === "object") ? b.data : {};
+        const made = await supabaseRest("POST", "/quote_presets?on_conflict=name", {
+          name,
+          notes: String(b.notes || ""),
+          data,
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates,return=representation");
+        const r = (made && made[0]) || {};
+        return json(res, 200, { ok: true, id: r.id, name: r.name });
+      }
+      if (req.method === "DELETE") {
+        if (!q.id) return json(res, 400, { error: "id required" });
+        await supabaseRest("DELETE", "/quote_presets?id=eq." + encodeURIComponent(q.id), null);
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    // ---- terms and conditions (one shared block, reused on every quote) ----
+    if (q.terms) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/app_settings?key=eq.quote_terms&select=value", null);
+        const v = rows && rows[0] ? rows[0].value : null;
+        return json(res, 200, { text: (v && v.text) || "" });
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        await supabaseRest("POST", "/app_settings?on_conflict=key", {
+          key: "quote_terms",
+          value: { text: String(b.text || "") },
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates");
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    // ---- branded T&C PDF ----
+    // Stored base64 in app_settings alongside the plain-text terms. Kept out of
+    // the ordinary terms GET because it is ~230 KB and only the exporter needs
+    // the bytes; ?termsPdf=meta returns just the filename/page count for the UI.
+    if (q.termsPdf) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/app_settings?key=eq.quote_terms_pdf&select=value", null);
+        const v = (rows && rows[0] && rows[0].value) || null;
+        if (!v || !v.b64) return json(res, 200, { pdf: null });
+        if (q.termsPdf === "meta") {
+          return json(res, 200, { pdf: { name: v.name || "", pages: v.pages || 0, size: v.size || 0, uploadedAt: v.uploadedAt || "" } });
+        }
+        return json(res, 200, { pdf: v });
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        if (!b.b64) return json(res, 400, { error: "No file provided" });
+        // ~7 MB of base64. Well above anything a terms document needs, but a
+        // guard so a mis-picked file can't wedge the settings row.
+        if (String(b.b64).length > 7000000) return json(res, 413, { error: "That PDF is too large (7 MB limit)." });
+        await supabaseRest("POST", "/app_settings?on_conflict=key", {
+          key: "quote_terms_pdf",
+          value: {
+            b64: String(b.b64),
+            name: String(b.name || "Terms.pdf").slice(0, 200),
+            pages: Number(b.pages) || 0,
+            size: Number(b.size) || 0,
+            uploadedAt: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates");
+        return json(res, 200, { ok: true });
+      }
+      if (req.method === "DELETE") {
+        await supabaseRest("DELETE", "/app_settings?key=eq.quote_terms_pdf", null);
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
+    if (req.method === "GET") {
+      if (q.id) return json(res, 200, shape(await getOne(q.id), true));
+      if (q.family) {
+        const rows = await supabaseRest("GET", "/quotes?family_id=eq." + encodeURIComponent(q.family) + "&select=" + LIST_COLS + "&order=version.asc", null);
+        return json(res, 200, (rows || []).map((r) => shape(r, false)));
+      }
+      const rows = await supabaseRest("GET", "/quotes?select=" + LIST_COLS + "&order=updated_at.desc", null);
+      return json(res, 200, (rows || []).map((r) => shape(r, false)));
+    }
+
+    if (req.method === "POST") {
+      // ---- make the next revision of an existing quote ----
+      if (q.revise) {
+        const src = await getOne(q.revise);
+        const sibs = await supabaseRest("GET", "/quotes?family_id=eq." + encodeURIComponent(src.family_id) + "&select=version&order=version.desc&limit=1", null);
+        const next = ((sibs && sibs[0] && sibs[0].version) || src.version) + 1;
+        const made = await supabaseRest("POST", "/quotes", {
+          family_id: src.family_id,
+          version: next,
+          status: "draft",
+          name: src.name,
+          client_id: src.client_id,
+          contact_id: src.contact_id,
+          venue_id: src.venue_id,
+          start_date: src.start_date,
+          end_date: src.end_date,
+          data: src.data || {},
+          total: src.total || 0,
+        }, "return=representation");
+        return json(res, 200, shape(made[0], true));
+      }
+
+      // ---- brand new quote ----
+      const b = await readBody(req);
+      const data = (b.data && typeof b.data === "object") ? b.data : {};
+      const made = await supabaseRest("POST", "/quotes", {
+        ...writable(b, data),
+        version: 1,
+        status: "draft",
+      }, "return=representation");
+      return json(res, 200, shape(made[0], true));
+    }
+
+    if (req.method === "PATCH") {
+      if (!q.id) return json(res, 400, { error: "id required" });
+      const cur = await getOne(q.id);
+
+      // ---- payment schedule only (allowed even when locked) ----
+      // Money comes in after a quote has gone out, so ticking a deposit paid
+      // cannot require a revision. Only `deposits` inside the blob is touched,
+      // and `total` is left exactly as it was — nothing priced changes here.
+      if (q.payments) {
+        const b = await readBody(req);
+        const cur_data = (cur.data && typeof cur.data === "object") ? cur.data : {};
+        const deposits = Array.isArray(b.deposits) ? b.deposits : [];
+        await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), {
+          data: { ...cur_data, deposits },
+          updated_at: new Date().toISOString(),
+        });
+        return json(res, 200, { ok: true });
+      }
+
+      // ---- link to the show this quote became (allowed even when locked) ----
+      // A won quote is locked, and linking happens after it is won, so this
+      // has to sit above the draft check like the status branch does.
+      if (q.eventId) {
+        if (cur.event_id && cur.event_id !== q.eventId)
+          return json(res, 409, { error: "This quote is already linked to a show." });
+        await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), {
+          event_id: String(q.eventId),
+          updated_at: new Date().toISOString(),
+        });
+        return json(res, 200, { ok: true, eventId: String(q.eventId) });
+      }
+
+      // ---- status change only (allowed even when locked) ----
+      if (q.status) {
+        const st = String(q.status);
+        if (STATUSES.indexOf(st) < 0) return json(res, 400, { error: "Unknown status" });
+        const patch = { status: st, updated_at: new Date().toISOString() };
+        // Stamp the send date the first time it goes out; that is the lock.
+        if (st === "sent" && !cur.sent_at) patch.sent_at = new Date().toISOString();
+        await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), patch);
+        return json(res, 200, { ok: true, status: st });
+      }
+
+      // ---- content save ----
+      // A sent/won/lost version is a record of what the client received, so it
+      // is never edited in place. The app offers a revision instead.
+      if ((cur.status || "draft") !== "draft")
+        return json(res, 409, { error: "This version is locked. Create a revision to keep editing." });
+
+      const b = await readBody(req);
+      const data = (b.data && typeof b.data === "object") ? b.data : (cur.data || {});
+      await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), writable(b, data));
+      return json(res, 200, { ok: true, total: grandTotal(data) });
+    }
+
+    if (req.method === "DELETE") {
+      if (!q.id) return json(res, 400, { error: "id required" });
+      await supabaseRest("DELETE", "/quotes?id=eq." + encodeURIComponent(q.id), null);
+      return json(res, 200, { ok: true });
+    }
+
+    return json(res, 405, { error: "Method not allowed" });
+  } catch (e) {
+    return json(res, e.status || 500, { error: e.message || "Server error" });
+  }
+}
