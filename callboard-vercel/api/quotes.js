@@ -13,7 +13,12 @@
 //                          because deposits get ticked paid long after sending.
 // DELETE ?id=              delete one version
 //
-// SETUP: run setup-catalog.sql then setup-quotes.sql. No new env vars.
+// GET  ?presets=1          list saved gear presets
+// POST ?presets=1          save one { name, notes, data } — upserts on name
+// DELETE ?presets=1&id=    delete one
+//
+// SETUP: run setup-catalog.sql, setup-quotes.sql, then setup-quotes-v4.sql for
+// presets. No new env vars.
 import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 
 const STATUSES = ["draft", "sent", "won", "lost"];
@@ -94,6 +99,42 @@ export default async function handler(req, res) {
   const q = req.query || {};
 
   try {
+    // ---- gear presets: saved bundles of groups and their line items ----
+    // Only the recipe is kept. Rates are re-read from the catalog when a preset
+    // is used, so a preset cannot go stale and quote an old price.
+    if (q.presets) {
+      if (req.method === "GET") {
+        const rows = await supabaseRest("GET", "/quote_presets?select=*&order=name.asc", null);
+        return json(res, 200, (rows || []).map((r) => ({
+          id: r.id,
+          name: r.name || "",
+          notes: r.notes || "",
+          data: (r.data && typeof r.data === "object") ? r.data : {},
+          updatedAt: r.updated_at || null,
+        })));
+      }
+      if (req.method === "POST") {
+        const b = await readBody(req);
+        const name = String(b.name || "").trim();
+        if (!name) return json(res, 400, { error: "Name required" });
+        const data = (b.data && typeof b.data === "object") ? b.data : {};
+        const made = await supabaseRest("POST", "/quote_presets?on_conflict=name", {
+          name,
+          notes: String(b.notes || ""),
+          data,
+          updated_at: new Date().toISOString(),
+        }, "resolution=merge-duplicates,return=representation");
+        const r = (made && made[0]) || {};
+        return json(res, 200, { ok: true, id: r.id, name: r.name });
+      }
+      if (req.method === "DELETE") {
+        if (!q.id) return json(res, 400, { error: "id required" });
+        await supabaseRest("DELETE", "/quote_presets?id=eq." + encodeURIComponent(q.id), null);
+        return json(res, 200, { ok: true });
+      }
+      return json(res, 405, { error: "Method not allowed" });
+    }
+
     // ---- terms and conditions (one shared block, reused on every quote) ----
     if (q.terms) {
       if (req.method === "GET") {

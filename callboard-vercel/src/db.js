@@ -162,6 +162,13 @@ export const saveQuote = (id, payload) =>
 export const setQuoteStatus = (id, status) =>
   api("PATCH", "/api/quotes?id=" + encodeURIComponent(id) + "&status=" + encodeURIComponent(status));
 // Duplicate a quote as the next version, back in draft.
+// Saved gear presets — bundles of groups and their line items, admin-only.
+export const listQuotePresets = () => api("GET", "/api/quotes?presets=1");
+export const saveQuotePreset = (name, notes, data) =>
+  api("POST", "/api/quotes?presets=1", { name, notes, data });
+export const deleteQuotePreset = (id) =>
+  api("DELETE", "/api/quotes?presets=1&id=" + encodeURIComponent(id));
+
 // Save just the payment schedule. Deposits get ticked paid after a quote has
 // been sent, so this deliberately works on a locked version.
 export const saveQuotePayments = (id, deposits) =>

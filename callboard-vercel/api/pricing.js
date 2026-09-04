@@ -54,6 +54,21 @@ function cleanComponents(list) {
   return out;
 }
 
+// [{itemId}] — no quantity, unlike components: a substitute replaces the
+// placeholder one-for-one at whatever qty the quote line asked for.
+function cleanSubs(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const c of list) {
+    const id = c && (c.itemId || c.id);
+    if (!id || seen.has(String(id))) continue;
+    seen.add(String(id));
+    out.push({ itemId: String(id) });
+  }
+  return out;
+}
+
 function row(r) {
   return {
     id: r.id,
@@ -62,6 +77,8 @@ function row(r) {
     rate: Number(r.rate_per_day || 0),
     qtyOwned: r.qty_owned == null ? 0 : Number(r.qty_owned),
     subCost: r.sub_cost_per_day == null ? null : Number(r.sub_cost_per_day),
+    isGeneric: r.is_generic === true,
+    substitutes: Array.isArray(r.substitutes) ? r.substitutes : [],
     components: Array.isArray(r.components) ? r.components : [],
     notes: r.notes || "",
   };
@@ -123,6 +140,8 @@ export default async function handler(req, res) {
         rate_per_day: cleanRate(it.rate),
         qty_owned: cleanQty(it.qtyOwned),
         sub_cost_per_day: cleanSubCost(it.subCost),
+        is_generic: it.isGeneric === true,
+        substitutes: cleanSubs(it.substitutes),
         components: cleanComponents(it.components),
         notes: String(it.notes || ""),
         updated_at: new Date().toISOString(),
@@ -140,12 +159,16 @@ export default async function handler(req, res) {
       if (!id) return json(res, 400, { error: "id required" });
       // Pull any package that lists this item and rewrite it without the item,
       // so deleting a component never leaves a package pointing at a ghost.
-      const all = await supabaseRest("GET", "/pricing_catalog?select=id,components", null);
+      const all = await supabaseRest("GET", "/pricing_catalog?select=id,components,substitutes", null);
       for (const r of all || []) {
         const comps = Array.isArray(r.components) ? r.components : [];
-        if (!comps.some((c) => c && c.itemId === id)) continue;
+        const subs = Array.isArray(r.substitutes) ? r.substitutes : [];
+        const hitC = comps.some((c) => c && c.itemId === id);
+        const hitS = subs.some((c) => c && c.itemId === id);
+        if (!hitC && !hitS) continue;
         await supabaseRest("PATCH", "/pricing_catalog?id=eq." + encodeURIComponent(r.id), {
           components: comps.filter((c) => c && c.itemId !== id),
+          substitutes: subs.filter((c) => c && c.itemId !== id),
           updated_at: new Date().toISOString(),
         });
       }
