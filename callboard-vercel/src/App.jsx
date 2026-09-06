@@ -350,6 +350,7 @@ function normalize(e) {
   if (!Array.isArray(e.rundown.shares)) e.rundown.shares = [];
   if (!Array.isArray(e.todos)) e.todos = [];
   if (!Array.isArray(e.floorplans)) e.floorplans = [];
+  if (!Array.isArray(e.wifi)) e.wifi = [];
   if (typeof e.todosUnlocked !== "boolean") e.todosUnlocked = false;
   e.callTimes = e.callTimes || {};
   e.surveys = e.surveys || [];
@@ -1350,6 +1351,7 @@ function Callboard({ auth, onLogout }) {
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={deptCanEdit("audioUnlocked")} />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={deptCanEdit("videoUnlocked")} />}
             {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("commsUnlocked")} />}
+            {tab === "wifi" && <LockWrapper canEdit={tabCanEdit("wifiUnlocked")} label="Wi-Fi Info"><WifiTab event={event} update={update} /></LockWrapper>}
             {tab === "diagrams" && <LockWrapper canEdit={tabCanEdit("diagramsUnlocked")} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "floorplans" && <LockWrapper canEdit={tabCanEdit("floorplansUnlocked")} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("gearEditUnlocked")} />}
@@ -1460,6 +1462,7 @@ const SECTIONS = [
   { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63", group: "Tech Documents" },
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3", group: "Tech Documents" },
   { key: "comms", label: "Comm Patch", desc: "Intercom channels & assignments", color: "#4FB0A5", group: "Tech Documents" },
+  { key: "wifi", label: "Wi-Fi Info", desc: "Networks, SSIDs & passwords", color: "#2E9BB5", group: "Tech Documents" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true, group: "Admin" },
   { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
@@ -1492,6 +1495,8 @@ function TileIcon({ name }) {
       return (<svg {...p}><path d="M6 4v16M12 4v16M18 4v16" /><circle cx="6" cy="9" r="2" /><circle cx="12" cy="15" r="2" /><circle cx="18" cy="8" r="2" /></svg>);
     case "diagrams":
       return (<svg {...p}><path d="M4 19L14 4l6 15z" /><path d="M4 19h16" /></svg>);
+    case "wifi":
+      return (<svg {...p}><path d="M2.5 9a15 15 0 0 1 19 0" /><path d="M5.5 12.6a10 10 0 0 1 13 0" /><path d="M8.5 16.2a5.5 5.5 0 0 1 7 0" /><circle cx="12" cy="19.6" r=".9" fill="currentColor" stroke="none" /></svg>);
     case "pull":
       return (<svg {...p}><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M4 11h16M9 4h6l1 3H8z" /><path d="M9.5 15.5l1.5 1.5 3-3" /></svg>);
     case "records":
@@ -1517,6 +1522,7 @@ function tileStat(key, event) {
     case "video": return `${event.video.blocks.length} device${event.video.blocks.length === 1 ? "" : "s"}`;
     case "audio": return `${event.audio.blocks.length} device${event.audio.blocks.length === 1 ? "" : "s"}`;
     case "diagrams": return `${event.diagrams.length} file${event.diagrams.length === 1 ? "" : "s"}`;
+    case "wifi": return `${(event.wifi || []).length} network${(event.wifi || []).length === 1 ? "" : "s"}`;
     case "floorplans": return `${(event.floorplans || []).length} file${(event.floorplans || []).length === 1 ? "" : "s"}`;
     case "pull": {
       const all = [...(event.pull?.cases || []).flatMap((c) => c.items), ...(event.pull?.loose || [])];
@@ -1552,6 +1558,7 @@ const TAB_LOCKS = [
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
   { label: "Comm Patch",     key: "commsUnlocked" },
+  { label: "Wi-Fi Info",     key: "wifiUnlocked" },
   { label: "Itinerary",      key: "itineraryUnlocked" },
   { label: "Hours",          key: "hoursUnlocked" },
   { label: "Pull List",      key: "gearEditUnlocked" },
@@ -9172,6 +9179,90 @@ function LinkPreview({ url, defaultOpen = false }) {
   );
 }
 
+function WifiTab({ event, update }) {
+  /* Read constantly on site, typed in almost never — so the row is built for
+     reading. Passwords are hidden until asked for, because this tab sits open
+     on a laptop at FOH with the room walking past it, and every value has a
+     Copy button, because a 24-character PSK read off a screen is a typo
+     waiting to happen. Those buttons keep working when the tab is locked;
+     copying a password is the whole point of the tab for crew. */
+  const nets = Array.isArray(event.wifi) ? event.wifi : [];
+  const [revealed, setRevealed] = useState(() => new Set());
+  const [copied, setCopied] = useState("");
+  const copyTimer = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  const toggleReveal = (id) =>
+    setRevealed((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const copy = (key, text) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(key);
+    clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(""), 1400);
+  };
+  const add = () =>
+    update((ev) => {
+      if (!Array.isArray(ev.wifi)) ev.wifi = [];
+      ev.wifi.push({ id: uid(), name: "", ssid: "", password: "", band: "", notes: "" });
+    });
+  const set = (i, k, v) => update((ev) => (ev.wifi[i][k] = v));
+  const remove = (i) => update((ev) => ev.wifi.splice(i, 1));
+  const allOpen = nets.length > 0 && nets.every((n) => revealed.has(n.id));
+  const toggleAll = () => setRevealed(allOpen ? new Set() : new Set(nets.map((n) => n.id)));
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>Networks for this show — the SSID and password exactly as the venue gave them. Everyone on the show can read this; Copy puts a value straight on the clipboard so nobody retypes a password.</p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {nets.length > 0 && (
+            <button className="wifi-mini" onClick={toggleAll}>{allOpen ? "Hide passwords" : "Show passwords"}</button>
+          )}
+          <AddBtn onClick={add}>Network</AddBtn>
+        </div>
+      </div>
+      <Panel title="Networks">
+        <div className="rows">
+          <div className="rowhead wifi-grid"><span>Network</span><span>SSID</span><span>Password</span><span>Band</span><span>Notes</span><span /></div>
+          {nets.map((n, i) => {
+            const open = revealed.has(n.id);
+            return (
+              <div className="row wifi-grid" key={n.id}>
+                <div className="wifi-cell" data-l="Network">
+                  <input value={n.name || ""} placeholder="Production / Guest / Press" onChange={(e) => set(i, "name", e.target.value)} />
+                </div>
+                <div className="wifi-cell" data-l="SSID">
+                  <input className="wifi-mono" value={n.ssid || ""} placeholder="Network name" onChange={(e) => set(i, "ssid", e.target.value)} />
+                  <button className={"wifi-mini" + (copied === n.id + ":ssid" ? " done" : "")} disabled={!n.ssid} onClick={() => copy(n.id + ":ssid", n.ssid)}>{copied === n.id + ":ssid" ? "Copied" : "Copy"}</button>
+                </div>
+                <div className="wifi-cell" data-l="Password">
+                  <input className="wifi-mono" type={open ? "text" : "password"} autoComplete="off" value={n.password || ""} placeholder="Password" onChange={(e) => set(i, "password", e.target.value)} />
+                  <button className="wifi-mini" onClick={() => toggleReveal(n.id)}>{open ? "Hide" : "Show"}</button>
+                  <button className={"wifi-mini" + (copied === n.id + ":pw" ? " done" : "")} disabled={!n.password} onClick={() => copy(n.id + ":pw", n.password)}>{copied === n.id + ":pw" ? "Copied" : "Copy"}</button>
+                </div>
+                <div className="wifi-cell" data-l="Band">
+                  <select value={n.band || ""} onChange={(e) => set(i, "band", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="2.4 GHz">2.4 GHz</option>
+                    <option value="5 GHz">5 GHz</option>
+                    <option value="Both">Both</option>
+                  </select>
+                </div>
+                <div className="wifi-cell" data-l="Notes">
+                  <input value={n.notes || ""} placeholder="Where it reaches, limits, hardwired…" onChange={(e) => set(i, "notes", e.target.value)} />
+                </div>
+                <div className="wifi-cell wifi-rm"><RemoveBtn onClick={() => remove(i)} /></div>
+              </div>
+            );
+          })}
+          {!nets.length && <Empty>No networks yet. Add the production network first, then the client or guest one if there is one.</Empty>}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function FloorplansTab({ event, update }) {
   const addLink = () => update((ev) => ev.floorplans.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
   return (
@@ -12239,7 +12330,7 @@ const CSS = `
 .cb .tab-locked input, .cb .tab-locked textarea, .cb .tab-locked select { pointer-events:none !important; opacity:0.65; cursor:default; }
 .cb .tab-locked .add-btn, .cb .tab-locked .rem-btn, .cb .tab-locked [class*="AddBtn"], .cb .tab-locked [class*="RemoveBtn"] { display:none !important; }
 .cb .tab-locked .movebtn, .cb .tab-locked .daysort { display:none !important; }
-.cb .tab-locked button:not(.pl-lock):not(.brief-export-btn) { pointer-events:none; opacity:0.5; }
+.cb .tab-locked button:not(.pl-lock):not(.brief-export-btn):not(.wifi-mini) { pointer-events:none; opacity:0.5; }
 .cb .tile{
   position:relative; text-align:left; cursor:pointer; color:#1A130B;
   border:2px solid rgba(0,0,0,.5); border-radius:16px; padding:16px 16px 14px; min-height:150px;
@@ -13180,6 +13271,26 @@ const CSS = `
 .cb .diagramlink-grid{grid-template-columns:1.1fr 1.6fr 1.1fr 100px;}
 .cb .diagram-open{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
+
+/* wi-fi info (cloud build) */
+.cb .wifi-grid{grid-template-columns:1fr 1.25fr 1.7fr 104px 1.15fr 44px;}
+.cb .wifi-cell{display:flex; align-items:center; gap:6px; min-width:0;}
+.cb .wifi-cell input, .cb .wifi-cell select{min-width:0; flex:1;}
+.cb .wifi-rm{justify-content:flex-end;}
+.cb .wifi-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.01em;}
+.cb .wifi-mini{border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:7px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; flex:none;}
+.cb .wifi-mini:hover:not(:disabled){background:#2C3241; color:var(--ink); border-color:#3C4454;}
+.cb .wifi-mini:disabled{opacity:.35; cursor:default;}
+.cb .wifi-mini.done{color:var(--green); border-color:rgba(95,208,138,.45);}
+@media (max-width:860px){
+  /* one card per network — six stacked fields with only a 6px gap between
+     networks reads as one long list, and you cannot tell where one ends. */
+  .cb .row.wifi-grid{grid-template-columns:1fr; gap:6px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 10px 8px; margin-bottom:6px;}
+  .cb .rowhead.wifi-grid{display:none;}
+  .cb .row.wifi-grid input, .cb .row.wifi-grid select{background:var(--panel);}
+  .cb .wifi-cell[data-l]::before{content:attr(data-l); flex:none; min-width:66px; font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;}
+  .cb .wifi-rm{justify-content:flex-end; margin-top:2px;}
+}
 
 /* show documents (cloud build) */
 .cb .doclink-grid{grid-template-columns:1.2fr 116px 1.5fr 0.9fr 156px;}
