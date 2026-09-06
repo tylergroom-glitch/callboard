@@ -948,12 +948,12 @@ function Callboard({ auth, onLogout }) {
     saveTimer.current = setTimeout(async () => {
       try {
         await updateEvent(event.id, {
-          data: event, name: event.name, client: event.client, startDate: event.startDate, endDate: event.endDate,
+          data: event, name: event.name, client: event.client, startDate: event.startDate, endDate: event.endDate, category: event.category,
         });
         setEvents((prev) =>
           prev.map((e) =>
             e.id === event.id
-              ? { ...e, name: event.name, client: event.client, startDate: event.startDate, endDate: event.endDate }
+              ? { ...e, name: event.name, client: event.client, startDate: event.startDate, endDate: event.endDate, category: event.category }
               : e
           )
         );
@@ -5362,19 +5362,25 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
   const [subUrl, setSubUrl] = useState(null);
   const [subBusy, setSubBusy] = useState(false);
   const [migrating, setMigrating] = useState(false);
+  const [catFilter, setCatFilter] = useState({ tcg: true, freelance: true });
+  const showCat = (e) => (e.category === "freelance" ? "freelance" : "tcg");
+  const visible = events.filter((e) => catFilter[showCat(e)]);
   const doMigrate = async () => { if (!window.confirm("Copy all shows from Airtable into Supabase? Airtable is only read, never changed. Safe to run more than once.")) return; setMigrating(true); try { const r = await runMigration(); window.alert("Migrated from Airtable:\n" + r.shows + " shows\n" + r.roster + " roster\n" + (r.templates || 0) + " templates\n" + (r.inventory || 0) + " inventory\n\nReload to see them."); } catch (e) { window.alert("Migration failed: " + ((e && e.message) || e)); } setMigrating(false); };
   const doSubscribe = async () => { setSubBusy(true); try { const r = await generateCalendarLink(); setSubUrl(r); } catch (e) { window.alert("Couldn't generate the calendar link. Try again in a moment."); } setSubBusy(false); };
   const two = (n) => (n < 10 ? "0" : "") + n;
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
   const startDow = new Date(ym.y, ym.m, 1).getDay();
   const daysIn = new Date(ym.y, ym.m + 1, 0).getDate();
-  const palette = ["#0077B6", "#E8683D", "#2E9E7B", "#7B5EA7", "#D97CC0", "#F3B24A", "#46C5B8", "#C77DA0"];
-  const colorFor = (e) => { let h = 0; const str = String(e.id || e.name || ""); for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0; return palette[h % palette.length]; };
+  // TCG (blue) vs Freelance (amber) — a real classification, not a hash of
+  // the id. Anything without a category (shows made before this existed)
+  // reads as TCG, which was already the only kind of show this app tracked.
+  const CAT_COLOR = { tcg: "#0077B6", freelance: "#F3B24A" };
+  const colorFor = (e) => CAT_COLOR[e.category === "freelance" ? "freelance" : "tcg"];
   const cellStr = (d) => ym.y + "-" + two(ym.m + 1) + "-" + two(d);
-  const onDay = (ds) => events.filter((e) => e.startDate && e.startDate <= ds && (e.endDate || e.startDate) >= ds);
+  const onDay = (ds) => visible.filter((e) => e.startDate && e.startDate <= ds && (e.endDate || e.startDate) >= ds);
   const todayStr = now.getFullYear() + "-" + two(now.getMonth() + 1) + "-" + two(now.getDate());
-  const dated = events.filter((e) => e.startDate).slice().sort((a, b) => a.startDate.localeCompare(b.startDate));
-  const undated = events.filter((e) => !e.startDate);
+  const dated = visible.filter((e) => e.startDate).slice().sort((a, b) => a.startDate.localeCompare(b.startDate));
+  const undated = visible.filter((e) => !e.startDate);
   const cells = [];
   for (let i = 0; i < startDow; i++) cells.push(null);
   for (let d = 1; d <= daysIn; d++) cells.push(d);
@@ -5427,7 +5433,21 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
         })}
       </div>
       <div className="cal-list">
-        <div className="cal-list-h">All shows by date</div>
+        <div className="cal-list-h" style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <span>All shows by date</span>
+          <span style={{ display: "flex", gap: 12, fontSize: 12, fontWeight: 500, color: "var(--dim)" }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: CAT_COLOR.tcg, display: "inline-block" }} />
+              <input type="checkbox" checked={catFilter.tcg} onChange={() => setCatFilter((f) => ({ ...f, tcg: !f.tcg }))} style={{ margin: 0 }} />
+              TCG
+            </label>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
+              <span style={{ width: 9, height: 9, borderRadius: "50%", background: CAT_COLOR.freelance, display: "inline-block" }} />
+              <input type="checkbox" checked={catFilter.freelance} onChange={() => setCatFilter((f) => ({ ...f, freelance: !f.freelance }))} style={{ margin: 0 }} />
+              Freelance
+            </label>
+          </span>
+        </div>
         {dated.map((e) => (
           <button key={e.id} className="cal-listrow" onClick={() => onOpen(e.id)}>
             <span className="cal-listdot" style={{ background: colorFor(e) }} />
@@ -5467,6 +5487,33 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
             <span>{dateRange}</span>
             <span className="dot">•</span>
             <span>{event.venue.name || "Venue TBD"}</span>
+            {canEdit && (
+              <>
+                <span className="dot">•</span>
+                <span style={{ display: "inline-flex", borderRadius: 7, overflow: "hidden", border: "1px solid var(--line)" }}>
+                  <button
+                    onClick={() => update((ev) => (ev.category = "tcg"))}
+                    style={{
+                      padding: "3px 10px", fontSize: 12, fontWeight: 700, border: 0, cursor: "pointer",
+                      background: (event.category !== "freelance") ? "#0077B6" : "var(--panel2)",
+                      color: (event.category !== "freelance") ? "#fff" : "var(--dim)",
+                    }}
+                  >
+                    TCG
+                  </button>
+                  <button
+                    onClick={() => update((ev) => (ev.category = "freelance"))}
+                    style={{
+                      padding: "3px 10px", fontSize: 12, fontWeight: 700, border: 0, cursor: "pointer",
+                      background: event.category === "freelance" ? "#F3B24A" : "var(--panel2)",
+                      color: event.category === "freelance" ? "#1a1300" : "var(--dim)",
+                    }}
+                  >
+                    Freelance
+                  </button>
+                </span>
+              </>
+            )}
           </div>
         </div>
         <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
