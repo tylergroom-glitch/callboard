@@ -3995,7 +3995,7 @@ function QtShowPicker({ busy, onConfirm, onClose }) {
   return (
     <CtgModal title="Link to an existing show" onClose={onClose}>
       <p style={{ ...qtHint, marginTop: 0 }}>
-        Use this for a job that was already in Crew Call before you quoted it here. It records which show this quote belongs to, so the
+        Use this for a job that was already in {APP_NAME} before you quoted it here. It records which show this quote belongs to, so the
         pipeline can fill in Prelim Quote, Quote Accepted and Final Billing on its own. Gear and P&amp;L are left alone — push the gear
         separately if you want it.
       </p>
@@ -4732,7 +4732,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
             <button className="btn" onClick={() => setConvert({ rows: qtPullRows(data, catalog) })} disabled={busyShow}>Create show</button>
           ) : null}
           {q.status === "won" && !q.eventId ? (
-            <button className="btn ghost" onClick={() => setLinkOpen(true)} disabled={busyShow} title="This job is already a show in Crew Call">Link to existing show</button>
+            <button className="btn ghost" onClick={() => setLinkOpen(true)} disabled={busyShow} title={"This job is already a show in " + APP_NAME}>Link to existing show</button>
           ) : null}
           {q.eventId ? (
             <button className="btn" onClick={() => onOpenShow && onOpenShow(q.eventId)}>Open show</button>
@@ -5279,6 +5279,14 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
 /* Persistent left-hand nav for TCG admins. Rendered alongside every top-level
    admin screen so Shows / Pipeline / Quotes / Catalog are always one click
    apart, instead of having to back out to the calendar between them. */
+/* The app's name and version live here and nowhere else, so renaming it again
+   is one line rather than a search. Bump APP_VERSION when you deploy something
+   worth telling apart — the number under the sidebar title is what you and I
+   will both quote when working out which build you are looking at.
+   Minor tracks the round: 1.15.x is round 15. */
+const APP_NAME = "Touchstone Command";
+const APP_VERSION = "1.16.0";
+
 const ADM_NAV = [
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
@@ -5290,7 +5298,11 @@ const ADM_NAV = [
 function AdminSidebar({ active, go, onPeople, onLogout }) {
   return (
     <nav className="adm-side">
-      <div className="adm-brand">Crew Call</div>
+      <div className="adm-brand">
+        <img className="adm-logo" src="/logo.png" alt="" width="34" height="30" />
+        <div className="adm-brandname">{APP_NAME}</div>
+        <div className="adm-ver">v{APP_VERSION}</div>
+      </div>
       {ADM_NAV.map((n) => (
         <button
           key={n.key}
@@ -13295,10 +13307,15 @@ const CSS = `
   background:var(--panel); border-right:1px solid var(--line);
   padding:22px 12px 16px;
 }
-.cb .adm-brand{
-  font-family:'Oswald',system-ui,sans-serif; font-size:19px; font-weight:700;
-  letter-spacing:.07em; text-transform:uppercase; color:var(--ink);
-  padding:0 10px 20px;
+.cb .adm-brand{padding:0 10px 20px;}
+.cb .adm-logo{display:block; width:34px; height:auto; margin-bottom:9px;}
+.cb .adm-brandname{
+  font-family:'Oswald',system-ui,sans-serif; font-size:16px; font-weight:700;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--ink); line-height:1.2;
+}
+.cb .adm-ver{
+  font-size:10.5px; font-weight:600; letter-spacing:.08em;
+  color:var(--faint); margin-top:3px; font-variant-numeric:tabular-nums;
 }
 .cb .adm-navbtn{
   display:block; width:100%; text-align:left;
@@ -13325,7 +13342,9 @@ const CSS = `
     padding:8px 10px;
     border-right:0; border-bottom:1px solid var(--line);
   }
-  .cb .adm-brand{display:none;}
+  .cb .adm-brand{display:block; padding:0 6px 0 2px; flex:none;}
+  .cb .adm-logo{width:24px; margin:0;}
+  .cb .adm-brandname, .cb .adm-ver{display:none;}
   .cb .adm-navbtn{width:auto; white-space:nowrap; padding:8px 13px; margin:0;}
   .cb .adm-navbtn.on{box-shadow:inset 0 -3px 0 var(--amber);}
   .cb .adm-div{display:none;}
@@ -15068,7 +15087,7 @@ function Login({ onDone }) {
             {busy ? "Checking…" : mode === "show" ? "Open show" : "Sign in"}
           </button>
         </div>
-        <div className="login-foot">Crew Call · production hub</div>
+        <div className="login-foot">{APP_NAME} · v{APP_VERSION}</div>
       </div>
     </div>
   );
@@ -15140,8 +15159,11 @@ function SupabaseLogin({ notice: incoming }) {
     setBusy(false);
   };
   return (<div style={wrap}><div style={card}>
-    <h2 style={{ marginTop: 0 }}>Crew Call</h2>
-    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Sign in</p>
+    <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 2 }}>
+      <img src="/logo.png" alt="" width="38" height="34" style={{ display: "block" }} />
+      <h2 style={{ margin: 0, fontSize: 20, lineHeight: 1.15 }}>{APP_NAME}</h2>
+    </div>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: 8, marginBottom: 16 }}>Sign in · v{APP_VERSION}</p>
     {incoming ? (
       <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid #f87171", borderRadius: 9, padding: "10px 12px", fontSize: 13, lineHeight: 1.5, marginBottom: 14, color: "#fca5a5" }}>{incoming}</div>
     ) : null}
@@ -15185,7 +15207,7 @@ function SetPassword({ onDone }) {
   };
   return (<div style={wrap}><div style={card}>
     <h2 style={{ marginTop: 0 }}>Set your password</h2>
-    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Welcome to Crew Call — choose a password to finish setting up your account.</p>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Welcome to {APP_NAME} — choose a password to finish setting up your account.</p>
     {done ? <p style={{ color: "#4ade80", fontWeight: 700 }}>✓ All set — signing you in…</p> : (<>
       <input style={inp} type="password" placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
       <input style={inp} type="password" placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
