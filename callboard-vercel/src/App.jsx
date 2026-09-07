@@ -69,6 +69,21 @@ import {
   deleteQuote,
   getQuoteTerms,
   getQuoteTermsPdfMeta,
+  listBilling,
+  generateBillingCalendarLink,
+  listBillingCalendarLinks,
+  revokeBillingCalendarLink,
+  scanBillingImport,
+  importPipelineInvoices,
+  getShowBilling,
+  getInvoice,
+  generateBilling,
+  saveInvoice,
+  setInvoiceStatus,
+  addInvoicePayment,
+  removeInvoicePayment,
+  voidInvoice,
+  deleteInvoice,
   getQuoteTermsPdf,
   saveQuoteTermsPdf,
   deleteQuoteTermsPdf,
@@ -350,6 +365,7 @@ function normalize(e) {
   if (!Array.isArray(e.rundown.shares)) e.rundown.shares = [];
   if (!Array.isArray(e.todos)) e.todos = [];
   if (!Array.isArray(e.floorplans)) e.floorplans = [];
+  if (!Array.isArray(e.wifi)) e.wifi = [];
   if (typeof e.todosUnlocked !== "boolean") e.todosUnlocked = false;
   e.callTimes = e.callTimes || {};
   e.surveys = e.surveys || [];
@@ -875,6 +891,7 @@ function Callboard({ auth, onLogout }) {
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [quotesOpen, setQuotesOpen] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -892,6 +909,7 @@ function Callboard({ auth, onLogout }) {
   const tabCanEdit = (lockKey) => isShowAdmin || deptCanEdit(lockKey) || !!(event && event[lockKey]);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [staffOpen, setStaffOpen] = useState(false);
+  const [pendingInvoice, setPendingInvoice] = useState(null);
   const [tab, setTab] = useState(initCrew ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
   const [toast, setToast] = useState("");
@@ -1025,19 +1043,40 @@ function Callboard({ auth, onLogout }) {
     setTimeout(() => setToast(""), 1900);
   };
 
-  async function switchEvent(id) {
-    if (id === currentId) return;
+  async function switchEvent(id, targetTab) {
+    if (id === currentId) { setTab(targetTab || "home"); return; }
     try {
       const e = normalize(await getEvent(id));
       loadingRef.current = true;
       setCurrentId(id);
       setEvent(e);
-      setTab("home");
+      setTab(targetTab || "home");
     } catch (err) {
       flash(err.message || "Couldn't open that show");
     }
   }
-  const openLandingShow = (id) => { setAtLanding(false); switchEvent(id); };
+  /* Opening a show from a list.
+
+     The landing guard renders the admin shell when EITHER atLanding is true OR
+     an admin section is open. Clearing only atLanding therefore did nothing
+     visible: pipelineOpen / quotesOpen / billingOpen were still set, the guard
+     still matched, and the section you clicked from stayed on screen. goAdmin
+     clears all of them, so the show can actually come forward.
+
+     This was already broken for "Open show" on the Pipeline and inside a quote —
+     same helper, same missing step. Fixing it here fixes those too.
+
+     Billing also passes a tab and an invoice, because a row in the Billing queue
+     IS an invoice: landing on the tile grid and making you find Billing again is
+     two clicks back to where you already were. Everything else still lands on
+     the tiles. (goAdmin is declared below; this only ever runs from a click, by
+     which point it is initialised.) */
+  const openLandingShow = (id, targetTab, invoiceId) => {
+    goAdmin("shows");
+    setAtLanding(false);
+    setPendingInvoice(invoiceId || null);
+    switchEvent(id, targetTab);
+  };
 
   async function newEvent() {
     const name = window.prompt("Name this show:", "New Event");
@@ -1177,12 +1216,13 @@ function Callboard({ auth, onLogout }) {
       </div>
     );
   const admSection = isSuperAdmin
-    ? (pipelineOpen ? "pipeline" : catalogOpen ? "catalog" : quotesOpen ? "quotes" : staffOpen ? "staff" : "shows")
+    ? (pipelineOpen ? "pipeline" : catalogOpen ? "catalog" : quotesOpen ? "quotes" : billingOpen ? "billing" : staffOpen ? "staff" : "shows")
     : "shows";
   const goAdmin = (s) => {
     setPipelineOpen(s === "pipeline");
     setCatalogOpen(s === "catalog");
     setQuotesOpen(s === "quotes");
+    setBillingOpen(s === "billing");
     setStaffOpen(s === "staff");
   };
   const goAdminFromShow = (s) => { goAdmin(s); setAtLanding(true); };
@@ -1202,7 +1242,7 @@ function Callboard({ auth, onLogout }) {
     />
   );
 
-  if (atLanding || (isSuperAdmin && (pipelineOpen || catalogOpen || quotesOpen || staffOpen)))
+  if (atLanding || (isSuperAdmin && (pipelineOpen || catalogOpen || quotesOpen || billingOpen || staffOpen)))
     return (
       <div className="cb">
         <style>{CSS}</style>
@@ -1222,6 +1262,8 @@ function Callboard({ auth, onLogout }) {
                 onOpenShow={openLandingShow}
                 onShowCreated={(created) => setEvents((prev) => prev.concat([created]))}
               />
+            ) : admSection === "billing" ? (
+              <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
             ) : (
@@ -1350,11 +1392,21 @@ function Callboard({ auth, onLogout }) {
             {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={deptCanEdit("audioUnlocked")} />}
             {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={deptCanEdit("videoUnlocked")} />}
             {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("commsUnlocked")} />}
+            {tab === "wifi" && <LockWrapper canEdit={tabCanEdit("wifiUnlocked")} label="Wi-Fi Info"><WifiTab event={event} update={update} /></LockWrapper>}
             {tab === "diagrams" && <LockWrapper canEdit={tabCanEdit("diagramsUnlocked")} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "floorplans" && <LockWrapper canEdit={tabCanEdit("floorplansUnlocked")} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("gearEditUnlocked")} />}
             {tab === "records" && <LockWrapper canEdit={tabCanEdit("recordsUnlocked")} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
             {tab === "hours" && canEditTabs && <LockWrapper canEdit={tabCanEdit("hoursUnlocked")} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
+            {tab === "billing" && isShowAdmin && (
+              <BillingTab
+                event={event}
+                showId={currentId}
+                go={setTab}
+                openInvoiceId={pendingInvoice}
+                onInvoiceOpened={() => setPendingInvoice(null)}
+              />
+            )}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
             {tab === "roster" && isSuperAdmin && <RosterTab />}
             {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
@@ -1460,8 +1512,10 @@ const SECTIONS = [
   { key: "diagrams", label: "Diagrams", desc: "Stage plots & rigging", color: "#EC6A63", group: "Tech Documents" },
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3", group: "Tech Documents" },
   { key: "comms", label: "Comm Patch", desc: "Intercom channels & assignments", color: "#4FB0A5", group: "Tech Documents" },
+  { key: "wifi", label: "Wi-Fi Info", desc: "Networks, SSIDs & passwords", color: "#2E9BB5", group: "Tech Documents" },
   { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true, group: "Admin" },
   { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
+  { key: "billing", label: "Billing", desc: "Invoices, payments & what is owed", color: "#C9A227", adminOnly: true, group: "Admin" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
   { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true, group: "Admin" },
 ];
@@ -1492,6 +1546,10 @@ function TileIcon({ name }) {
       return (<svg {...p}><path d="M6 4v16M12 4v16M18 4v16" /><circle cx="6" cy="9" r="2" /><circle cx="12" cy="15" r="2" /><circle cx="18" cy="8" r="2" /></svg>);
     case "diagrams":
       return (<svg {...p}><path d="M4 19L14 4l6 15z" /><path d="M4 19h16" /></svg>);
+    case "wifi":
+      return (<svg {...p}><path d="M2.5 9a15 15 0 0 1 19 0" /><path d="M5.5 12.6a10 10 0 0 1 13 0" /><path d="M8.5 16.2a5.5 5.5 0 0 1 7 0" /><circle cx="12" cy="19.6" r=".9" fill="currentColor" stroke="none" /></svg>);
+    case "billing":
+      return (<svg {...p}><path d="M5 3h14v18l-3-2-2 2-2-2-2 2-2-2-3 2z" /><path d="M9 8h6M9 12h6M9 16h3" /></svg>);
     case "pull":
       return (<svg {...p}><rect x="4" y="7" width="16" height="13" rx="2" /><path d="M4 11h16M9 4h6l1 3H8z" /><path d="M9.5 15.5l1.5 1.5 3-3" /></svg>);
     case "records":
@@ -1517,6 +1575,7 @@ function tileStat(key, event) {
     case "video": return `${event.video.blocks.length} device${event.video.blocks.length === 1 ? "" : "s"}`;
     case "audio": return `${event.audio.blocks.length} device${event.audio.blocks.length === 1 ? "" : "s"}`;
     case "diagrams": return `${event.diagrams.length} file${event.diagrams.length === 1 ? "" : "s"}`;
+    case "wifi": return `${(event.wifi || []).length} network${(event.wifi || []).length === 1 ? "" : "s"}`;
     case "floorplans": return `${(event.floorplans || []).length} file${(event.floorplans || []).length === 1 ? "" : "s"}`;
     case "pull": {
       const all = [...(event.pull?.cases || []).flatMap((c) => c.items), ...(event.pull?.loose || [])];
@@ -1552,6 +1611,7 @@ const TAB_LOCKS = [
   { label: "Audio I/O",      key: "audioUnlocked" },
   { label: "Video I/O",      key: "videoUnlocked" },
   { label: "Comm Patch",     key: "commsUnlocked" },
+  { label: "Wi-Fi Info",     key: "wifiUnlocked" },
   { label: "Itinerary",      key: "itineraryUnlocked" },
   { label: "Hours",          key: "hoursUnlocked" },
   { label: "Pull List",      key: "gearEditUnlocked" },
@@ -3432,6 +3492,10 @@ function qtQuoteHtml(opts) {
   const DEPT_HEX = { Audio: "#2563EB", Video: "#7C3AED", Lighting: "#D97706", Power: "#DC2626", Scenic: "#059669", Misc: "#64748B" };
   const deptOf = (l) => DEPT_HEX[l && l.department] || DEPT_HEX.Misc;
   // A group's spine takes the colour of whatever it is mostly made of.
+  // Eight rows is about a third of a page; below that a section is better moved
+  // whole than split, and above it splitting is what keeps the pages full.
+  const KEEP_WHOLE = 8;
+  const grpCls = (list) => "grp" + (list.length <= KEEP_WHOLE ? " keep" : "");
   const spineFor = (list) => {
     const tally = {};
     for (const l of list) { const d = (l && l.department) || "Misc"; tally[d] = (tally[d] || 0) + qtLineTotal(l); }
@@ -3483,7 +3547,7 @@ function qtQuoteHtml(opts) {
     const block = (label, list) => {
       const t = list.reduce((acc, l) => acc + qtLineTotal(l), 0);
       return (
-        "<div class='grp' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
+        "<div class='" + grpCls(list) + "' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
         "<table class='t-sum'>" + head + "<tbody>" + namesFor(list) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(t) + "</span></div>" + "</div>"
       );
@@ -3504,7 +3568,7 @@ function qtQuoteHtml(opts) {
       if (!gl.length) continue;
       const gt = gl.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
+        "<div class='" + grpCls(gl) + "' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(gl) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(gt) + "</span></div>" + "</div>";
     }
@@ -3512,7 +3576,7 @@ function qtQuoteHtml(opts) {
     if (un.length) {
       const ut = un.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='grp' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
+        "<div class='" + grpCls(un) + "' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(un) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(ut) + "</span></div>" + "</div>";
     }
@@ -3649,11 +3713,12 @@ function qtQuoteHtml(opts) {
     ".sect-title{font-size:7pt;font-weight:700;text-transform:uppercase;letter-spacing:.18em;color:#007AC1;margin-bottom:8pt}" +
     // Each group is a card with a spine in its dominant department colour, so
     // the eye can find "the lighting one" without reading every heading.
-    ".grp{margin-bottom:19pt;break-inside:avoid;border:0.5pt solid #DEEAF1;border-left:2.5pt solid #007AC1;border-radius:5pt;overflow:hidden}" +
+    ".grp{margin-bottom:19pt;border:0.5pt solid #DEEAF1;border-left:2.5pt solid #007AC1;border-radius:5pt;overflow:hidden}" +
+    ".grp.keep{break-inside:avoid;page-break-inside:avoid}" +
     // Header carries the name only. The number now sits at the foot, where the
     // eye lands after reading the list rather than before.
     ".grp-h{font-size:10.5pt;font-weight:700;color:#005A87;padding:9pt 11pt 2pt}" +
-    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F6FAFC;border-top:0.5pt solid #DEEAF1}" +
+    ".grp-f{display:flex;justify-content:flex-end;align-items:baseline;gap:10pt;padding:7pt 11pt 8pt;background:#F6FAFC;border-top:0.5pt solid #DEEAF1;break-inside:avoid;page-break-inside:avoid}" +
     ".grp-f .k{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#8A8683}" +
     ".grp-f .amt{font-size:10.5pt;font-weight:700;font-variant-numeric:tabular-nums;color:#00699F}" +
     "table{width:100%;border-collapse:collapse}" +
@@ -3661,21 +3726,22 @@ function qtQuoteHtml(opts) {
     // a spreadsheet; a hairline reads like a document.
     "thead th{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.12em;color:#8A8683;padding:6pt 11pt 5pt;text-align:left;border-bottom:0.75pt solid #D6E6EF;background:#fff}" +
     "tbody td{font-size:9pt;padding:5.5pt 11pt;border-bottom:0.25pt solid #EDF3F7;vertical-align:top;color:#3A3634}" +
+    "tbody tr,thead tr{break-inside:avoid;page-break-inside:avoid}" +
     "tbody tr:last-child td{border-bottom:0}" +
     "td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
     ".t-sum td.n,.t-sum th.n{width:56pt}" +
     "td.b{font-weight:700;color:#23201F}" +
     ".dot{display:inline-block;width:5pt;height:5pt;border-radius:50%;margin-right:6pt;vertical-align:middle}" +
     // Total as a panel, not a line of text — it is the number they are deciding on.
-    ".total{display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
+    ".total{break-inside:avoid;page-break-inside:avoid;display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
     ".total-k{font-size:8.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:#9BD0EA}" +
     ".total-sub{font-size:7.5pt;color:#9BD0EA;font-weight:500;margin-top:2pt}" +
     ".total-v{font-size:21pt;font-weight:800;color:#fff;font-variant-numeric:tabular-nums;letter-spacing:-.01em}" +
-    ".sect{margin-top:20pt;break-inside:avoid}" +
+    ".sect{margin-top:20pt;break-inside:avoid;page-break-inside:avoid}" +
     ".when{display:inline-block;font-size:7.5pt;font-weight:600;color:#007AC1;background:#E8F3F9;border-radius:9pt;padding:2pt 7pt;white-space:nowrap}" +
     ".terms{page-break-before:always;padding-top:14pt}" +
     ".terms p{font-size:8.5pt;line-height:1.5;margin:0 0 7pt;text-align:justify}" +
-    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F6FAFC;border:0.5pt solid #DEEAF1;border-radius:6pt;break-inside:avoid}" +
+    ".accept{margin-top:16pt;padding:13pt 15pt;background:#F6FAFC;border:0.5pt solid #DEEAF1;border-radius:6pt;break-inside:avoid;page-break-inside:avoid}" +
     ".accept-h{font-size:6.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:#007AC1;margin-bottom:5pt}" +
     ".accept-p{font-size:8pt;color:#5C5754;line-height:1.5;margin:0 0 14pt}" +
     ".sig{display:flex;gap:22pt}" +
@@ -3700,7 +3766,7 @@ function qtQuoteHtml(opts) {
     "</div><div class='total-v'>" + money(grand) + "</div></div>" +
     depBlock +
     acceptBlock +
-    "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + "</span></div>" +
+    "<div class='footer'><span>Touchstone Creative Group &nbsp;·&nbsp; touchstonecreativegroup.com</span><span>" + qtEsc(q.name || "") + " &nbsp;·&nbsp; Rev " + q.version + " &nbsp;·&nbsp; " + QT_BUILD + "</span></div>" +
     termsBlock +
     "</div><script>" +
     "var TERMS_B64=" + JSON.stringify(opts.termsPdfB64 || "") + ";" +
@@ -3766,6 +3832,11 @@ function qtExportQuotePdf(opts) {
 }
 
 /* ---------- the editor ---------- */
+
+/* Bumped whenever the quote builder or its PDF changes. It appears in the PDF
+   footer and beside the version in the editor, so an export always says which
+   build made it — and a deploy can be confirmed without exporting anything. */
+const QT_BUILD = "b11";
 
 const NEW_SHOW = "__new__";
 
@@ -4417,6 +4488,15 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
     if (st === "sent" && !window.confirm("Mark v" + q.version + " as sent?\n\nThis locks it so it always matches what the client received. To keep editing, make a revision.")) return;
     try {
       await setQuoteStatus(q.id, st);
+      // Accepting the quote is what creates the billing schedule. Generation is
+      // idempotent and refuses to touch anything already invoiced or paid, so
+      // marking a quote won twice cannot produce a second set of invoices.
+      // It is deliberately not fatal: a quote is won whether or not billing
+      // took, and the Billing tab can generate it by hand.
+      if (st === "won" && (data.deposits || []).length) {
+        try { await generateBilling(q.id); }
+        catch (e) { setErr("Quote marked won, but the billing schedule was not created: " + ((e && e.message) || "unknown error") + " Generate it from the show's Billing tab."); }
+      }
       await load();
       if (onChanged) onChanged();
     } catch (e) { setErr((e && e.message) || "Couldn't change the status."); }
@@ -4626,6 +4706,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <h1 className="cal-h1" style={{ margin: 0 }}>{q.name || "Untitled quote"}</h1>
           <span style={{ color: "var(--dim)", fontSize: 13 }}>v{q.version}</span>
+          <span style={{ color: "var(--faint)", fontSize: 11, fontVariantNumeric: "tabular-nums" }} title="Which build of the quote tools this page is running">{QT_BUILD}</span>
           <QtBadge status={q.status} />
           {q.sentAt ? (
             <span style={{ color: "var(--dim)", fontSize: 12 }} title={"Sent " + new Date(q.sentAt).toLocaleString()}>
@@ -5196,6 +5277,7 @@ const ADM_NAV = [
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
   { key: "quotes", label: "Quotes" },
+  { key: "billing", label: "Billing" },
   { key: "catalog", label: "Catalog" },
 ];
 
@@ -7445,6 +7527,18 @@ function todoOverdue(t) {
   if (m == null) return false;
   return d.getHours() * 60 + d.getMinutes() > m;
 }
+/* A new task defaults to due tomorrow. Almost nothing added to a show to-do
+   list is due today — it is added because it needs doing next — and a blank
+   due date sorts to the bottom and never goes overdue, so tasks typed in a
+   hurry quietly disappear. Tomorrow is the honest default; the date box is
+   still there to change. Built from local parts, not toISOString, which after
+   5pm Pacific would hand back the day after tomorrow. */
+function todoTomorrow() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  const pad = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
 const TODO_PRI = [
   { key: "high", label: "High", color: "#EF4444" },
   { key: "med", label: "Med", color: "#F59E0B" },
@@ -7460,7 +7554,7 @@ function TodoTab({ event, update, isAdmin, editor }) {
   const [who, setWho] = useState("");
   const mut = (fn) => update((ev) => { if (!Array.isArray(ev.todos)) ev.todos = []; fn(ev.todos); });
   const set = (id, k, v) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x[k] = v; });
-  const add = () => mut((t) => t.push({ id: uid(), title: "", assignee: "", due: "", dueTime: "", priority: "", urgent: false, done: false, notes: "" }));
+  const add = () => mut((t) => t.push({ id: uid(), title: "", assignee: "", due: todoTomorrow(), dueTime: "", priority: "", urgent: false, done: false, notes: "" }));
   const remove = (id) => mut((t) => { const i = t.findIndex((z) => z.id === id); if (i >= 0) t.splice(i, 1); });
   const toggle = (id) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x.done = !x.done; });
   const priRank = (k) => (k === "high" ? 0 : k === "med" ? 1 : k === "low" ? 2 : 3);
@@ -9148,6 +9242,90 @@ function LinkPreview({ url, defaultOpen = false }) {
   );
 }
 
+function WifiTab({ event, update }) {
+  /* Read constantly on site, typed in almost never — so the row is built for
+     reading. Passwords are hidden until asked for, because this tab sits open
+     on a laptop at FOH with the room walking past it, and every value has a
+     Copy button, because a 24-character PSK read off a screen is a typo
+     waiting to happen. Those buttons keep working when the tab is locked;
+     copying a password is the whole point of the tab for crew. */
+  const nets = Array.isArray(event.wifi) ? event.wifi : [];
+  const [revealed, setRevealed] = useState(() => new Set());
+  const [copied, setCopied] = useState("");
+  const copyTimer = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  const toggleReveal = (id) =>
+    setRevealed((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const copy = (key, text) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(key);
+    clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(""), 1400);
+  };
+  const add = () =>
+    update((ev) => {
+      if (!Array.isArray(ev.wifi)) ev.wifi = [];
+      ev.wifi.push({ id: uid(), name: "", ssid: "", password: "", band: "", notes: "" });
+    });
+  const set = (i, k, v) => update((ev) => (ev.wifi[i][k] = v));
+  const remove = (i) => update((ev) => ev.wifi.splice(i, 1));
+  const allOpen = nets.length > 0 && nets.every((n) => revealed.has(n.id));
+  const toggleAll = () => setRevealed(allOpen ? new Set() : new Set(nets.map((n) => n.id)));
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>Networks for this show — the SSID and password exactly as the venue gave them. Everyone on the show can read this; Copy puts a value straight on the clipboard so nobody retypes a password.</p>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {nets.length > 0 && (
+            <button className="wifi-mini" onClick={toggleAll}>{allOpen ? "Hide passwords" : "Show passwords"}</button>
+          )}
+          <AddBtn onClick={add}>Network</AddBtn>
+        </div>
+      </div>
+      <Panel title="Networks">
+        <div className="rows">
+          <div className="rowhead wifi-grid"><span>Network</span><span>SSID</span><span>Password</span><span>Band</span><span>Notes</span><span /></div>
+          {nets.map((n, i) => {
+            const open = revealed.has(n.id);
+            return (
+              <div className="row wifi-grid" key={n.id}>
+                <div className="wifi-cell" data-l="Network">
+                  <input value={n.name || ""} placeholder="Production / Guest / Press" onChange={(e) => set(i, "name", e.target.value)} />
+                </div>
+                <div className="wifi-cell" data-l="SSID">
+                  <input className="wifi-mono" value={n.ssid || ""} placeholder="Network name" onChange={(e) => set(i, "ssid", e.target.value)} />
+                  <button className={"wifi-mini" + (copied === n.id + ":ssid" ? " done" : "")} disabled={!n.ssid} onClick={() => copy(n.id + ":ssid", n.ssid)}>{copied === n.id + ":ssid" ? "Copied" : "Copy"}</button>
+                </div>
+                <div className="wifi-cell" data-l="Password">
+                  <input className="wifi-mono" type={open ? "text" : "password"} autoComplete="off" value={n.password || ""} placeholder="Password" onChange={(e) => set(i, "password", e.target.value)} />
+                  <button className="wifi-mini" onClick={() => toggleReveal(n.id)}>{open ? "Hide" : "Show"}</button>
+                  <button className={"wifi-mini" + (copied === n.id + ":pw" ? " done" : "")} disabled={!n.password} onClick={() => copy(n.id + ":pw", n.password)}>{copied === n.id + ":pw" ? "Copied" : "Copy"}</button>
+                </div>
+                <div className="wifi-cell" data-l="Band">
+                  <select value={n.band || ""} onChange={(e) => set(i, "band", e.target.value)}>
+                    <option value="">—</option>
+                    <option value="2.4 GHz">2.4 GHz</option>
+                    <option value="5 GHz">5 GHz</option>
+                    <option value="Both">Both</option>
+                  </select>
+                </div>
+                <div className="wifi-cell" data-l="Notes">
+                  <input value={n.notes || ""} placeholder="Where it reaches, limits, hardwired…" onChange={(e) => set(i, "notes", e.target.value)} />
+                </div>
+                <div className="wifi-cell wifi-rm"><RemoveBtn onClick={() => remove(i)} /></div>
+              </div>
+            );
+          })}
+          {!nets.length && <Empty>No networks yet. Add the production network first, then the client or guest one if there is one.</Empty>}
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function FloorplansTab({ event, update }) {
   const addLink = () => update((ev) => ev.floorplans.push({ id: uid(), name: "", caption: "", kind: "link", url: "" }));
   return (
@@ -10067,6 +10245,894 @@ const PNL_VEND_COLS = {
 const PNL_VEND_HEAD = { vname: "Vendor", gear: "Gear rented", vest: "Est.", vinv: "Invoiced", vdelta: "Δ vs est", vnotes: "Notes", vpaid: "Paid" };
 const pnlGrid = (cols, W, tail) => cols.map((k) => W[k]).join(" ") + (tail ? " " + tail : "");
 const pnlGridMinW = (cols, W, tail) => cols.reduce((sm, k) => sm + (/px$/.test(W[k]) ? parseInt(W[k], 10) : 130), 0) + (tail || 0);
+
+/* ============================================================
+   BILLING — what has been invoiced, what has been paid, what is owed.
+
+   The quote says what was agreed. This says what actually happened to the
+   money, and the two are kept in separate columns on purpose: a scheduled
+   $63,063.75 that went out as $61,000 must stay visible as a variance, not be
+   quietly overwritten by the newer number.
+
+   Balances, overdue and payment status are all computed server-side on read.
+   Nothing here is a stored flag, because a stored "overdue" is wrong the
+   morning after it is written and nothing recalculates it while you sleep.
+   ============================================================ */
+
+const BL_STATUS = {
+  scheduled:        { label: "Scheduled",            color: "#6C7688" },
+  ready_to_create:  { label: "Ready to create",      color: "#F3B24A" },
+  drafted_in_qb:    { label: "Drafted in QB",        color: "#7E93EC" },
+  waiting_approval: { label: "Waiting for approval", color: "#E8683D" },
+  needs_changes:    { label: "Needs changes",        color: "#FF6B6B" },
+  approved:         { label: "Approved",             color: "#5FD08A" },
+  sent:             { label: "Sent",                 color: "#46C5B8" },
+  voided:           { label: "Voided",               color: "#4A5163" },
+};
+const BL_PAY = { not_due: "Not yet due", unpaid: "Unpaid", partial: "Partially paid", paid: "Paid", "n/a": "" };
+const BL_TYPE = { deposit: "Deposit", interim: "Interim", final: "Final", full: "Full" };
+
+const blMoney = (n) => qtMoney(n);
+const blNum = (n) => Math.round((Number(n) || 0) * 100) / 100;
+const blStat = (k) => BL_STATUS[k] || { label: k || "—", color: "#6C7688" };
+
+/* "Sent · Partially paid · $23,063.75 remaining" — one sentence out of three
+   separate fields, which is why the fields stay separate underneath. */
+function blRowLabel(inv) {
+  const parts = [blStat(inv.effectiveStatus || inv.status).label];
+  const pay = BL_PAY[inv.paymentStatus] || "";
+  if (pay && inv.status !== "scheduled" && inv.effectiveStatus !== "ready_to_create") parts.push(pay);
+  if (inv.balance > 0.004 && inv.paidTotal > 0.004) parts.push(blMoney(inv.balance) + " remaining");
+  return parts.join(" · ");
+}
+
+/* Long form for the client-facing note: "September 20, 2026". prettyDate gives
+   "Sep 20", which is right on a call sheet and wrong on an invoice. */
+function blLongDate(iso) {
+  if (!iso) return "";
+  const [y, m, d] = String(iso).split("-").map(Number);
+  if (!y) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+}
+function blShortDate(iso) {
+  if (!iso) return "—";
+  const [y, m, d] = String(iso).split("-").map(Number);
+  if (!y) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function BlChip({ status }) {
+  const st = blStat(status);
+  return <span className="bl-chip" style={{ color: st.color, borderColor: st.color + "66" }}>{st.label}</span>;
+}
+
+function BlStat({ label, value, tone }) {
+  return (
+    <div className="bl-stat">
+      <div className="bl-stat-l">{label}</div>
+      <div className={"bl-stat-v" + (tone ? " " + tone : "")}>{value}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   BILLING HOME — the queue, across every show.
+
+   Its default is Needs Action, not a table of everything. An unfiltered list of
+   two hundred invoices tells you nothing about what to do this morning, which
+   is the only question this screen exists to answer. Every row carries the verb
+   for its own next step and opens the show it belongs to.
+   ============================================================ */
+
+/* What the row is actually waiting for. Derived from the invoice, never stored,
+   because the answer changes with the calendar and with the last payment. */
+function blAction(inv) {
+  if (inv.voidAt) return null;
+  if (inv.status === "waiting_approval") return { key: "approve", label: "Owner review", tone: "warn" };
+  if (inv.status === "needs_changes") return { key: "fix", label: "Fix and resubmit", tone: "bad" };
+  if (inv.status === "approved") return { key: "send", label: "Send", tone: "good" };
+  if (inv.overdue) return { key: "chase", label: "Chase payment", tone: "bad" };
+  if (inv.status === "sent" && inv.balance > 0.004) return null; // waiting on the client, not on you
+  if (inv.effectiveStatus === "ready_to_create") return { key: "create", label: "Create invoice", tone: "warn" };
+  if (inv.status === "drafted_in_qb") return { key: "submit", label: "Submit for approval", tone: "warn" };
+  if (inv.reconciliationStatus === "review") return { key: "variance", label: "Resolve variance", tone: "warn" };
+  return null;
+}
+
+const BL_VIEWS = [
+  ["action", "Needs action"],
+  ["upcoming", "Upcoming"],
+  ["approval", "Waiting for approval"],
+  ["outstanding", "Outstanding"],
+  ["overdue", "Overdue"],
+  ["paid", "Paid"],
+  ["all", "All invoices"],
+];
+
+/* Bring the back catalogue in.
+
+   Two sources, and the difference matters. A show with a won quote has a real
+   payment schedule, so it imports as proper milestones. A show that predates the
+   quoting system has no schedule — what it has is the invoice rows you typed on
+   the Pipeline, and those import in the state you left them: a row marked Paid
+   arrives paid, because it was.
+
+   Nothing is guessed. A show with neither is not offered, because inventing a
+   schedule for it would be putting made-up numbers into a billing ledger. */
+function BillingImport({ state, setState, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [done, setDone] = useState({});
+
+  const load = useCallback(() => {
+    setRows(null);
+    return scanBillingImport()
+      .then((r) => { setRows(r || []); setErr(""); })
+      .catch((e) => setErr((e && e.message) || "Couldn't scan for shows to import."));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const runQuote = async (r) => {
+    setBusy(r.eventId); setErr("");
+    try {
+      const res = await generateBilling(r.fromQuote.quoteId);
+      setDone((d) => ({ ...d, [r.eventId]: (res.created || 0) + " milestone" + (res.created === 1 ? "" : "s") + " created" + (res.skipped ? ", " + res.skipped + " left alone" : "") }));
+      await load(); if (onDone) onDone();
+    } catch (e) { setErr((e && e.message) || "Couldn't import that quote."); }
+    setBusy("");
+  };
+  const runPipeline = async (r) => {
+    setBusy(r.eventId); setErr("");
+    try {
+      const res = await importPipelineInvoices(r.eventId);
+      setDone((d) => ({ ...d, [r.eventId]: (res.created || 0) + " invoice" + (res.created === 1 ? "" : "s") + " imported" + (res.skipped ? ", " + res.skipped + " already there" : "") }));
+      await load(); if (onDone) onDone();
+    } catch (e) { setErr((e && e.message) || "Couldn't import those invoices."); }
+    setBusy("");
+  };
+
+  const list = rows || [];
+  const todo = list.filter((r) => r.fromQuote || r.fromPipeline);
+
+  return (
+    <CtgModal title="Import existing shows" wide onClose={() => setState(null)}>
+      <p className="bl-hint" style={{ marginBottom: 12 }}>
+        Everything already in the app that could become a billing record. Import is per show, so you can bring in the
+        ones that matter and leave the rest. Running it twice is safe — anything already imported is skipped, and a
+        milestone that has been invoiced or paid is never touched.
+      </p>
+      {err ? <div className="bl-err">{err}</div> : null}
+
+      {rows === null ? (
+        <Empty>Scanning…</Empty>
+      ) : !todo.length ? (
+        <Empty>Nothing left to import. Every show with a quote schedule or typed pipeline invoices is already in Billing.</Empty>
+      ) : (
+        <div className="rows">
+          <div className="rowhead bl-impgrid"><span>Show</span><span>Client</span><span>In billing</span><span>Available</span><span /></div>
+          {todo.map((r) => (
+            <div className="row bl-impgrid" key={r.eventId}>
+              <span className="bl-name" data-l="Show">{r.name || "Untitled"}</span>
+              <span className="bl-dim" data-l="Client">{r.client || "—"}</span>
+              <span className="bl-dim" data-l="In billing">{r.existing ? r.existing + " invoice" + (r.existing === 1 ? "" : "s") : "none"}</span>
+              <span data-l="Available">
+                {r.fromQuote ? <span className="bl-impsrc">Quote v{r.fromQuote.version} · {r.fromQuote.count} milestones · {blMoney(r.fromQuote.total)}</span> : null}
+                {r.fromPipeline ? <span className="bl-impsrc">Pipeline · {r.fromPipeline.count} typed invoice{r.fromPipeline.count === 1 ? "" : "s"} · {blMoney(r.fromPipeline.total)}</span> : null}
+                {done[r.eventId] ? <span className="bl-impdone">{done[r.eventId]}</span> : null}
+              </span>
+              <span className="bl-impbtns">
+                {r.fromQuote ? (
+                  <button className="btn ghost bl-openbtn" disabled={!!busy} onClick={() => runQuote(r)}>
+                    {busy === r.eventId ? "…" : "From quote"}
+                  </button>
+                ) : null}
+                {r.fromPipeline ? (
+                  <button className="btn ghost bl-openbtn" disabled={!!busy} onClick={() => runPipeline(r)}>
+                    {busy === r.eventId ? "…" : "From pipeline"}
+                  </button>
+                ) : null}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="bl-hint" style={{ marginTop: 12 }}>
+        A show with neither a quote schedule nor typed pipeline invoices is not listed. There is nothing to build a
+        schedule from, and inventing one would put made-up figures in a billing ledger. Add its invoices by hand on
+        the show's Billing tab instead.
+      </p>
+    </CtgModal>
+  );
+}
+
+function BillingScreen({ onClose, onOpenShow }) {
+  const [rows, setRows] = useState(null);
+  const [shows, setShows] = useState([]);
+  const [view, setView] = useState("action");
+  const [q, setQ] = useState("");
+  const [type, setType] = useState("");
+  const [err, setErr] = useState("");
+  const [sub, setSub] = useState(null);
+  const [subBusy, setSubBusy] = useState(false);
+  const [links, setLinks] = useState(null);
+  const [showLinks, setShowLinks] = useState(false);
+  const [imp, setImp] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([listBilling(), listEvents()])
+      .then(([inv, evs]) => { if (!alive) return; setRows(inv || []); setShows(evs || []); })
+      .catch((e) => alive && setErr((e && e.message) || "Couldn't load billing."));
+    return () => { alive = false; };
+  }, []);
+
+  const showName = {};
+  const showClient = {};
+  shows.forEach((e) => { showName[e.id] = e.name || ""; showClient[e.id] = e.client || ""; });
+
+  const all = rows || [];
+  const live = all.filter((r) => !r.voidAt);
+
+  const cards = [
+    { key: "ready", label: "Ready to invoice", view: "action",
+      n: live.filter((r) => r.effectiveStatus === "ready_to_create").length, money: null },
+    { key: "approval", label: "Waiting for approval", view: "approval",
+      n: live.filter((r) => r.status === "waiting_approval").length, money: null },
+    { key: "send", label: "Ready to send", view: "action",
+      n: live.filter((r) => r.status === "approved").length, money: null },
+    { key: "outstanding", label: "Outstanding", view: "outstanding", n: null,
+      money: blNum(live.reduce((t, r) => t + (r.sentAt && r.balance > 0 ? r.balance : 0), 0)) },
+    { key: "overdue", label: "Overdue", view: "overdue", n: null,
+      money: blNum(live.filter((r) => r.overdue).reduce((t, r) => t + r.balance, 0)), tone: "bad" },
+    { key: "next30", label: "Due next 30 days", view: "upcoming", n: null,
+      money: blNum(live.filter((r) => {
+        const d = r.effectiveDueDate;
+        if (!d || r.balance <= 0.004) return false;
+        const t = new Date(); const pad = (n) => String(n).padStart(2, "0");
+        const today = t.getFullYear() + "-" + pad(t.getMonth() + 1) + "-" + pad(t.getDate());
+        const end = new Date(t.getTime() + 30 * 86400000);
+        const to = end.getFullYear() + "-" + pad(end.getMonth() + 1) + "-" + pad(end.getDate());
+        return d >= today && d <= to;
+      }).reduce((t, r) => t + r.balance, 0)) },
+  ];
+
+  const inView = (r) => {
+    switch (view) {
+      case "action": return !!blAction(r);
+      case "upcoming": return !r.voidAt && r.balance > 0.004 && !r.sentAt;
+      case "approval": return r.status === "waiting_approval" || r.status === "needs_changes";
+      case "outstanding": return !r.voidAt && !!r.sentAt && r.balance > 0.004;
+      case "overdue": return !!r.overdue;
+      case "paid": return !r.voidAt && r.paymentStatus === "paid";
+      default: return true;
+    }
+  };
+  const needle = q.trim().toLowerCase();
+  const matches = (r) => {
+    if (type && r.milestoneType !== type) return false;
+    if (!needle) return true;
+    return [showName[r.eventId], showClient[r.eventId], r.label, r.qbNumber]
+      .filter(Boolean).join(" ").toLowerCase().includes(needle);
+  };
+
+  const shown = all.filter((r) => inView(r) && matches(r)).sort((a, b) => {
+    if (view === "overdue") return (b.daysOverdue || 0) - (a.daysOverdue || 0);
+    const ak = a.effectiveDueDate || "9999-99-99";
+    const bk = b.effectiveDueDate || "9999-99-99";
+    return ak < bk ? -1 : ak > bk ? 1 : 0;
+  });
+
+  const loadLinks = async () => {
+    try { setLinks(await listBillingCalendarLinks()); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the calendar links."); }
+  };
+  const doSubscribe = async () => {
+    setSubBusy(true);
+    try { setSub(await generateBillingCalendarLink()); await loadLinks(); }
+    catch (e) { setErr((e && e.message) || "Couldn't generate the calendar link."); }
+    setSubBusy(false);
+  };
+  const doRevoke = async (l) => {
+    if (!window.confirm("Revoke \"" + l.label + "\"?\n\nAnyone subscribed with it stops receiving the calendar straight away. This cannot be undone — issue a new link instead.")) return;
+    try { await revokeBillingCalendarLink(l.id); await loadLinks(); if (sub && sub.id === l.id) setSub(null); }
+    catch (e) { setErr((e && e.message) || "Couldn't revoke it."); }
+  };
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Billing</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={() => setImp({ open: true, rows: null, busy: "" })}>Import existing shows</button>
+          <button className="btn ghost" disabled={subBusy} onClick={doSubscribe}>Subscribe in calendar</button>
+          <button className="btn ghost" onClick={() => { if (links === null) loadLinks(); setShowLinks((v) => !v); }}>Calendar links</button>
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      {err ? <div className="bl-err">{err}</div> : null}
+
+      {sub ? (
+        <div className="bl-subbox">
+          <p>
+            Add this to Google or Apple Calendar as a <strong>subscription</strong>, not an import — subscribed, it
+            keeps itself current and entries disappear as invoices get paid.
+            <br />
+            <strong>Copy it now.</strong> It is shown once and never again; after this the only thing you can do to it
+            is revoke it. Treat it like a password — anyone holding it can read every client balance without signing in.
+          </p>
+          <div className="bl-subrow">
+            <input readOnly value={sub.url} onFocus={(e) => e.target.select()} />
+            <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(sub.url).catch(() => {})}>Copy</button>
+            <a className="btn ghost" href={sub.webcal}>Open in Calendar</a>
+          </div>
+        </div>
+      ) : null}
+
+      {showLinks ? (
+        <div className="bl-subbox">
+          <div className="bl-linkhead">
+            <strong>Calendar links</strong>
+            <button className="btn ghost" onClick={() => setShowLinks(false)}>Hide</button>
+          </div>
+          {links === null ? (
+            <Empty>Loading…</Empty>
+          ) : !links.length ? (
+            <Empty>None issued yet. Subscribe in calendar makes one.</Empty>
+          ) : (
+            <div className="rows">
+              <div className="rowhead bl-linkgrid"><span>Label</span><span>Issued</span><span>Last used</span><span>State</span><span /></div>
+              {links.map((l) => (
+                <div className={"row bl-linkgrid" + (l.revokedAt ? " bl-void" : "")} key={l.id}>
+                  <span data-l="Label">{l.label}</span>
+                  <span className="bl-dim" data-l="Issued">{l.createdAt ? new Date(l.createdAt).toLocaleDateString() : "—"}{l.createdBy ? " · " + l.createdBy : ""}</span>
+                  <span className="bl-dim" data-l="Last used">{l.lastUsedAt ? new Date(l.lastUsedAt).toLocaleString() : "never"}</span>
+                  <span data-l="State">{l.revokedAt ? <span className="bl-act bad">Revoked</span> : <span className="bl-act good">Active</span>}</span>
+                  <span>{l.revokedAt ? null : <button className="btn danger bl-openbtn" onClick={() => doRevoke(l)}>Revoke</button>}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="bl-hint">
+            A link that says <em>never</em> used is one nothing is subscribed to — safe to revoke. A link being used
+            that you do not recognise is the reason this list exists.
+          </p>
+        </div>
+      ) : null}
+
+      {imp && imp.open ? (
+        <BillingImport
+          state={imp}
+          setState={setImp}
+          onDone={() => listBilling().then((r) => setRows(r || [])).catch(() => {})}
+        />
+      ) : null}
+
+      {rows === null ? (
+        <Empty>Loading…</Empty>
+      ) : (
+        <>
+          <div className="bl-cards">
+            {cards.map((c) => (
+              <button key={c.key} className={"bl-card" + (view === c.view ? " on" : "")} onClick={() => setView(c.view)}>
+                <span className="bl-card-l">{c.label}</span>
+                <span className={"bl-card-v" + (c.tone ? " " + c.tone : "")}>
+                  {c.money != null ? blMoney(c.money) : c.n}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="bl-tabs">
+            {BL_VIEWS.map(([k, label]) => (
+              <button key={k} className={"bl-tab" + (view === k ? " on" : "")} onClick={() => setView(k)}>{label}</button>
+            ))}
+            <select className="bl-typesel" value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="">All types</option>
+              <option value="deposit">Deposit</option>
+              <option value="interim">Interim</option>
+              <option value="final">Final</option>
+              <option value="full">Full</option>
+            </select>
+            <input className="bl-search" value={q} placeholder="Search client, show or invoice number…" onChange={(e) => setQ(e.target.value)} />
+          </div>
+
+          {!shown.length ? (
+            <Empty>
+              {view === "action"
+                ? "Nothing waiting on you. Anything sent and unpaid is with the client, and shows up under Outstanding."
+                : "Nothing here."}
+            </Empty>
+          ) : (
+            <div className="rows">
+              <div className="rowhead blq-grid">
+                <span>Action</span><span>Show</span><span>Client</span><span>Milestone</span><span>Amount</span><span>Due</span><span>Status</span>
+              </div>
+              {shown.map((r) => {
+                const act = blAction(r);
+                const amount = r.actualAmount == null ? r.scheduledAmount : r.actualAmount;
+                return (
+                  <div className={"row blq-grid" + (r.voidAt ? " bl-void" : "")} key={r.id}
+                       onClick={() => r.eventId && onOpenShow(r.eventId, "billing", r.id)}
+                       title={r.eventId ? "Open this invoice" : "This quote has no show yet"}>
+                    <span data-l="Action">
+                      {act ? <span className={"bl-act " + (act.tone || "")}>{act.label}</span> : <span className="bl-dim">—</span>}
+                    </span>
+                    <span className="bl-name" data-l="Show">{showName[r.eventId] || "— no show —"}</span>
+                    <span className="bl-dim" data-l="Client">{showClient[r.eventId] || "—"}</span>
+                    <span data-l="Milestone">{r.label || BL_TYPE[r.milestoneType]}{r.qbNumber ? <span className="bl-qb">#{r.qbNumber}</span> : null}</span>
+                    <span data-l="Amount">
+                      {blMoney(amount)}
+                      {r.balance > 0.004 && r.paidTotal > 0.004 ? <span className="bl-subline">{blMoney(r.balance)} still owed</span> : null}
+                    </span>
+                    <span className={r.overdue ? "bl-over" : "bl-dim"} data-l="Due">
+                      {blShortDate(r.effectiveDueDate)}
+                      {r.overdue ? <span className="bl-sub"> · {r.daysOverdue}d</span> : null}
+                    </span>
+                    <span data-l="Status"><BlChip status={r.effectiveStatus || r.status} /></span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p className="bl-hint" style={{ marginTop: 12 }}>
+            {shown.length} of {all.length} invoice{all.length === 1 ? "" : "s"}. Click a row to open that invoice.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* One milestone, opened up. Three blocks, in this order deliberately: what the
+   quote scheduled, what QuickBooks actually says, and who approved and sent it.
+   The first is never editable — it is the baseline you are measuring against,
+   and a baseline you can edit is not a baseline. */
+function InvoiceRecord({ invoice, all, event, onClose, onChanged }) {
+  const [draft, setDraft] = useState({
+    qbNumber: invoice.qbNumber || "",
+    qbLink: invoice.qbLink || "",
+    qbPdfUrl: invoice.qbPdfUrl || "",
+    actualAmount: invoice.actualAmount == null ? "" : String(invoice.actualAmount),
+    actualInvoiceDate: invoice.actualInvoiceDate || "",
+    actualDueDate: invoice.actualDueDate || invoice.scheduledDueDate || "",
+    recipient: invoice.recipient || "",
+    customerNote: invoice.customerNote || "",
+    varianceReason: invoice.varianceReason || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [copied, setCopied] = useState("");
+  const [pay, setPay] = useState({ date: "", amount: "", method: "Wire", reference: "", note: "" });
+  const [method, setMethod] = useState("Wire Transfer");
+  const [showHist, setShowHist] = useState(false);
+  const copyTimer = useRef(null);
+  useEffect(() => () => clearTimeout(copyTimer.current), []);
+
+  const set = (k, v) => setDraft((d) => ({ ...d, [k]: v }));
+  const copy = (key, text) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    setCopied(key);
+    clearTimeout(copyTimer.current);
+    copyTimer.current = setTimeout(() => setCopied(""), 1400);
+  };
+
+  const run = async (fn, msg) => {
+    setBusy(true); setErr("");
+    try { await fn(); if (onChanged) await onChanged(); }
+    catch (e) { setErr((e && e.message) || msg || "That didn't work."); }
+    setBusy(false);
+  };
+
+  const save = () =>
+    run(() => saveInvoice(invoice.id, {
+      qbNumber: draft.qbNumber,
+      qbLink: draft.qbLink,
+      qbPdfUrl: draft.qbPdfUrl,
+      actualAmount: draft.actualAmount === "" ? null : qtNum(draft.actualAmount),
+      actualInvoiceDate: draft.actualInvoiceDate || null,
+      actualDueDate: draft.actualDueDate || null,
+      recipient: draft.recipient,
+      customerNote: draft.customerNote,
+      varianceReason: draft.varianceReason,
+    }), "Couldn't save.");
+
+  const move = (st) => run(() => setInvoiceStatus(invoice.id, st), "Couldn't change the status.");
+
+  const addPay = () =>
+    run(async () => {
+      if (!qtNum(pay.amount)) throw new Error("A payment needs an amount.");
+      await addInvoicePayment(invoice.id, { ...pay, amount: qtNum(pay.amount) });
+      setPay({ date: "", amount: "", method: "Wire", reference: "", note: "" });
+    }, "Couldn't record the payment.");
+
+  const doVoid = () => {
+    const reason = window.prompt("Voiding keeps the record and takes it out of the totals.\n\nWhy is it being voided?");
+    if (!reason || !reason.trim()) return;
+    run(() => voidInvoice(invoice.id, reason.trim()), "Couldn't void it.");
+  };
+
+  const typeLabel = BL_TYPE[invoice.milestoneType] || "Milestone";
+  const description = (invoice.pct ? invoice.pct + "% " : "") + "for Production Services";
+
+  /* The note the client reads on the invoice. Built from the show and the whole
+     schedule, not just this milestone, because the question it answers is "what
+     am I paying in total and when" — which is the question that otherwise comes
+     back as an email three days later. */
+  const buildNote = () => {
+    const L = [];
+    L.push(event.name || "");
+    const dr = [event.startDate, event.endDate].filter(Boolean).map(blLongDate);
+    if (dr.length) L.push(dr.length === 2 && dr[0] !== dr[1] ? dr[0] + " – " + dr[1] : dr[0]);
+    if (event.venue && event.venue.name) L.push(event.venue.name);
+    L.push("Preferred Method of Payment: " + method);
+    L.push("");
+    (all || []).filter((r) => !r.voidAt).forEach((r) => {
+      const amt = r.actualAmount == null ? r.scheduledAmount : r.actualAmount;
+      const due = r.effectiveDueDate ? " - Due " + blLongDate(r.effectiveDueDate) : "";
+      L.push((r.label || BL_TYPE[r.milestoneType]) + " (" + blMoney(amt) + ")" + due);
+    });
+    L.push("");
+    L.push("(Amount reflects the approved quote only and excludes added items or services.)");
+    L.push("Attached is final quote with terms and conditions.");
+    L.push("Thank you for your business!");
+    return L.join("\n");
+  };
+
+  const entered = draft.actualAmount === "" ? null : qtNum(draft.actualAmount);
+  const checks = [
+    { k: "Invoice type", expect: typeLabel, got: typeLabel, ok: true },
+    { k: "Percentage", expect: invoice.pct ? invoice.pct + "%" : "—", got: invoice.pct ? invoice.pct + "%" : "—", ok: true },
+    {
+      k: "Invoice amount",
+      expect: blMoney(invoice.scheduledAmount),
+      got: entered == null ? "not entered" : blMoney(entered),
+      ok: entered != null && Math.abs(entered - invoice.scheduledAmount) < 0.005,
+    },
+    {
+      k: "Due date",
+      expect: blShortDate(invoice.scheduledDueDate),
+      got: draft.actualDueDate ? blShortDate(draft.actualDueDate) : "not entered",
+      ok: !!draft.actualDueDate && draft.actualDueDate === invoice.scheduledDueDate,
+    },
+    { k: "Quote total", expect: blMoney(invoice.quoteTotalAtGeneration), got: blMoney(invoice.quoteTotalAtGeneration), ok: true },
+  ];
+  const mismatch = checks.some((c) => !c.ok);
+  const remainingAfter = blNum(invoice.quoteTotalAtGeneration - (entered == null ? invoice.scheduledAmount : entered));
+
+  const canApprove = !!String(draft.qbNumber).trim() && entered != null;
+  const st = invoice.status;
+
+  return (
+    <CtgModal title={(invoice.label || typeLabel) + " — " + blMoney(invoice.scheduledAmount)} wide onClose={onClose}>
+      <div className="bl-rec">
+        <div className="bl-recbar">
+          <BlChip status={invoice.effectiveStatus || st} />
+          <span className="bl-sub">{blRowLabel(invoice)}</span>
+          {invoice.voidAt ? <span className="bl-sub">Voided — {invoice.voidReason}</span> : null}
+        </div>
+        {err ? <div className="bl-err">{err}</div> : null}
+
+        {/* ---- A. scheduled, from the accepted quote ---- */}
+        <div className="bl-sect">Scheduled from the accepted quote</div>
+        <div className="bl-ro">
+          <div><span>Milestone</span><strong>{invoice.label || typeLabel}</strong></div>
+          <div><span>Percentage</span><strong>{invoice.pct ? invoice.pct + "%" : "—"}</strong></div>
+          <div><span>Scheduled amount</span><strong>{blMoney(invoice.scheduledAmount)}</strong></div>
+          <div><span>Planned send</span><strong>{blShortDate(invoice.plannedSendDate)}</strong></div>
+          <div><span>Scheduled due</span><strong>{blShortDate(invoice.scheduledDueDate)}</strong></div>
+          <div><span>Quote</span><strong>v{invoice.quoteVersion || "?"} · {blMoney(invoice.quoteTotalAtGeneration)}</strong></div>
+        </div>
+
+        {/* ---- preparation ---- */}
+        <div className="bl-sect">Prepare it in QuickBooks</div>
+        <div className="bl-prep">
+          <button className={"btn ghost" + (copied === "desc" ? " bl-done" : "")} onClick={() => copy("desc", description)}>
+            {copied === "desc" ? "Copied" : "Copy description"}
+          </button>
+          <button className={"btn ghost" + (copied === "note" ? " bl-done" : "")} onClick={() => copy("note", draft.customerNote || buildNote())}>
+            {copied === "note" ? "Copied" : "Copy customer note"}
+          </button>
+          <button className="btn ghost" onClick={() => set("customerNote", buildNote())}>Rebuild note</button>
+          <a className="btn ghost" href="https://qbo.intuit.com" target="_blank" rel="noreferrer">Open QuickBooks ↗</a>
+          <select className="bl-method" value={method} onChange={(e) => setMethod(e.target.value)} title="Used in the generated note">
+            <option>Wire Transfer</option><option>ACH</option><option>Check</option><option>Credit Card</option>
+          </select>
+        </div>
+        <textarea
+          className="bl-note"
+          rows={9}
+          value={draft.customerNote}
+          placeholder="Press Rebuild note to generate this from the show and the payment schedule."
+          onChange={(e) => set("customerNote", e.target.value)}
+        />
+
+        {/* ---- B. the actual QuickBooks invoice ---- */}
+        <div className="bl-sect">The actual invoice</div>
+        <div className="bl-form">
+          <label><span>Invoice number</span><input value={draft.qbNumber} placeholder="1043" onChange={(e) => set("qbNumber", e.target.value)} /></label>
+          <label><span>Amount</span><input value={draft.actualAmount} placeholder={String(invoice.scheduledAmount)} onChange={(e) => set("actualAmount", e.target.value)} /></label>
+          <label><span>Invoice date</span><input type="date" value={draft.actualInvoiceDate} onChange={(e) => set("actualInvoiceDate", e.target.value)} /></label>
+          <label><span>Due date</span><input type="date" value={draft.actualDueDate} onChange={(e) => set("actualDueDate", e.target.value)} /></label>
+          <label className="full"><span>Payment link</span><input value={draft.qbLink} placeholder="https://…" onChange={(e) => set("qbLink", e.target.value)} /></label>
+          <label className="full"><span>Invoice PDF link</span><input value={draft.qbPdfUrl} placeholder="https://…" onChange={(e) => set("qbPdfUrl", e.target.value)} /></label>
+          <label className="full"><span>Sent to</span><input value={draft.recipient} placeholder="name@client.com" onChange={(e) => set("recipient", e.target.value)} /></label>
+          {mismatch ? (
+            <label className="full"><span>Why it differs</span><input value={draft.varianceReason} placeholder="Required when the invoice does not match the schedule" onChange={(e) => set("varianceReason", e.target.value)} /></label>
+          ) : null}
+        </div>
+
+        {/* ---- validation ---- */}
+        <div className="bl-check">
+          {checks.map((c) => (
+            <div className="bl-checkrow" key={c.k}>
+              <span>{c.k}</span>
+              <span className="bl-dim">{c.expect}</span>
+              <span>{c.got}</span>
+              <span className={c.ok ? "bl-ok" : "bl-bad"}>{c.ok ? "Match" : "Differs"}</span>
+            </div>
+          ))}
+          <div className="bl-checkrow">
+            <span>Remaining after this</span><span className="bl-dim">calculated</span>
+            <span>{blMoney(remainingAfter)}</span><span className="bl-dim">—</span>
+          </div>
+        </div>
+        {mismatch ? (
+          <p className="bl-hint">A difference does not block anything — the invoice is what it is. It is recorded as a variance so it can be explained later rather than discovered later.</p>
+        ) : null}
+
+        <div className="bl-actions">
+          <button className="btn amber" disabled={busy} onClick={save}>Save invoice details</button>
+        </div>
+
+        {/* ---- C. approval and delivery ---- */}
+        <div className="bl-sect">Approval and delivery</div>
+        <div className="bl-actions">
+          {st !== "waiting_approval" && st !== "approved" && st !== "sent" && !invoice.voidAt ? (
+            <button className="btn ghost" disabled={busy} onClick={() => move("waiting_approval")}>Submit for approval</button>
+          ) : null}
+          {st === "waiting_approval" ? (
+            <>
+              <button className="btn amber" disabled={busy || !canApprove} onClick={() => move("approved")} title={canApprove ? "" : "Add the invoice number and amount first"}>Approve</button>
+              <button className="btn ghost" disabled={busy} onClick={() => move("needs_changes")}>Needs changes</button>
+            </>
+          ) : null}
+          {st === "approved" ? <button className="btn amber" disabled={busy} onClick={() => move("sent")}>Mark sent to client</button> : null}
+          {invoice.approvedAt ? <span className="bl-sub">Approved by {invoice.approvedBy} on {new Date(invoice.approvedAt).toLocaleDateString()}</span> : null}
+          {invoice.sentAt ? <span className="bl-sub">Sent {new Date(invoice.sentAt).toLocaleDateString()}{invoice.recipient ? " to " + invoice.recipient : ""}</span> : null}
+        </div>
+        {!canApprove && st === "waiting_approval" ? (
+          <p className="bl-hint">Approval needs the QuickBooks invoice number and the amount. Approving something with neither is approving a blank.</p>
+        ) : null}
+
+        {/* ---- payments ---- */}
+        <div className="bl-sect">Payments</div>
+        {!invoice.payments.length ? (
+          <Empty>Nothing received against this invoice yet.</Empty>
+        ) : (
+          <div className="rows">
+            {invoice.payments.map((p) => (
+              <div className="row bl-paygrid" key={p.id}>
+                <span data-l="Date">{blShortDate(p.date)}</span>
+                <span data-l="Amount">{blMoney(p.amount)}</span>
+                <span className="bl-dim" data-l="Method">{p.method || "—"}</span>
+                <span className="bl-dim" data-l="Reference">{p.reference || p.note || ""}</span>
+                <span><RemoveBtn onClick={() => run(() => removeInvoicePayment(invoice.id, p.id), "Couldn't remove it.")} /></span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="bl-payadd">
+          <input type="date" value={pay.date} onChange={(e) => setPay({ ...pay, date: e.target.value })} />
+          <input value={pay.amount} placeholder="Amount" onChange={(e) => setPay({ ...pay, amount: e.target.value })} />
+          <select value={pay.method} onChange={(e) => setPay({ ...pay, method: e.target.value })}>
+            <option>Wire</option><option>ACH</option><option>Check</option><option>Card</option><option>Other</option>
+          </select>
+          <input value={pay.reference} placeholder="Reference" onChange={(e) => setPay({ ...pay, reference: e.target.value })} />
+          <button className="btn ghost" disabled={busy} onClick={addPay}>Record payment</button>
+        </div>
+        <p className="bl-hint">
+          Balance {blMoney(invoice.balance)} of {blMoney(invoice.billedAmount)}. Paid is worked out from what is recorded here — it is never a tick you set yourself, so it cannot disagree with the ledger.
+        </p>
+
+        {/* ---- history and void ---- */}
+        <div className="bl-sect">
+          History
+          <button className="btn ghost bl-histbtn" onClick={() => setShowHist(!showHist)}>{showHist ? "Hide" : "Show"}</button>
+        </div>
+        {showHist ? (
+          <div className="bl-hist">
+            {(invoice.history || []).slice().reverse().map((h, i) => (
+              <div className="bl-histrow" key={i}>
+                <span className="bl-dim">{new Date(h.at).toLocaleString()}</span>
+                <span>{h.action}</span>
+                <span>{h.from || h.to ? (h.from || "?") + " → " + (h.to || "?") : ""}{h.note ? " " + h.note : ""}</span>
+                <span className="bl-dim">{h.by}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {!invoice.voidAt ? (
+          <div className="bl-actions" style={{ marginTop: 14 }}>
+            <button className="btn danger" disabled={busy} onClick={doVoid}>Void this invoice</button>
+            <span className="bl-sub">Voiding keeps the record and its reason, and takes it out of the totals.</span>
+          </div>
+        ) : null}
+      </div>
+    </CtgModal>
+  );
+}
+
+function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
+  const [state, setState] = useState("loading");
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const [showHistory, setShowHistory] = useState(false);
+
+  const load = useCallback(() => {
+    setState("loading");
+    return getShowBilling(showId)
+      .then((r) => { setRows((r && r.invoices) || []); setState("idle"); setErr(""); })
+      .catch((e) => { setErr((e && e.message) || "Couldn't load billing."); setState("error"); });
+  }, [showId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Arrived here from the Billing queue with a particular invoice in mind. Wait
+  // until the rows are in, then open it — once, and only if it is really here.
+  useEffect(() => {
+    if (!openInvoiceId || !rows.length) return;
+    if (rows.some((r) => r.id === openInvoiceId)) setOpenId(openInvoiceId);
+    if (onInvoiceOpened) onInvoiceOpened();
+  }, [openInvoiceId, rows, onInvoiceOpened]);
+
+  const ref = event.quoteRef || null;
+  const generate = async () => {
+    if (!ref || !ref.quoteId) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await generateBilling(ref.quoteId);
+      await load();
+      if (r && r.skipped) setErr(r.skipped + " milestone" + (r.skipped === 1 ? " was" : "s were") + " left alone because they have already been invoiced or paid.");
+    } catch (e) { setErr((e && e.message) || "Couldn't generate the schedule."); }
+    setBusy(false);
+  };
+
+  const live = rows.filter((r) => !r.voidAt);
+  const quoteTotal = live.length ? Number(live[0].quoteTotalAtGeneration || 0) : (ref ? Number(ref.total || 0) : 0);
+  const scheduled = blNum(live.reduce((t, r) => t + Number(r.scheduledAmount || 0), 0));
+  const invoiced = blNum(live.filter((r) => r.actualAmount != null).reduce((t, r) => t + Number(r.actualAmount), 0));
+  const paid = blNum(live.reduce((t, r) => t + Number(r.paidTotal || 0), 0));
+  const outstanding = blNum(live.reduce((t, r) => t + (r.sentAt && r.balance > 0 ? Number(r.balance) : 0), 0));
+  const remaining = blNum(quoteTotal - invoiced);
+  const overdueCount = live.filter((r) => r.overdue).length;
+
+  const open = rows.find((r) => r.id === openId) || null;
+
+  const history = rows
+    .flatMap((r) => (r.history || []).map((h) => ({ ...h, label: r.label })))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+    .slice(0, 60);
+
+  if (state === "loading") return <Panel title="Billing"><Empty>Loading…</Empty></Panel>;
+
+  return (
+    <div className="stack">
+      <div className="tab-lead">
+        <p>
+          {event.name} · {event.client || "No client"}{event.venue && event.venue.name ? " · " + event.venue.name : ""}
+          {quoteTotal ? <> · Quote total <strong style={{ color: "var(--ink)" }}>{blMoney(quoteTotal)}</strong></> : null}
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn ghost" onClick={() => go("costing")}>Open P&amp;L</button>
+          {ref && ref.quoteId ? (
+            <button className="btn ghost" disabled={busy} onClick={generate}>
+              {rows.length ? "Refresh from quote" : "Generate billing schedule"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {err ? <div className="bl-err">{err}</div> : null}
+
+      {rows.length > 0 && (
+        <div className="bl-stats">
+          <BlStat label="Quote total" value={blMoney(quoteTotal)} />
+          <BlStat label="Scheduled" value={blMoney(scheduled)} />
+          <BlStat label="Invoiced" value={blMoney(invoiced)} />
+          <BlStat label="Paid" value={blMoney(paid)} tone="good" />
+          <BlStat label="Outstanding" value={blMoney(outstanding)} tone={outstanding > 0 ? "warn" : ""} />
+          <BlStat label="Remaining to invoice" value={blMoney(remaining)} />
+        </div>
+      )}
+
+      {overdueCount > 0 && (
+        <div className="bl-alert">
+          {overdueCount} invoice{overdueCount === 1 ? " is" : "s are"} past due with money still outstanding.
+        </div>
+      )}
+
+      <Panel title="Invoice schedule">
+        {!rows.length ? (
+          <Empty>
+            {ref && ref.quoteId
+              ? "Nothing scheduled yet. Generate the schedule from the accepted quote above — it reads the payment milestones you already set."
+              : "No quote is linked to this show, so there is no payment schedule to build from. Link one from the quote screen first."}
+          </Empty>
+        ) : (
+          <div className="rows">
+            <div className="rowhead bl-grid">
+              <span>Milestone</span><span>%</span><span>Scheduled</span><span>Send</span><span>Due</span><span>Actual</span><span>Status</span><span />
+            </div>
+            {rows.map((r) => (
+              <div className={"row bl-grid" + (r.voidAt ? " bl-void" : "")} key={r.id}>
+                <span className="bl-name">
+                  {r.label || BL_TYPE[r.milestoneType] || "Milestone"}
+                  {r.qbNumber ? <span className="bl-qb">#{r.qbNumber}</span> : null}
+                </span>
+                <span className="bl-dim" data-l="Percent">{r.pct ? r.pct + "%" : "—"}</span>
+                <span data-l="Scheduled">{blMoney(r.scheduledAmount)}</span>
+                <span className="bl-dim" data-l="Send">{blShortDate(r.plannedSendDate)}</span>
+                <span className={r.overdue ? "bl-over" : "bl-dim"} data-l="Due">{blShortDate(r.effectiveDueDate)}</span>
+                <span data-l="Actual">
+                  {r.actualAmount == null ? <span className="bl-dim">—</span> : blMoney(r.actualAmount)}
+                  {r.varianceAmount ? <span className="bl-var" title="Differs from the scheduled figure">{r.varianceAmount > 0 ? "+" : ""}{blMoney(r.varianceAmount)}</span> : null}
+                </span>
+                <span className="bl-statuscell" data-l="Status">
+                  <BlChip status={r.effectiveStatus || r.status} />
+                  <span className="bl-sub">{blRowLabel(r)}</span>
+                </span>
+                <span><button className="btn ghost bl-openbtn" onClick={() => setOpenId(r.id)}>Open</button></span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      {rows.length > 0 && (
+        <Panel
+          title="Billing activity"
+          sub="Every change, who made it and when."
+          action={<button className="btn ghost" onClick={() => setShowHistory(!showHistory)}>{showHistory ? "Hide" : "Show"}</button>}
+        >
+          {!showHistory ? (
+            <Empty>{history.length} recorded event{history.length === 1 ? "" : "s"}.</Empty>
+          ) : !history.length ? (
+            <Empty>Nothing recorded yet.</Empty>
+          ) : (
+            <div className="bl-hist">
+              {history.map((h, i) => (
+                <div className="bl-histrow" key={i}>
+                  <span className="bl-dim">{new Date(h.at).toLocaleString()}</span>
+                  <span>{h.label}</span>
+                  <span>{h.action}{h.from || h.to ? " — " + (h.from || "?") + " → " + (h.to || "?") : ""}{h.note ? " (" + h.note + ")" : ""}</span>
+                  <span className="bl-dim">{h.by}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </Panel>
+      )}
+
+      {open ? (
+        <InvoiceRecord
+          invoice={open}
+          all={rows}
+          event={event}
+          onClose={() => setOpenId(null)}
+          onChanged={load}
+        />
+      ) : null}
+    </div>
+  );
+}
 
 function CostingTab({ event }) {
   const [c, setC] = useState(null);
@@ -12215,7 +13281,7 @@ const CSS = `
 .cb .tab-locked input, .cb .tab-locked textarea, .cb .tab-locked select { pointer-events:none !important; opacity:0.65; cursor:default; }
 .cb .tab-locked .add-btn, .cb .tab-locked .rem-btn, .cb .tab-locked [class*="AddBtn"], .cb .tab-locked [class*="RemoveBtn"] { display:none !important; }
 .cb .tab-locked .movebtn, .cb .tab-locked .daysort { display:none !important; }
-.cb .tab-locked button:not(.pl-lock):not(.brief-export-btn) { pointer-events:none; opacity:0.5; }
+.cb .tab-locked button:not(.pl-lock):not(.brief-export-btn):not(.wifi-mini) { pointer-events:none; opacity:0.5; }
 .cb .tile{
   position:relative; text-align:left; cursor:pointer; color:#1A130B;
   border:2px solid rgba(0,0,0,.5); border-radius:16px; padding:16px 16px 14px; min-height:150px;
@@ -13156,6 +14222,176 @@ const CSS = `
 .cb .diagramlink-grid{grid-template-columns:1.1fr 1.6fr 1.1fr 100px;}
 .cb .diagram-open{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
+
+/* billing home (cloud build) */
+.cb .bl-linkhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+.cb .bl-linkgrid{grid-template-columns:1.2fr 1.3fr 1.3fr 96px 92px;}
+.cb .bl-impgrid{grid-template-columns:1.3fr 1fr 110px 1.7fr 190px;}
+.cb .bl-impsrc{display:block; font-size:12px; color:var(--dim);}
+.cb .bl-impdone{display:block; font-size:12px; color:var(--green); font-weight:600; margin-top:2px;}
+.cb .bl-impbtns{display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap;}
+@media (max-width:900px){
+  .cb .row.bl-linkgrid, .cb .row.bl-impgrid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.bl-linkgrid, .cb .rowhead.bl-impgrid{display:none;}
+  .cb .row.bl-linkgrid > span[data-l], .cb .row.bl-impgrid > span[data-l]{display:flex; align-items:baseline; gap:8px;}
+  .cb .row.bl-linkgrid > span[data-l]::before, .cb .row.bl-impgrid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:80px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+  .cb .bl-impbtns{justify-content:flex-start; margin-top:6px;}
+}
+
+.cb .bl-cards{display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-bottom:16px;}
+.cb .bl-card{text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:11px 13px; cursor:pointer; min-width:0; font-family:inherit;}
+.cb .bl-card:hover{border-color:#3C4454;}
+.cb .bl-card.on{border-color:var(--amber);}
+.cb .bl-card-l{display:block; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:5px;}
+.cb .bl-card-v{display:block; font-size:19px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums;}
+.cb .bl-card-v.bad{color:#FF6B6B;}
+.cb .bl-tabs{display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:14px;}
+.cb .bl-tab{border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:999px; padding:5px 13px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;}
+.cb .bl-tab:hover{color:var(--ink);}
+.cb .bl-tab.on{background:var(--amber); border-color:var(--amber); color:#101218;}
+.cb .bl-search{width:auto; flex:1 1 190px; min-width:150px;}
+.cb .bl-subline{display:block; font-size:11.5px; color:var(--dim); margin-top:1px;}
+.cb .bl-typesel{width:auto;}
+.cb .blq-grid{grid-template-columns:132px 1.4fr 1.1fr 1.2fr 150px 108px 132px;}
+.cb .row.blq-grid{cursor:pointer;}
+.cb .row.blq-grid:hover{border-color:#3C4454;}
+.cb .bl-act{display:inline-block; border-radius:7px; padding:3px 9px; font-size:11.5px; font-weight:700; background:var(--panel2); border:1px solid var(--line); color:var(--dim);}
+.cb .bl-act.good{color:var(--green); border-color:rgba(95,208,138,.4);}
+.cb .bl-act.warn{color:var(--amber); border-color:rgba(255,176,32,.4);}
+.cb .bl-act.bad{color:#FF6B6B; border-color:rgba(255,107,107,.4);}
+.cb .bl-subbox{background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:13px 15px; margin-bottom:14px;}
+.cb .bl-subbox p{margin:0 0 9px; font-size:13px; color:var(--dim); line-height:1.5;}
+.cb .bl-subrow{display:flex; gap:7px; align-items:center;}
+.cb .bl-subrow input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; box-sizing:border-box;}
+.cb .bl-subrow .btn{white-space:nowrap; text-decoration:none;}
+
+@media (max-width:1100px){ .cb .bl-cards{grid-template-columns:repeat(3,1fr);} }
+@media (max-width:900px){
+  .cb .bl-cards{grid-template-columns:repeat(2,1fr);}
+  .cb .row.blq-grid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.blq-grid{display:none;}
+  .cb .row.blq-grid > span[data-l]{display:flex; align-items:baseline; gap:8px;}
+  .cb .row.blq-grid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:74px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+  .cb .bl-subrow{flex-wrap:wrap;}
+}
+
+/* billing (cloud build) */
+.cb .bl-stats{display:grid; grid-template-columns:repeat(6,1fr); gap:8px;}
+.cb .bl-stat{background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:11px 13px; min-width:0;}
+.cb .bl-stat-l{font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:5px;}
+.cb .bl-stat-v{font-size:17px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis;}
+.cb .bl-stat-v.good{color:var(--green);}
+.cb .bl-stat-v.warn{color:var(--amber);}
+.cb .bl-alert{background:rgba(255,107,107,.08); border:1px solid rgba(255,107,107,.28); color:#FF9B9B; border-radius:10px; padding:9px 14px; font-size:13px; font-weight:600;}
+.cb .bl-err{background:rgba(255,176,32,.08); border:1px solid rgba(255,176,32,.22); color:var(--amber); border-radius:10px; padding:9px 14px; font-size:13px;}
+
+.cb .bl-grid{grid-template-columns:1.5fr 54px 110px 78px 78px 128px 1.5fr 74px;}
+.cb .bl-name{font-weight:600; display:flex; align-items:center; gap:7px; min-width:0;}
+.cb .bl-qb{font-size:11px; color:var(--faint); font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+.cb .bl-dim{color:var(--dim);}
+.cb .bl-over{color:#FF6B6B; font-weight:700;}
+.cb .bl-var{margin-left:6px; font-size:11px; color:var(--amber); font-weight:700; white-space:nowrap;}
+.cb .bl-statuscell{display:flex; flex-direction:column; align-items:flex-start; gap:2px; min-width:0;}
+.cb .bl-sub{font-size:11.5px; color:var(--dim);}
+.cb .bl-openbtn{padding:5px 11px; font-size:12px;}
+.cb .row.bl-void{opacity:.5;}
+.cb .bl-chip{display:inline-block; border:1px solid; border-radius:999px; padding:2px 9px; font-size:11px; font-weight:700; white-space:nowrap;}
+
+.cb .bl-hist{display:flex; flex-direction:column; gap:3px; font-size:12px;}
+.cb .bl-histrow{display:grid; grid-template-columns:150px 1.1fr 1.6fr 1fr; gap:8px; padding:4px 2px; border-bottom:1px solid var(--line);}
+.cb .bl-histbtn{padding:3px 10px; font-size:11px; margin-left:10px;}
+
+.cb .bl-rec{display:flex; flex-direction:column; gap:10px;}
+.cb .bl-recbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
+.cb .bl-sect{font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--faint); font-weight:700; margin-top:8px; border-top:1px solid var(--line); padding-top:12px; display:flex; align-items:center;}
+.cb .bl-ro{display:grid; grid-template-columns:repeat(3,1fr); gap:8px;}
+.cb .bl-ro > div{background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:8px 10px;}
+.cb .bl-ro span{display:block; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:3px;}
+.cb .bl-ro strong{font-size:13.5px; color:var(--ink);}
+.cb .bl-prep{display:flex; gap:7px; flex-wrap:wrap; align-items:center;}
+.cb .bl-prep .btn{padding:6px 11px; font-size:12.5px; text-decoration:none;}
+.cb .bl-done{color:var(--green) !important; border-color:rgba(95,208,138,.45) !important;}
+.cb .bl-method{width:auto; padding:6px 9px; font-size:12.5px;}
+.cb .bl-note{width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; line-height:1.5;}
+.cb .bl-form{display:grid; grid-template-columns:repeat(2,1fr); gap:9px;}
+.cb .bl-form label{display:block; min-width:0;}
+.cb .bl-form input, .cb .bl-form select, .cb .bl-note,
+.cb .bl-payadd input, .cb .bl-payadd select{box-sizing:border-box;}
+.cb .bl-form label.full{grid-column:1 / -1;}
+.cb .bl-form span{display:block; font-size:12px; color:var(--dim); font-weight:600; margin-bottom:4px;}
+.cb .bl-check{border:1px solid var(--line); border-radius:10px; overflow:hidden;}
+.cb .bl-checkrow{display:grid; grid-template-columns:1.1fr 1fr 1fr 80px; gap:8px; padding:7px 11px; font-size:12.5px; border-bottom:1px solid var(--line);}
+.cb .bl-checkrow:last-child{border-bottom:none;}
+.cb .bl-ok{color:var(--green); font-weight:700;}
+.cb .bl-bad{color:var(--amber); font-weight:700;}
+.cb .bl-hint{font-size:12px; color:var(--faint); margin:2px 0 0; line-height:1.5;}
+.cb .bl-actions{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+.cb .bl-paygrid{grid-template-columns:90px 110px 80px 1fr 40px;}
+.cb .bl-payadd{display:grid; grid-template-columns:130px 110px 96px 1fr auto; gap:7px; align-items:center;}
+
+@media (max-width:900px){
+  .cb .bl-stats{grid-template-columns:repeat(2,1fr);}
+  .cb .bl-ro{grid-template-columns:1fr 1fr;}
+  .cb .bl-form{grid-template-columns:1fr;}
+  .cb .bl-form label.full{grid-column:auto;}
+  .cb .bl-payadd{grid-template-columns:1fr 1fr;}
+  .cb .bl-histrow{grid-template-columns:1fr; gap:1px; padding-bottom:8px;}
+  .cb .bl-checkrow{grid-template-columns:1fr 1fr;}
+  /* One card per invoice, every value labelled. Stacked bare, "Sep 20" twice
+     in a row does not tell you which one is the send and which is the due —
+     and on an invoice those are not interchangeable. */
+  .cb .row.bl-grid, .cb .row.bl-paygrid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.bl-grid{display:none;}
+  .cb .row.bl-grid > span[data-l], .cb .row.bl-paygrid > span[data-l]{
+    display:flex; align-items:baseline; gap:8px;
+  }
+  .cb .row.bl-grid > span[data-l]::before, .cb .row.bl-paygrid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:78px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase;
+    color:var(--faint); font-weight:700;
+  }
+  .cb .row.bl-grid .bl-statuscell{align-items:flex-start; padding-top:4px;}
+  .cb .row.bl-grid .bl-name{font-size:15px; margin-bottom:2px;}
+  .cb .bl-openbtn{width:100%; margin-top:6px;}
+}
+
+/* wi-fi info (cloud build) */
+.cb .wifi-grid{grid-template-columns:1fr 1.25fr 1.7fr 104px 1.15fr 44px;}
+.cb .wifi-cell{display:flex; align-items:center; gap:6px; min-width:0;}
+.cb .wifi-cell input, .cb .wifi-cell select{min-width:0; flex:1;}
+.cb .wifi-rm{justify-content:flex-end;}
+.cb .wifi-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; letter-spacing:.01em;}
+.cb .wifi-mini{border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:7px; padding:4px 8px; font-size:11px; font-weight:700; cursor:pointer; white-space:nowrap; flex:none;}
+.cb .wifi-mini:hover:not(:disabled){background:#2C3241; color:var(--ink); border-color:#3C4454;}
+.cb .wifi-mini:disabled{opacity:.35; cursor:default;}
+.cb .wifi-mini.done{color:var(--green); border-color:rgba(95,208,138,.45);}
+@media (max-width:860px){
+  /* one card per network — six stacked fields with only a 6px gap between
+     networks reads as one long list, and you cannot tell where one ends. */
+  .cb .row.wifi-grid{grid-template-columns:1fr; gap:6px; background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 10px 8px; margin-bottom:6px;}
+  .cb .rowhead.wifi-grid{display:none;}
+  .cb .row.wifi-grid input, .cb .row.wifi-grid select{background:var(--panel);}
+  .cb .wifi-cell[data-l]::before{content:attr(data-l); flex:none; min-width:66px; font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;}
+  .cb .wifi-rm{justify-content:flex-end; margin-top:2px;}
+}
 
 /* show documents (cloud build) */
 .cb .doclink-grid{grid-template-columns:1.2fr 116px 1.5fr 0.9fr 156px;}

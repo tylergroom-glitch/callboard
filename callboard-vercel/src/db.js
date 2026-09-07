@@ -189,6 +189,68 @@ export const saveQuoteTerms = (text) => api("POST", "/api/quotes?terms=1", { tex
 export const setTcgAdmin = (body) =>
   api("POST", "/api/members?tcg=1", { redirectTo: window.location.origin + "?setpw=1", ...body });
 
+/* ============================================================
+   BILLING — invoice milestones, approval, delivery, payments.
+   Admin only on every route. Crew never load any of this.
+   ============================================================ */
+
+// Every invoice across every show, list columns only — what the Billing home reads.
+export const listBilling = () => api("GET", "/api/billing");
+// One show's invoices in full, plus its adjustments.
+export const getShowBilling = (eventId) =>
+  api("GET", "/api/billing?eventId=" + encodeURIComponent(eventId));
+export const getInvoice = (id) => api("GET", "/api/billing?id=" + encodeURIComponent(id));
+
+// Build the schedule from an accepted quote. Idempotent: it creates what is
+// missing, refreshes what nobody has touched, and leaves anything already
+// invoiced, sent or paid exactly where it is.
+export const generateBilling = (quoteId) =>
+  api("POST", "/api/billing?generate=1", { quoteId });
+
+// QuickBooks details and actual values. Never the status — that has its own call.
+export const saveInvoice = (id, payload) =>
+  api("PATCH", "/api/billing?id=" + encodeURIComponent(id), payload);
+// One workflow move. The server refuses the ones that would be lies.
+export const setInvoiceStatus = (id, status) =>
+  api("PATCH", "/api/billing?id=" + encodeURIComponent(id) + "&status=" + encodeURIComponent(status));
+
+export const addInvoicePayment = (id, payment) =>
+  api("POST", "/api/billing?id=" + encodeURIComponent(id) + "&payment=1", payment);
+export const removeInvoicePayment = (id, paymentId) =>
+  api("DELETE", "/api/billing?id=" + encodeURIComponent(id) + "&paymentId=" + encodeURIComponent(paymentId));
+
+// Voiding keeps the record and needs a reason. Deleting is only allowed on a
+// milestone nobody has acted on.
+export const voidInvoice = (id, reason) =>
+  api("POST", "/api/billing?id=" + encodeURIComponent(id) + "&void=1", { reason });
+export const deleteInvoice = (id) =>
+  api("DELETE", "/api/billing?id=" + encodeURIComponent(id));
+
+// Bring in what already exists: won quotes that never generated a schedule, and
+// the invoice rows typed by hand on the pipeline before billing existed.
+export const scanBillingImport = () => api("GET", "/api/billing?importScan=1");
+export const importPipelineInvoices = (eventId) =>
+  api("POST", "/api/billing?importPipeline=1", { eventId });
+
+// Calendar links are revocable. The token is shown once, when it is minted;
+// after that the only thing you can do to it is revoke it.
+export const listBillingCalendarLinks = () => api("GET", "/api/billing-calendar?links=1");
+export const revokeBillingCalendarLink = (id) =>
+  api("POST", "/api/billing-calendar?revoke=" + encodeURIComponent(id));
+
+// A signed, year-long subscription link for the billing calendar. Two entries per
+// live milestone — the day to raise it, the day the money is due — and both drop
+// out once it is paid.
+export const generateBillingCalendarLink = () =>
+  api("GET", "/api/billing-calendar?generate=1");
+
+// Billable adjustments — the screen lands in phase 2, the endpoint is live now.
+export const listAdjustments = (eventId) =>
+  api("GET", "/api/billing?adjustments=1" + (eventId ? "&eventId=" + encodeURIComponent(eventId) : ""));
+export const saveAdjustment = (row) => api("POST", "/api/billing?adjustments=1", row);
+export const deleteAdjustment = (id) =>
+  api("DELETE", "/api/billing?adjustments=1&id=" + encodeURIComponent(id));
+
 // Branded T&C PDF. "meta" fetches just name/page count; no arg fetches the bytes.
 export const getQuoteTermsPdfMeta = () => api("GET", "/api/quotes?termsPdf=meta");
 export const getQuoteTermsPdf = () => api("GET", "/api/quotes?termsPdf=1");

@@ -10,6 +10,7 @@ const summary = (row) => ({
   startDate: row.start_date || "",
   endDate: row.end_date || "",
   hasPassword: !!row.pass_hash,
+  category: row.category === "freelance" ? "freelance" : "tcg",
 });
 
 // Returns { role, depts } for the caller on a show. role: tcg|producer|dept_editor|crew|null
@@ -45,23 +46,24 @@ export default async function handler(req, res) {
         data.client = row.client ?? "";
         data.startDate = row.start_date ?? "";
         data.endDate = row.end_date ?? "";
+        data.category = row.category === "freelance" ? "freelance" : "tcg";
         data._role = role;
         if (role === "dept_editor") data._depts = depts;
         return json(res, 200, data);
       }
       if (isAdmin(p)) {
-        const rows = await supabaseRest("GET", "/shows?select=id,name,client,start_date,end_date,pass_hash&order=start_date.asc.nullslast", null);
+        const rows = await supabaseRest("GET", "/shows?select=id,name,client,start_date,end_date,pass_hash,category&order=start_date.asc.nullslast", null);
         return json(res, 200, (rows || []).map(summary));
       }
       if (p.scope === "show" && p.id) {
-        const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(p.id) + "&select=id,name,client,start_date,end_date,pass_hash", null);
+        const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(p.id) + "&select=id,name,client,start_date,end_date,pass_hash,category", null);
         return json(res, 200, (rows || []).map(summary));
       }
       if (p.sub) {
         const ids = await memberShowIds(p);
         if (!ids.length) return json(res, 200, []);
         const inList = ids.map(encodeURIComponent).join(",");
-        const rows = await supabaseRest("GET", "/shows?id=in.(" + inList + ")&select=id,name,client,start_date,end_date,pass_hash&order=start_date.asc.nullslast", null);
+        const rows = await supabaseRest("GET", "/shows?id=in.(" + inList + ")&select=id,name,client,start_date,end_date,pass_hash,category&order=start_date.asc.nullslast", null);
         return json(res, 200, (rows || []).map(summary));
       }
       return json(res, 200, []);
@@ -71,6 +73,7 @@ export default async function handler(req, res) {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       const b = await readBody(req);
       const rec = { name: b.name || "New Event", client: b.client || "", start_date: b.startDate || null, end_date: b.endDate || null, data: b.data || {} };
+      if (b.category === "freelance") rec.category = "freelance";
       if (b.password) rec.pass_hash = hashPassword(b.password);
       const rows = await supabaseRest("POST", "/shows", rec, "return=representation");
       return json(res, 200, summary(rows[0]));
@@ -89,6 +92,7 @@ export default async function handler(req, res) {
         if (b.client !== undefined) patch.client = b.client;
         if (b.startDate !== undefined) patch.start_date = b.startDate || null;
         if (b.endDate !== undefined) patch.end_date = b.endDate || null;
+        if (b.category !== undefined) patch.category = b.category === "freelance" ? "freelance" : "tcg";
         await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), patch);
         return json(res, 200, { ok: true });
       }
