@@ -70,6 +70,7 @@ import {
   getQuoteTerms,
   getQuoteTermsPdfMeta,
   listBilling,
+  generateBillingCalendarLink,
   getShowBilling,
   getInvoice,
   generateBilling,
@@ -886,6 +887,7 @@ function Callboard({ auth, onLogout }) {
   const [pipelineOpen, setPipelineOpen] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [quotesOpen, setQuotesOpen] = useState(false);
+  const [billingOpen, setBillingOpen] = useState(false);
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -1188,12 +1190,13 @@ function Callboard({ auth, onLogout }) {
       </div>
     );
   const admSection = isSuperAdmin
-    ? (pipelineOpen ? "pipeline" : catalogOpen ? "catalog" : quotesOpen ? "quotes" : staffOpen ? "staff" : "shows")
+    ? (pipelineOpen ? "pipeline" : catalogOpen ? "catalog" : quotesOpen ? "quotes" : billingOpen ? "billing" : staffOpen ? "staff" : "shows")
     : "shows";
   const goAdmin = (s) => {
     setPipelineOpen(s === "pipeline");
     setCatalogOpen(s === "catalog");
     setQuotesOpen(s === "quotes");
+    setBillingOpen(s === "billing");
     setStaffOpen(s === "staff");
   };
   const goAdminFromShow = (s) => { goAdmin(s); setAtLanding(true); };
@@ -1213,7 +1216,7 @@ function Callboard({ auth, onLogout }) {
     />
   );
 
-  if (atLanding || (isSuperAdmin && (pipelineOpen || catalogOpen || quotesOpen || staffOpen)))
+  if (atLanding || (isSuperAdmin && (pipelineOpen || catalogOpen || quotesOpen || billingOpen || staffOpen)))
     return (
       <div className="cb">
         <style>{CSS}</style>
@@ -1233,6 +1236,8 @@ function Callboard({ auth, onLogout }) {
                 onOpenShow={openLandingShow}
                 onShowCreated={(created) => setEvents((prev) => prev.concat([created]))}
               />
+            ) : admSection === "billing" ? (
+              <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
             ) : (
@@ -5238,6 +5243,7 @@ const ADM_NAV = [
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
   { key: "quotes", label: "Quotes" },
+  { key: "billing", label: "Billing" },
   { key: "catalog", label: "Catalog" },
 ];
 
@@ -10275,6 +10281,224 @@ function BlStat({ label, value, tone }) {
   );
 }
 
+/* ============================================================
+   BILLING HOME — the queue, across every show.
+
+   Its default is Needs Action, not a table of everything. An unfiltered list of
+   two hundred invoices tells you nothing about what to do this morning, which
+   is the only question this screen exists to answer. Every row carries the verb
+   for its own next step and opens the show it belongs to.
+   ============================================================ */
+
+/* What the row is actually waiting for. Derived from the invoice, never stored,
+   because the answer changes with the calendar and with the last payment. */
+function blAction(inv) {
+  if (inv.voidAt) return null;
+  if (inv.status === "waiting_approval") return { key: "approve", label: "Owner review", tone: "warn" };
+  if (inv.status === "needs_changes") return { key: "fix", label: "Fix and resubmit", tone: "bad" };
+  if (inv.status === "approved") return { key: "send", label: "Send", tone: "good" };
+  if (inv.overdue) return { key: "chase", label: "Chase payment", tone: "bad" };
+  if (inv.status === "sent" && inv.balance > 0.004) return null; // waiting on the client, not on you
+  if (inv.effectiveStatus === "ready_to_create") return { key: "create", label: "Create invoice", tone: "warn" };
+  if (inv.status === "drafted_in_qb") return { key: "submit", label: "Submit for approval", tone: "warn" };
+  if (inv.reconciliationStatus === "review") return { key: "variance", label: "Resolve variance", tone: "warn" };
+  return null;
+}
+
+const BL_VIEWS = [
+  ["action", "Needs action"],
+  ["upcoming", "Upcoming"],
+  ["approval", "Waiting for approval"],
+  ["outstanding", "Outstanding"],
+  ["overdue", "Overdue"],
+  ["paid", "Paid"],
+  ["all", "All invoices"],
+];
+
+function BillingScreen({ onClose, onOpenShow }) {
+  const [rows, setRows] = useState(null);
+  const [shows, setShows] = useState([]);
+  const [view, setView] = useState("action");
+  const [q, setQ] = useState("");
+  const [type, setType] = useState("");
+  const [err, setErr] = useState("");
+  const [sub, setSub] = useState(null);
+  const [subBusy, setSubBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([listBilling(), listEvents()])
+      .then(([inv, evs]) => { if (!alive) return; setRows(inv || []); setShows(evs || []); })
+      .catch((e) => alive && setErr((e && e.message) || "Couldn't load billing."));
+    return () => { alive = false; };
+  }, []);
+
+  const showName = {};
+  const showClient = {};
+  shows.forEach((e) => { showName[e.id] = e.name || ""; showClient[e.id] = e.client || ""; });
+
+  const all = rows || [];
+  const live = all.filter((r) => !r.voidAt);
+
+  const cards = [
+    { key: "ready", label: "Ready to invoice", view: "action",
+      n: live.filter((r) => r.effectiveStatus === "ready_to_create").length, money: null },
+    { key: "approval", label: "Waiting for approval", view: "approval",
+      n: live.filter((r) => r.status === "waiting_approval").length, money: null },
+    { key: "send", label: "Ready to send", view: "action",
+      n: live.filter((r) => r.status === "approved").length, money: null },
+    { key: "outstanding", label: "Outstanding", view: "outstanding", n: null,
+      money: blNum(live.reduce((t, r) => t + (r.sentAt && r.balance > 0 ? r.balance : 0), 0)) },
+    { key: "overdue", label: "Overdue", view: "overdue", n: null,
+      money: blNum(live.filter((r) => r.overdue).reduce((t, r) => t + r.balance, 0)), tone: "bad" },
+    { key: "next30", label: "Due next 30 days", view: "upcoming", n: null,
+      money: blNum(live.filter((r) => {
+        const d = r.effectiveDueDate;
+        if (!d || r.balance <= 0.004) return false;
+        const t = new Date(); const pad = (n) => String(n).padStart(2, "0");
+        const today = t.getFullYear() + "-" + pad(t.getMonth() + 1) + "-" + pad(t.getDate());
+        const end = new Date(t.getTime() + 30 * 86400000);
+        const to = end.getFullYear() + "-" + pad(end.getMonth() + 1) + "-" + pad(end.getDate());
+        return d >= today && d <= to;
+      }).reduce((t, r) => t + r.balance, 0)) },
+  ];
+
+  const inView = (r) => {
+    switch (view) {
+      case "action": return !!blAction(r);
+      case "upcoming": return !r.voidAt && r.balance > 0.004 && !r.sentAt;
+      case "approval": return r.status === "waiting_approval" || r.status === "needs_changes";
+      case "outstanding": return !r.voidAt && !!r.sentAt && r.balance > 0.004;
+      case "overdue": return !!r.overdue;
+      case "paid": return !r.voidAt && r.paymentStatus === "paid";
+      default: return true;
+    }
+  };
+  const needle = q.trim().toLowerCase();
+  const matches = (r) => {
+    if (type && r.milestoneType !== type) return false;
+    if (!needle) return true;
+    return [showName[r.eventId], showClient[r.eventId], r.label, r.qbNumber]
+      .filter(Boolean).join(" ").toLowerCase().includes(needle);
+  };
+
+  const shown = all.filter((r) => inView(r) && matches(r)).sort((a, b) => {
+    if (view === "overdue") return (b.daysOverdue || 0) - (a.daysOverdue || 0);
+    const ak = a.effectiveDueDate || "9999-99-99";
+    const bk = b.effectiveDueDate || "9999-99-99";
+    return ak < bk ? -1 : ak > bk ? 1 : 0;
+  });
+
+  const doSubscribe = async () => {
+    setSubBusy(true);
+    try { setSub(await generateBillingCalendarLink()); }
+    catch (e) { setErr((e && e.message) || "Couldn't generate the calendar link."); }
+    setSubBusy(false);
+  };
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Billing</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" disabled={subBusy} onClick={doSubscribe}>Subscribe in calendar</button>
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      {err ? <div className="bl-err">{err}</div> : null}
+
+      {sub ? (
+        <div className="bl-subbox">
+          <p>
+            Add this to Google or Apple Calendar as a <strong>subscription</strong>, not an import — subscribed, it
+            keeps itself current and entries disappear as invoices get paid.
+          </p>
+          <div className="bl-subrow">
+            <input readOnly value={sub.url} onFocus={(e) => e.target.select()} />
+            <button className="btn ghost" onClick={() => navigator.clipboard?.writeText(sub.url).catch(() => {})}>Copy</button>
+            <a className="btn ghost" href={sub.webcal}>Open in Calendar</a>
+          </div>
+        </div>
+      ) : null}
+
+      {rows === null ? (
+        <Empty>Loading…</Empty>
+      ) : (
+        <>
+          <div className="bl-cards">
+            {cards.map((c) => (
+              <button key={c.key} className={"bl-card" + (view === c.view ? " on" : "")} onClick={() => setView(c.view)}>
+                <span className="bl-card-l">{c.label}</span>
+                <span className={"bl-card-v" + (c.tone ? " " + c.tone : "")}>
+                  {c.money != null ? blMoney(c.money) : c.n}
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className="bl-tabs">
+            {BL_VIEWS.map(([k, label]) => (
+              <button key={k} className={"bl-tab" + (view === k ? " on" : "")} onClick={() => setView(k)}>{label}</button>
+            ))}
+            <select className="bl-typesel" value={type} onChange={(e) => setType(e.target.value)}>
+              <option value="">All types</option>
+              <option value="deposit">Deposit</option>
+              <option value="interim">Interim</option>
+              <option value="final">Final</option>
+              <option value="full">Full</option>
+            </select>
+            <input className="bl-search" value={q} placeholder="Search client, show or invoice number…" onChange={(e) => setQ(e.target.value)} />
+          </div>
+
+          {!shown.length ? (
+            <Empty>
+              {view === "action"
+                ? "Nothing waiting on you. Anything sent and unpaid is with the client, and shows up under Outstanding."
+                : "Nothing here."}
+            </Empty>
+          ) : (
+            <div className="rows">
+              <div className="rowhead blq-grid">
+                <span>Action</span><span>Show</span><span>Client</span><span>Milestone</span><span>Amount</span><span>Due</span><span>Status</span>
+              </div>
+              {shown.map((r) => {
+                const act = blAction(r);
+                const amount = r.actualAmount == null ? r.scheduledAmount : r.actualAmount;
+                return (
+                  <div className={"row blq-grid" + (r.voidAt ? " bl-void" : "")} key={r.id}
+                       onClick={() => r.eventId && onOpenShow(r.eventId)}
+                       title={r.eventId ? "Open this show" : "This quote has no show yet"}>
+                    <span data-l="Action">
+                      {act ? <span className={"bl-act " + (act.tone || "")}>{act.label}</span> : <span className="bl-dim">—</span>}
+                    </span>
+                    <span className="bl-name" data-l="Show">{showName[r.eventId] || "— no show —"}</span>
+                    <span className="bl-dim" data-l="Client">{showClient[r.eventId] || "—"}</span>
+                    <span data-l="Milestone">{r.label || BL_TYPE[r.milestoneType]}{r.qbNumber ? <span className="bl-qb">#{r.qbNumber}</span> : null}</span>
+                    <span data-l="Amount">
+                      {blMoney(amount)}
+                      {r.balance > 0.004 && r.paidTotal > 0.004 ? <span className="bl-subline">{blMoney(r.balance)} still owed</span> : null}
+                    </span>
+                    <span className={r.overdue ? "bl-over" : "bl-dim"} data-l="Due">
+                      {blShortDate(r.effectiveDueDate)}
+                      {r.overdue ? <span className="bl-sub"> · {r.daysOverdue}d</span> : null}
+                    </span>
+                    <span data-l="Status"><BlChip status={r.effectiveStatus || r.status} /></span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          <p className="bl-hint" style={{ marginTop: 12 }}>
+            {shown.length} of {all.length} invoice{all.length === 1 ? "" : "s"}. Click a row to open its show, then Billing to work on it.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 /* One milestone, opened up. Three blocks, in this order deliberately: what the
    quote scheduled, what QuickBooks actually says, and who approved and sent it.
    The first is never editable — it is the baseline you are measuring against,
@@ -13802,6 +14026,51 @@ const CSS = `
 .cb .diagramlink-grid{grid-template-columns:1.1fr 1.6fr 1.1fr 100px;}
 .cb .diagram-open{display:flex; align-items:center; gap:6px; justify-content:flex-end;}
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
+
+/* billing home (cloud build) */
+.cb .bl-cards{display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-bottom:16px;}
+.cb .bl-card{text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:11px 13px; cursor:pointer; min-width:0; font-family:inherit;}
+.cb .bl-card:hover{border-color:#3C4454;}
+.cb .bl-card.on{border-color:var(--amber);}
+.cb .bl-card-l{display:block; font-size:10.5px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600; margin-bottom:5px;}
+.cb .bl-card-v{display:block; font-size:19px; font-weight:700; color:var(--ink); font-variant-numeric:tabular-nums;}
+.cb .bl-card-v.bad{color:#FF6B6B;}
+.cb .bl-tabs{display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:14px;}
+.cb .bl-tab{border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:999px; padding:5px 13px; font-size:12.5px; font-weight:600; cursor:pointer; font-family:inherit;}
+.cb .bl-tab:hover{color:var(--ink);}
+.cb .bl-tab.on{background:var(--amber); border-color:var(--amber); color:#101218;}
+.cb .bl-search{width:auto; flex:1 1 190px; min-width:150px;}
+.cb .bl-subline{display:block; font-size:11.5px; color:var(--dim); margin-top:1px;}
+.cb .bl-typesel{width:auto;}
+.cb .blq-grid{grid-template-columns:132px 1.4fr 1.1fr 1.2fr 150px 108px 132px;}
+.cb .row.blq-grid{cursor:pointer;}
+.cb .row.blq-grid:hover{border-color:#3C4454;}
+.cb .bl-act{display:inline-block; border-radius:7px; padding:3px 9px; font-size:11.5px; font-weight:700; background:var(--panel2); border:1px solid var(--line); color:var(--dim);}
+.cb .bl-act.good{color:var(--green); border-color:rgba(95,208,138,.4);}
+.cb .bl-act.warn{color:var(--amber); border-color:rgba(255,176,32,.4);}
+.cb .bl-act.bad{color:#FF6B6B; border-color:rgba(255,107,107,.4);}
+.cb .bl-subbox{background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:13px 15px; margin-bottom:14px;}
+.cb .bl-subbox p{margin:0 0 9px; font-size:13px; color:var(--dim); line-height:1.5;}
+.cb .bl-subrow{display:flex; gap:7px; align-items:center;}
+.cb .bl-subrow input{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; box-sizing:border-box;}
+.cb .bl-subrow .btn{white-space:nowrap; text-decoration:none;}
+
+@media (max-width:1100px){ .cb .bl-cards{grid-template-columns:repeat(3,1fr);} }
+@media (max-width:900px){
+  .cb .bl-cards{grid-template-columns:repeat(2,1fr);}
+  .cb .row.blq-grid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.blq-grid{display:none;}
+  .cb .row.blq-grid > span[data-l]{display:flex; align-items:baseline; gap:8px;}
+  .cb .row.blq-grid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:74px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+  .cb .bl-subrow{flex-wrap:wrap;}
+}
 
 /* billing (cloud build) */
 .cb .bl-stats{display:grid; grid-template-columns:repeat(6,1fr); gap:8px;}

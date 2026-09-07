@@ -226,6 +226,12 @@ export const voidInvoice = (id, reason) =>
 export const deleteInvoice = (id) =>
   api("DELETE", "/api/billing?id=" + encodeURIComponent(id));
 
+// A signed, year-long subscription link for the billing calendar. Two entries per
+// live milestone — the day to raise it, the day the money is due — and both drop
+// out once it is paid.
+export const generateBillingCalendarLink = () =>
+  api("GET", "/api/billing-calendar?generate=1");
+
 // Billable adjustments — the screen lands in phase 2, the endpoint is live now.
 export const listAdjustments = (eventId) =>
   api("GET", "/api/billing?adjustments=1" + (eventId ? "&eventId=" + encodeURIComponent(eventId) : ""));
