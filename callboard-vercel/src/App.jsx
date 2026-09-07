@@ -909,6 +909,7 @@ function Callboard({ auth, onLogout }) {
   const tabCanEdit = (lockKey) => isShowAdmin || deptCanEdit(lockKey) || !!(event && event[lockKey]);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [staffOpen, setStaffOpen] = useState(false);
+  const [pendingInvoice, setPendingInvoice] = useState(null);
   const [tab, setTab] = useState(initCrew ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
   const [toast, setToast] = useState("");
@@ -1042,19 +1043,40 @@ function Callboard({ auth, onLogout }) {
     setTimeout(() => setToast(""), 1900);
   };
 
-  async function switchEvent(id) {
-    if (id === currentId) return;
+  async function switchEvent(id, targetTab) {
+    if (id === currentId) { setTab(targetTab || "home"); return; }
     try {
       const e = normalize(await getEvent(id));
       loadingRef.current = true;
       setCurrentId(id);
       setEvent(e);
-      setTab("home");
+      setTab(targetTab || "home");
     } catch (err) {
       flash(err.message || "Couldn't open that show");
     }
   }
-  const openLandingShow = (id) => { setAtLanding(false); switchEvent(id); };
+  /* Opening a show from a list.
+
+     The landing guard renders the admin shell when EITHER atLanding is true OR
+     an admin section is open. Clearing only atLanding therefore did nothing
+     visible: pipelineOpen / quotesOpen / billingOpen were still set, the guard
+     still matched, and the section you clicked from stayed on screen. goAdmin
+     clears all of them, so the show can actually come forward.
+
+     This was already broken for "Open show" on the Pipeline and inside a quote —
+     same helper, same missing step. Fixing it here fixes those too.
+
+     Billing also passes a tab and an invoice, because a row in the Billing queue
+     IS an invoice: landing on the tile grid and making you find Billing again is
+     two clicks back to where you already were. Everything else still lands on
+     the tiles. (goAdmin is declared below; this only ever runs from a click, by
+     which point it is initialised.) */
+  const openLandingShow = (id, targetTab, invoiceId) => {
+    goAdmin("shows");
+    setAtLanding(false);
+    setPendingInvoice(invoiceId || null);
+    switchEvent(id, targetTab);
+  };
 
   async function newEvent() {
     const name = window.prompt("Name this show:", "New Event");
@@ -1376,7 +1398,15 @@ function Callboard({ auth, onLogout }) {
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("gearEditUnlocked")} />}
             {tab === "records" && <LockWrapper canEdit={tabCanEdit("recordsUnlocked")} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
             {tab === "hours" && canEditTabs && <LockWrapper canEdit={tabCanEdit("hoursUnlocked")} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
-            {tab === "billing" && isShowAdmin && <BillingTab event={event} showId={currentId} go={setTab} />}
+            {tab === "billing" && isShowAdmin && (
+              <BillingTab
+                event={event}
+                showId={currentId}
+                go={setTab}
+                openInvoiceId={pendingInvoice}
+                onInvoiceOpened={() => setPendingInvoice(null)}
+              />
+            )}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
             {tab === "roster" && isSuperAdmin && <RosterTab />}
             {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
@@ -10625,8 +10655,8 @@ function BillingScreen({ onClose, onOpenShow }) {
                 const amount = r.actualAmount == null ? r.scheduledAmount : r.actualAmount;
                 return (
                   <div className={"row blq-grid" + (r.voidAt ? " bl-void" : "")} key={r.id}
-                       onClick={() => r.eventId && onOpenShow(r.eventId)}
-                       title={r.eventId ? "Open this show" : "This quote has no show yet"}>
+                       onClick={() => r.eventId && onOpenShow(r.eventId, "billing", r.id)}
+                       title={r.eventId ? "Open this invoice" : "This quote has no show yet"}>
                     <span data-l="Action">
                       {act ? <span className={"bl-act " + (act.tone || "")}>{act.label}</span> : <span className="bl-dim">—</span>}
                     </span>
@@ -10649,7 +10679,7 @@ function BillingScreen({ onClose, onOpenShow }) {
           )}
 
           <p className="bl-hint" style={{ marginTop: 12 }}>
-            {shown.length} of {all.length} invoice{all.length === 1 ? "" : "s"}. Click a row to open its show, then Billing to work on it.
+            {shown.length} of {all.length} invoice{all.length === 1 ? "" : "s"}. Click a row to open that invoice.
           </p>
         </>
       )}
@@ -10938,7 +10968,7 @@ function InvoiceRecord({ invoice, all, event, onClose, onChanged }) {
   );
 }
 
-function BillingTab({ event, showId, go }) {
+function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
   const [state, setState] = useState("loading");
   const [rows, setRows] = useState([]);
   const [err, setErr] = useState("");
@@ -10954,6 +10984,14 @@ function BillingTab({ event, showId, go }) {
   }, [showId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Arrived here from the Billing queue with a particular invoice in mind. Wait
+  // until the rows are in, then open it — once, and only if it is really here.
+  useEffect(() => {
+    if (!openInvoiceId || !rows.length) return;
+    if (rows.some((r) => r.id === openInvoiceId)) setOpenId(openInvoiceId);
+    if (onInvoiceOpened) onInvoiceOpened();
+  }, [openInvoiceId, rows, onInvoiceOpened]);
 
   const ref = event.quoteRef || null;
   const generate = async () => {
