@@ -626,6 +626,120 @@ export default async function handler(req, res) {
       return json(res, 200, { ok: true, created, skipped });
     }
 
+    /* ---- a quote whose total has moved since the schedule was built ---------
+       The brief is emphatic that this must not rewrite history, so it does not
+       happen automatically. The Billing tab notices the difference and asks;
+       this route does whichever of the four things you chose.
+
+         recalc  — redistribute across milestones that have not been invoiced
+         final   — put the whole difference on the last uninvoiced milestone
+         change  — add a separate change-order invoice for the difference
+         (leaving it alone needs no route: you just do not press anything)
+
+       In every mode a milestone with an invoice number, a send date or a payment
+       is untouchable. If they all are, the route says so rather than pretending.
+    ---------------------------------------------------------------------- */
+    if (q.reconcile) {
+      if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+      const b = await readBody(req);
+      const mode = String(b.mode || "");
+      if (["recalc", "final", "change"].indexOf(mode) < 0) return json(res, 400, { error: "Unknown mode: " + mode });
+
+      const qrows = await supabaseRest("GET", "/quotes?id=eq." + encodeURIComponent(b.quoteId) + "&select=*", null);
+      const quote = qrows && qrows[0];
+      if (!quote) return json(res, 404, { error: "Quote not found" });
+
+      const rows = await supabaseRest(
+        "GET",
+        "/billing_invoices?quote_id=eq." + encodeURIComponent(b.quoteId) + "&select=*&order=sort_order.asc",
+        null
+      );
+      const live = (rows || []).filter((r) => !r.void_at);
+      if (!live.length) return json(res, 400, { error: "There is no billing schedule on this quote yet." });
+
+      const locked = (r) =>
+        !!String(r.qb_number || "").trim() || !!r.sent_at || (Array.isArray(r.payments) && r.payments.length > 0);
+      const open = live.filter((x) => !locked(x));
+      const lockedTotal = money(live.filter(locked).reduce((t, x) => t + num(x.actual_amount == null ? x.scheduled_amount : x.actual_amount), 0));
+      const oldTotal = money(live[0].quote_total_at_generation);
+      const newTotal = money(quote.total);
+      const who = await actorName(p);
+      const nowIso = new Date().toISOString();
+
+      if (mode === "change") {
+        const diff = money(newTotal - oldTotal);
+        if (!diff) return json(res, 400, { error: "The quote total has not changed, so there is nothing to bill as a change order." });
+        const made = await supabaseRest("POST", "/billing_invoices", {
+          event_id: quote.event_id || null,
+          quote_id: quote.id,
+          quote_family_id: quote.family_id || null,
+          quote_version: quote.version || null,
+          milestone_key: "change-" + Date.now().toString(36),
+          sort_order: (live[live.length - 1].sort_order || 0) + 1,
+          milestone_type: "interim",
+          label: "Change order — quote v" + (quote.version || "?"),
+          pct: 0,
+          scheduled_amount: diff,
+          planned_send_date: null,
+          scheduled_due_date: null,
+          quote_total_at_generation: newTotal,
+          status: "scheduled",
+          payments: [],
+          created_by: who,
+          history: [{ at: nowIso, by: who, action: "change order", from: oldTotal, to: newTotal }],
+          updated_at: nowIso,
+        }, "return=representation");
+        // The rest of the schedule keeps its old baseline on purpose: it was
+        // agreed against the old total, and the difference is now its own line.
+        return json(res, 200, { ok: true, mode, created: 1, amount: diff, id: (made && made[0] && made[0].id) || null });
+      }
+
+      if (!open.length) {
+        return json(res, 400, {
+          error: "Every milestone on this quote has already been invoiced or paid, so none of them can be changed. Add a change-order invoice instead.",
+        });
+      }
+
+      // What the open milestones must now add up to.
+      const target = money(newTotal - lockedTotal);
+      let amounts;
+      if (mode === "final") {
+        amounts = open.map((x) => money(x.scheduled_amount));
+        const before = money(amounts.slice(0, -1).reduce((t, x) => t + x, 0));
+        amounts[amounts.length - 1] = money(target - before);
+      } else {
+        // Redistribute by each open milestone's share of the open percentage,
+        // with the last one absorbing the remainder so it sums exactly.
+        const pctSum = open.reduce((t, x) => t + num(x.pct), 0);
+        amounts = open.map((x, i) =>
+          i === open.length - 1 ? null : money(pctSum > 0 ? target * (num(x.pct) / pctSum) : target / open.length)
+        );
+        const before = money(amounts.slice(0, -1).reduce((t, x) => t + (x || 0), 0));
+        amounts[amounts.length - 1] = money(target - before);
+      }
+
+      const sum = money(amounts.reduce((t, x) => t + x, 0));
+      if (Math.abs(sum - target) > 0.004) {
+        return json(res, 500, { error: "Recalculated milestones summed to " + sum + " but should total " + target + ". Nothing was written." });
+      }
+
+      for (let i = 0; i < open.length; i++) {
+        await supabaseRest("PATCH", "/billing_invoices?id=eq." + encodeURIComponent(open[i].id), {
+          scheduled_amount: amounts[i],
+          quote_total_at_generation: newTotal,
+          updated_at: nowIso,
+          history: withHistory(open[i], {
+            by: who,
+            action: mode === "final" ? "absorbed quote change" : "recalculated",
+            from: money(open[i].scheduled_amount),
+            to: amounts[i],
+            note: "quote v" + (quote.version || "?") + " " + oldTotal + " -> " + newTotal,
+          }),
+        });
+      }
+      return json(res, 200, { ok: true, mode, updated: open.length, locked: live.length - open.length, target });
+    }
+
     /* ---- payments ---------------------------------------------------------- */
     if (q.payment || q.paymentId) {
       if (!q.id) return json(res, 400, { error: "id required" });
