@@ -75,6 +75,12 @@ import {
   revokeBillingCalendarLink,
   scanBillingImport,
   importPipelineInvoices,
+  reconcileQuoteChange,
+  saveAdjustment,
+  deleteAdjustment,
+  getDigestSettings,
+  saveDigestSettings,
+  sendTestDigest,
   getShowBilling,
   getInvoice,
   generateBilling,
@@ -3989,7 +3995,7 @@ function QtShowPicker({ busy, onConfirm, onClose }) {
   return (
     <CtgModal title="Link to an existing show" onClose={onClose}>
       <p style={{ ...qtHint, marginTop: 0 }}>
-        Use this for a job that was already in Crew Call before you quoted it here. It records which show this quote belongs to, so the
+        Use this for a job that was already in {APP_NAME} before you quoted it here. It records which show this quote belongs to, so the
         pipeline can fill in Prelim Quote, Quote Accepted and Final Billing on its own. Gear and P&amp;L are left alone — push the gear
         separately if you want it.
       </p>
@@ -4726,7 +4732,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
             <button className="btn" onClick={() => setConvert({ rows: qtPullRows(data, catalog) })} disabled={busyShow}>Create show</button>
           ) : null}
           {q.status === "won" && !q.eventId ? (
-            <button className="btn ghost" onClick={() => setLinkOpen(true)} disabled={busyShow} title="This job is already a show in Crew Call">Link to existing show</button>
+            <button className="btn ghost" onClick={() => setLinkOpen(true)} disabled={busyShow} title={"This job is already a show in " + APP_NAME}>Link to existing show</button>
           ) : null}
           {q.eventId ? (
             <button className="btn" onClick={() => onOpenShow && onOpenShow(q.eventId)}>Open show</button>
@@ -5273,6 +5279,14 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
 /* Persistent left-hand nav for TCG admins. Rendered alongside every top-level
    admin screen so Shows / Pipeline / Quotes / Catalog are always one click
    apart, instead of having to back out to the calendar between them. */
+/* The app's name and version live here and nowhere else, so renaming it again
+   is one line rather than a search. Bump APP_VERSION when you deploy something
+   worth telling apart — the number under the sidebar title is what you and I
+   will both quote when working out which build you are looking at.
+   Minor tracks the round: 1.15.x is round 15. */
+const APP_NAME = "Touchstone Command";
+const APP_VERSION = "1.16.0";
+
 const ADM_NAV = [
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
@@ -5284,7 +5298,11 @@ const ADM_NAV = [
 function AdminSidebar({ active, go, onPeople, onLogout }) {
   return (
     <nav className="adm-side">
-      <div className="adm-brand">Crew Call</div>
+      <div className="adm-brand">
+        <img className="adm-logo" src="/logo.png" alt="" width="34" height="30" />
+        <div className="adm-brandname">{APP_NAME}</div>
+        <div className="adm-ver">v{APP_VERSION}</div>
+      </div>
       {ADM_NAV.map((n) => (
         <button
           key={n.key}
@@ -10458,6 +10476,9 @@ function BillingScreen({ onClose, onOpenShow }) {
   const [subBusy, setSubBusy] = useState(false);
   const [links, setLinks] = useState(null);
   const [showLinks, setShowLinks] = useState(false);
+  const [dig, setDig] = useState(null);
+  const [showDig, setShowDig] = useState(false);
+  const [digMsg, setDigMsg] = useState("");
   const [imp, setImp] = useState(null);
 
   useEffect(() => {
@@ -10534,6 +10555,28 @@ function BillingScreen({ onClose, onOpenShow }) {
     catch (e) { setErr((e && e.message) || "Couldn't generate the calendar link."); }
     setSubBusy(false);
   };
+  const loadDig = async () => {
+    try { setDig(await getDigestSettings()); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the digest settings."); }
+  };
+  const saveDig = async (patch) => {
+    const next = { ...dig, ...patch };
+    setDig(next); setDigMsg("");
+    try {
+      const r = await saveDigestSettings({
+        enabled: next.enabled, toAdmins: next.toAdmins, extra: next.extra, prepDays: next.prepDays,
+      });
+      if (r && r.recipients) setDig({ ...next, recipients: r.recipients });
+      setDigMsg("Saved.");
+    }
+    catch (e) { setErr((e && e.message) || "Couldn't save."); }
+  };
+  const testDig = async () => {
+    setDigMsg("Sending…");
+    try { const r = await sendTestDigest(); setDigMsg("Sent to " + ((r && r.to) || "you") + " only. If it does not arrive, check the spam folder and BREVO_API_KEY."); }
+    catch (e) { setDigMsg((e && e.message) || "Couldn't send it."); }
+  };
+
   const doRevoke = async (l) => {
     if (!window.confirm("Revoke \"" + l.label + "\"?\n\nAnyone subscribed with it stops receiving the calendar straight away. This cannot be undone — issue a new link instead.")) return;
     try { await revokeBillingCalendarLink(l.id); await loadLinks(); if (sub && sub.id === l.id) setSub(null); }
@@ -10548,6 +10591,7 @@ function BillingScreen({ onClose, onOpenShow }) {
           <button className="btn ghost" onClick={() => setImp({ open: true, rows: null, busy: "" })}>Import existing shows</button>
           <button className="btn ghost" disabled={subBusy} onClick={doSubscribe}>Subscribe in calendar</button>
           <button className="btn ghost" onClick={() => { if (links === null) loadLinks(); setShowLinks((v) => !v); }}>Calendar links</button>
+          <button className="btn ghost" onClick={() => { if (dig === null) loadDig(); setShowDig((v) => !v); }}>Daily email</button>
           <button className="btn ghost" onClick={onClose}>Back to shows</button>
         </div>
       </div>
@@ -10599,6 +10643,80 @@ function BillingScreen({ onClose, onOpenShow }) {
             A link that says <em>never</em> used is one nothing is subscribed to — safe to revoke. A link being used
             that you do not recognise is the reason this list exists.
           </p>
+        </div>
+      ) : null}
+
+      {showDig ? (
+        <div className="bl-subbox">
+          <div className="bl-linkhead">
+            <strong>Daily email</strong>
+            <button className="btn ghost" onClick={() => setShowDig(false)}>Hide</button>
+          </div>
+          {dig === null ? (
+            <Empty>Loading…</Empty>
+          ) : (
+            <>
+              <p className="bl-hint" style={{ marginBottom: 10 }}>
+                One email each morning with what needs doing — invoices to create, waiting on approval, approved but
+                unsent, overdue, and due in the next seven days. Every show at once, ordered by urgency rather than by
+                show. It is the same list as Needs Action, so the two can never disagree, and a morning with nothing
+                waiting sends one line saying so.
+                <br />
+                The admin list is read fresh every morning from who actually has TCG admin, so granting or removing
+                someone changes who gets it without anyone editing anything here.
+              </p>
+              <div className="bl-digrow">
+                <label className="bl-digon">
+                  <input type="checkbox" checked={!!dig.enabled} onChange={(e) => saveDig({ enabled: e.target.checked })} />
+                  <span>Send it</span>
+                </label>
+                <label className="bl-digon">
+                  <input type="checkbox" checked={dig.toAdmins !== false} onChange={(e) => saveDig({ toAdmins: e.target.checked })} />
+                  <span>To every TCG admin</span>
+                </label>
+                <label className="bl-digdays">
+                  <span>Flag invoices</span>
+                  <input
+                    value={dig.prepDays == null ? "" : dig.prepDays}
+                    onChange={(e) => setDig({ ...dig, prepDays: e.target.value })}
+                    onBlur={(e) => saveDig({ prepDays: Number(e.target.value) || 14 })}
+                  />
+                  <span>days before they are due</span>
+                </label>
+                <button className="btn ghost" onClick={testDig}>Send one to me</button>
+              </div>
+              <div className="bl-digrow" style={{ marginTop: 8 }}>
+                <label className="bl-digdays"><span>Also send to</span></label>
+                <input
+                  value={Array.isArray(dig.extra) ? dig.extra.join(", ") : (dig.extra || "")}
+                  placeholder="bookkeeper@example.com, accountant@example.com"
+                  onChange={(e) => setDig({ ...dig, extra: e.target.value })}
+                  onBlur={(e) => saveDig({ extra: e.target.value })}
+                />
+              </div>
+              {dig.recipients ? (
+                <p className="bl-hint">
+                  {dig.recipients.length
+                    ? <>Goes to <strong>{dig.recipients.map((r) => r.name || r.email).join(", ")}</strong>.</>
+                    : "Nobody would receive it — tick TCG admins, or add an address."}
+                </p>
+              ) : null}
+              {digMsg ? <p className="bl-hint">{digMsg}</p> : null}
+              {!dig.cronConfigured ? (
+                <p className="bl-hint" style={{ color: "var(--amber)" }}>
+                  <strong>CRON_SECRET is not set on this deployment</strong>, so the scheduled run will refuse itself and
+                  nothing will arrive. Add it in Vercel → Settings → Environment Variables (any random string of 16+
+                  characters), then redeploy. "Send one now" works regardless — it goes through your own login, not the
+                  schedule.
+                </p>
+              ) : null}
+              <p className="bl-hint">
+                Scheduled for <strong>15:00 UTC</strong>, which is 8am Pacific in summer and 7am in winter — Vercel cron
+                has no timezone and does not follow daylight saving. Change it in <code>vercel.json</code> if the winter
+                hour bothers you. {dig.lastSentOn ? "Last sent " + dig.lastSentOn + "." : "Not sent yet."}
+              </p>
+            </>
+          )}
         </div>
       ) : null}
 
@@ -10971,19 +11089,39 @@ function InvoiceRecord({ invoice, all, event, onClose, onChanged }) {
 function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
   const [state, setState] = useState("loading");
   const [rows, setRows] = useState([]);
+  const [adj, setAdj] = useState([]);
+  const [liveQuote, setLiveQuote] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [openId, setOpenId] = useState(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [newAdj, setNewAdj] = useState({ description: "", amount: "", clientStatus: "proposed" });
 
   const load = useCallback(() => {
     setState("loading");
     return getShowBilling(showId)
-      .then((r) => { setRows((r && r.invoices) || []); setState("idle"); setErr(""); })
+      .then((r) => { setRows((r && r.invoices) || []); setAdj((r && r.adjustments) || []); setState("idle"); setErr(""); })
       .catch((e) => { setErr((e && e.message) || "Couldn't load billing."); setState("error"); });
   }, [showId]);
 
   useEffect(() => { load(); }, [load]);
+
+  /* The quote's total as it stands now, against the baseline frozen into the
+     schedule when it was generated. If they have drifted apart the quote was
+     revised after the fact, and that is a decision for a person, not something
+     to quietly apply. */
+  useEffect(() => {
+    let alive = true;
+    listQuotes()
+      .then((qs) => {
+        if (!alive) return;
+        const mine = (qs || []).filter((x) => x.eventId === showId && x.status === "won");
+        mine.sort((a, b) => (b.version || 0) - (a.version || 0));
+        setLiveQuote(mine[0] || null);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [showId]);
 
   // Arrived here from the Billing queue with a particular invoice in mind. Wait
   // until the rows are in, then open it — once, and only if it is really here.
@@ -11014,6 +11152,61 @@ function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
   const remaining = blNum(quoteTotal - invoiced);
   const overdueCount = live.filter((r) => r.overdue).length;
 
+  /* The brief's final-invoice arithmetic, in its order:
+       accepted quote + approved additions - credits = revised client total
+       revised client total - what has already been invoiced = left to invoice
+     Only APPROVED adjustments count. A proposal the client has not agreed to is
+     not money, and putting it in the total would be quoting yourself. */
+  const approvedAdj = adj.filter((a) => a.clientStatus === "approved");
+  const additions = blNum(approvedAdj.filter((a) => Number(a.amount) > 0).reduce((t, a) => t + Number(a.amount), 0));
+  const credits = blNum(approvedAdj.filter((a) => Number(a.amount) < 0).reduce((t, a) => t + Number(a.amount), 0));
+  const revisedTotal = blNum(quoteTotal + additions + credits);
+  const leftToInvoice = blNum(revisedTotal - invoiced);
+
+  // A quote total that has moved since the schedule was frozen.
+  const drift = liveQuote && quoteTotal && Math.abs(Number(liveQuote.total || 0) - quoteTotal) > 0.004
+    ? { from: quoteTotal, to: blNum(liveQuote.total), quoteId: liveQuote.id, version: liveQuote.version }
+    : null;
+
+  const reconcile = async (mode) => {
+    if (!drift) return;
+    setBusy(true); setErr("");
+    try {
+      const r = await reconcileQuoteChange(drift.quoteId, mode);
+      await load();
+      setErr(
+        mode === "change"
+          ? "Change order added for " + blMoney(r.amount) + ". Give it a due date before you invoice it."
+          : (r.updated || 0) + " milestone" + (r.updated === 1 ? "" : "s") + " updated" + (r.locked ? ", " + r.locked + " left alone because they are already invoiced or paid" : "") + "."
+      );
+    } catch (e) { setErr((e && e.message) || "Couldn't apply that."); }
+    setBusy(false);
+  };
+
+  const addAdj = async () => {
+    if (!newAdj.description.trim() || !qtNum(newAdj.amount)) { setErr("An adjustment needs a description and an amount."); return; }
+    setBusy(true); setErr("");
+    try {
+      await saveAdjustment({ eventId: showId, quoteId: ref ? ref.quoteId : null, ...newAdj, amount: qtNum(newAdj.amount) });
+      setNewAdj({ description: "", amount: "", clientStatus: "proposed" });
+      await load();
+    } catch (e) { setErr((e && e.message) || "Couldn't save it."); }
+    setBusy(false);
+  };
+  const setAdjStatus = async (a, clientStatus) => {
+    setBusy(true);
+    try { await saveAdjustment({ id: a.id, eventId: showId, description: a.description, amount: a.amount, applyTo: a.applyTo, clientStatus }); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't update it."); }
+    setBusy(false);
+  };
+  const removeAdj = async (a) => {
+    if (!window.confirm("Delete \"" + a.description + "\"?")) return;
+    setBusy(true);
+    try { await deleteAdjustment(a.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete it."); }
+    setBusy(false);
+  };
+
   const open = rows.find((r) => r.id === openId) || null;
 
   const history = rows
@@ -11041,6 +11234,24 @@ function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
       </div>
 
       {err ? <div className="bl-err">{err}</div> : null}
+
+      {drift ? (
+        <div className="bl-drift">
+          <div className="bl-drifthead">
+            The accepted quote has changed — {blMoney(drift.from)} → <strong>{blMoney(drift.to)}</strong> (v{drift.version})
+          </div>
+          <p>
+            Nothing has been applied. The schedule below still shows what was agreed when it was built, and anything
+            already invoiced, sent or paid will not be touched whichever you choose.
+          </p>
+          <div className="bl-driftbtns">
+            <button className="btn ghost" disabled={busy} onClick={() => reconcile("recalc")}>Recalculate the uninvoiced milestones</button>
+            <button className="btn ghost" disabled={busy} onClick={() => reconcile("final")}>Put the difference on the last one</button>
+            <button className="btn ghost" disabled={busy} onClick={() => reconcile("change")}>Add a change-order invoice</button>
+            <span className="bl-sub">or leave it exactly as it is — press nothing.</span>
+          </div>
+        </div>
+      ) : null}
 
       {rows.length > 0 && (
         <div className="bl-stats">
@@ -11095,6 +11306,66 @@ function BillingTab({ event, showId, go, openInvoiceId, onInvoiceOpened }) {
           </div>
         )}
       </Panel>
+
+      <Panel
+        title="Billable adjustments"
+        sub="Additions and credits agreed with the client after the quote. Only approved ones move the total."
+      >
+        {!adj.length ? (
+          <Empty>Nothing added or credited on this show.</Empty>
+        ) : (
+          <div className="rows">
+            <div className="rowhead bl-adjgrid"><span>What</span><span>Amount</span><span>Client</span><span>Applies to</span><span /></div>
+            {adj.map((a) => (
+              <div className="row bl-adjgrid" key={a.id}>
+                <span data-l="What">{a.description}</span>
+                <span className={Number(a.amount) < 0 ? "bl-credit" : ""} data-l="Amount">{blMoney(a.amount)}</span>
+                <span data-l="Client">
+                  <select value={a.clientStatus} disabled={busy} onChange={(e) => setAdjStatus(a, e.target.value)}>
+                    <option value="proposed">Proposed</option>
+                    <option value="sent">Sent to client</option>
+                    <option value="approved">Approved</option>
+                    <option value="declined">Declined</option>
+                  </select>
+                </span>
+                <span className="bl-dim" data-l="Applies to">{a.applyTo === "final" ? "Final invoice" : a.applyTo}</span>
+                <span><RemoveBtn onClick={() => removeAdj(a)} /></span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="bl-adjadd">
+          <input value={newAdj.description} placeholder="Additional wireless microphones" onChange={(e) => setNewAdj({ ...newAdj, description: e.target.value })} />
+          <input value={newAdj.amount} placeholder="Amount (negative for a credit)" onChange={(e) => setNewAdj({ ...newAdj, amount: e.target.value })} />
+          <select value={newAdj.clientStatus} onChange={(e) => setNewAdj({ ...newAdj, clientStatus: e.target.value })}>
+            <option value="proposed">Proposed</option>
+            <option value="sent">Sent to client</option>
+            <option value="approved">Approved</option>
+          </select>
+          <button className="btn ghost" disabled={busy} onClick={addAdj}>Add</button>
+        </div>
+        <p className="bl-hint">
+          A negative amount is a credit. Only <strong>Approved</strong> counts towards the revised total — a proposal the
+          client has not agreed to is not money yet, and billing it would be quoting yourself.
+        </p>
+      </Panel>
+
+      {rows.length > 0 && (additions || credits) ? (
+        <Panel title="Final billing" sub="What is left to invoice once the adjustments are counted.">
+          <div className="rows">
+            <div className="row bl-calcgrid"><span>Accepted quote</span><span>{blMoney(quoteTotal)}</span></div>
+            {additions ? <div className="row bl-calcgrid"><span>Approved additions</span><span>{blMoney(additions)}</span></div> : null}
+            {credits ? <div className="row bl-calcgrid"><span>Credits</span><span className="bl-credit">{blMoney(credits)}</span></div> : null}
+            <div className="row bl-calcgrid bl-calcsum"><span>Revised client total</span><span>{blMoney(revisedTotal)}</span></div>
+            <div className="row bl-calcgrid"><span>Already invoiced</span><span>{blMoney(-invoiced)}</span></div>
+            <div className="row bl-calcgrid bl-calcsum"><span>Left to invoice</span><span>{blMoney(leftToInvoice)}</span></div>
+          </div>
+          <p className="bl-hint">
+            Final Billing on the pipeline is complete when the adjustments are settled and the last invoice is approved
+            and sent. The money arriving is a separate question, and it stays visible here until it does.
+          </p>
+        </Panel>
+      ) : null}
 
       {rows.length > 0 && (
         <Panel
@@ -13036,10 +13307,15 @@ const CSS = `
   background:var(--panel); border-right:1px solid var(--line);
   padding:22px 12px 16px;
 }
-.cb .adm-brand{
-  font-family:'Oswald',system-ui,sans-serif; font-size:19px; font-weight:700;
-  letter-spacing:.07em; text-transform:uppercase; color:var(--ink);
-  padding:0 10px 20px;
+.cb .adm-brand{padding:0 10px 20px;}
+.cb .adm-logo{display:block; width:34px; height:auto; margin-bottom:9px;}
+.cb .adm-brandname{
+  font-family:'Oswald',system-ui,sans-serif; font-size:16px; font-weight:700;
+  letter-spacing:.06em; text-transform:uppercase; color:var(--ink); line-height:1.2;
+}
+.cb .adm-ver{
+  font-size:10.5px; font-weight:600; letter-spacing:.08em;
+  color:var(--faint); margin-top:3px; font-variant-numeric:tabular-nums;
 }
 .cb .adm-navbtn{
   display:block; width:100%; text-align:left;
@@ -13066,7 +13342,9 @@ const CSS = `
     padding:8px 10px;
     border-right:0; border-bottom:1px solid var(--line);
   }
-  .cb .adm-brand{display:none;}
+  .cb .adm-brand{display:block; padding:0 6px 0 2px; flex:none;}
+  .cb .adm-logo{width:24px; margin:0;}
+  .cb .adm-brandname, .cb .adm-ver{display:none;}
   .cb .adm-navbtn{width:auto; white-space:nowrap; padding:8px 13px; margin:0;}
   .cb .adm-navbtn.on{box-shadow:inset 0 -3px 0 var(--amber);}
   .cb .adm-div{display:none;}
@@ -14224,6 +14502,42 @@ const CSS = `
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
 
 /* billing home (cloud build) */
+.cb .bl-drift{background:rgba(255,176,32,.07); border:1px solid rgba(255,176,32,.3); border-radius:11px; padding:13px 15px;}
+.cb .bl-drifthead{font-size:14px; font-weight:700; color:var(--amber); margin-bottom:5px;}
+.cb .bl-drift p{margin:0 0 10px; font-size:13px; color:var(--dim); line-height:1.5;}
+.cb .bl-driftbtns{display:flex; gap:7px; flex-wrap:wrap; align-items:center;}
+.cb .bl-adjgrid{grid-template-columns:1.7fr 130px 150px 1fr 44px;}
+.cb .bl-adjadd{display:grid; grid-template-columns:1.7fr 200px 150px auto; gap:7px; margin-top:10px;}
+.cb .bl-adjadd input, .cb .bl-adjadd select{box-sizing:border-box;}
+.cb .bl-credit{color:var(--green);}
+.cb .bl-calcgrid{grid-template-columns:1fr 150px; font-size:13.5px;}
+.cb .bl-calcgrid span:last-child{text-align:right; font-variant-numeric:tabular-nums;}
+.cb .row.bl-calcsum{border-top:1px solid var(--line); padding-top:7px; font-weight:700; color:var(--ink);}
+@media (max-width:900px){
+  .cb .bl-adjadd{grid-template-columns:1fr;}
+  .cb .row.bl-adjgrid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.bl-adjgrid{display:none;}
+  .cb .row.bl-adjgrid > span[data-l]{display:flex; align-items:center; gap:8px;}
+  .cb .row.bl-adjgrid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:80px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+}
+
+.cb .bl-digrow{display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+.cb .bl-digrow > input{flex:1; min-width:220px; box-sizing:border-box;}
+.cb .bl-digon{display:flex; align-items:center; gap:7px; font-size:13px; color:var(--ink); font-weight:600; white-space:nowrap;}
+.cb .bl-digon input{width:auto;}
+.cb .bl-digdays{display:flex; align-items:center; gap:7px; font-size:12.5px; color:var(--dim); white-space:nowrap;}
+.cb .bl-digdays input{width:58px; text-align:center; box-sizing:border-box;}
+.cb .bl-subbox code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; color:var(--ink);}
+@media (max-width:900px){ .cb .bl-digrow{flex-direction:column; align-items:stretch;} .cb .bl-digrow > input{min-width:0;} }
+
+
 .cb .bl-linkhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
 .cb .bl-linkgrid{grid-template-columns:1.2fr 1.3fr 1.3fr 96px 92px;}
 .cb .bl-impgrid{grid-template-columns:1.3fr 1fr 110px 1.7fr 190px;}
@@ -14773,7 +15087,7 @@ function Login({ onDone }) {
             {busy ? "Checking…" : mode === "show" ? "Open show" : "Sign in"}
           </button>
         </div>
-        <div className="login-foot">Crew Call · production hub</div>
+        <div className="login-foot">{APP_NAME} · v{APP_VERSION}</div>
       </div>
     </div>
   );
@@ -14845,8 +15159,11 @@ function SupabaseLogin({ notice: incoming }) {
     setBusy(false);
   };
   return (<div style={wrap}><div style={card}>
-    <h2 style={{ marginTop: 0 }}>Crew Call</h2>
-    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Sign in</p>
+    <div style={{ display: "flex", alignItems: "center", gap: 11, marginBottom: 2 }}>
+      <img src="/logo.png" alt="" width="38" height="34" style={{ display: "block" }} />
+      <h2 style={{ margin: 0, fontSize: 20, lineHeight: 1.15 }}>{APP_NAME}</h2>
+    </div>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: 8, marginBottom: 16 }}>Sign in · v{APP_VERSION}</p>
     {incoming ? (
       <div style={{ background: "rgba(248,113,113,.1)", border: "1px solid #f87171", borderRadius: 9, padding: "10px 12px", fontSize: 13, lineHeight: 1.5, marginBottom: 14, color: "#fca5a5" }}>{incoming}</div>
     ) : null}
@@ -14890,7 +15207,7 @@ function SetPassword({ onDone }) {
   };
   return (<div style={wrap}><div style={card}>
     <h2 style={{ marginTop: 0 }}>Set your password</h2>
-    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Welcome to Crew Call — choose a password to finish setting up your account.</p>
+    <p style={{ color: "#9fb0c8", fontSize: 14, marginTop: -6, marginBottom: 16 }}>Welcome to {APP_NAME} — choose a password to finish setting up your account.</p>
     {done ? <p style={{ color: "#4ade80", fontWeight: 700 }}>✓ All set — signing you in…</p> : (<>
       <input style={inp} type="password" placeholder="New password" value={pw} onChange={(e) => setPw(e.target.value)} />
       <input style={inp} type="password" placeholder="Confirm password" value={pw2} onChange={(e) => setPw2(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") submit(); }} />
