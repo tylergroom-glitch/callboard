@@ -226,6 +226,18 @@ export const voidInvoice = (id, reason) =>
 export const deleteInvoice = (id) =>
   api("DELETE", "/api/billing?id=" + encodeURIComponent(id));
 
+// Bring in what already exists: won quotes that never generated a schedule, and
+// the invoice rows typed by hand on the pipeline before billing existed.
+export const scanBillingImport = () => api("GET", "/api/billing?importScan=1");
+export const importPipelineInvoices = (eventId) =>
+  api("POST", "/api/billing?importPipeline=1", { eventId });
+
+// Calendar links are revocable. The token is shown once, when it is minted;
+// after that the only thing you can do to it is revoke it.
+export const listBillingCalendarLinks = () => api("GET", "/api/billing-calendar?links=1");
+export const revokeBillingCalendarLink = (id) =>
+  api("POST", "/api/billing-calendar?revoke=" + encodeURIComponent(id));
+
 // A signed, year-long subscription link for the billing calendar. Two entries per
 // live milestone — the day to raise it, the day the money is due — and both drop
 // out once it is paid.

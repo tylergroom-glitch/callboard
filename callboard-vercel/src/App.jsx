@@ -71,6 +71,10 @@ import {
   getQuoteTermsPdfMeta,
   listBilling,
   generateBillingCalendarLink,
+  listBillingCalendarLinks,
+  revokeBillingCalendarLink,
+  scanBillingImport,
+  importPipelineInvoices,
   getShowBilling,
   getInvoice,
   generateBilling,
@@ -10315,6 +10319,104 @@ const BL_VIEWS = [
   ["all", "All invoices"],
 ];
 
+/* Bring the back catalogue in.
+
+   Two sources, and the difference matters. A show with a won quote has a real
+   payment schedule, so it imports as proper milestones. A show that predates the
+   quoting system has no schedule — what it has is the invoice rows you typed on
+   the Pipeline, and those import in the state you left them: a row marked Paid
+   arrives paid, because it was.
+
+   Nothing is guessed. A show with neither is not offered, because inventing a
+   schedule for it would be putting made-up numbers into a billing ledger. */
+function BillingImport({ state, setState, onDone }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [done, setDone] = useState({});
+
+  const load = useCallback(() => {
+    setRows(null);
+    return scanBillingImport()
+      .then((r) => { setRows(r || []); setErr(""); })
+      .catch((e) => setErr((e && e.message) || "Couldn't scan for shows to import."));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const runQuote = async (r) => {
+    setBusy(r.eventId); setErr("");
+    try {
+      const res = await generateBilling(r.fromQuote.quoteId);
+      setDone((d) => ({ ...d, [r.eventId]: (res.created || 0) + " milestone" + (res.created === 1 ? "" : "s") + " created" + (res.skipped ? ", " + res.skipped + " left alone" : "") }));
+      await load(); if (onDone) onDone();
+    } catch (e) { setErr((e && e.message) || "Couldn't import that quote."); }
+    setBusy("");
+  };
+  const runPipeline = async (r) => {
+    setBusy(r.eventId); setErr("");
+    try {
+      const res = await importPipelineInvoices(r.eventId);
+      setDone((d) => ({ ...d, [r.eventId]: (res.created || 0) + " invoice" + (res.created === 1 ? "" : "s") + " imported" + (res.skipped ? ", " + res.skipped + " already there" : "") }));
+      await load(); if (onDone) onDone();
+    } catch (e) { setErr((e && e.message) || "Couldn't import those invoices."); }
+    setBusy("");
+  };
+
+  const list = rows || [];
+  const todo = list.filter((r) => r.fromQuote || r.fromPipeline);
+
+  return (
+    <CtgModal title="Import existing shows" wide onClose={() => setState(null)}>
+      <p className="bl-hint" style={{ marginBottom: 12 }}>
+        Everything already in the app that could become a billing record. Import is per show, so you can bring in the
+        ones that matter and leave the rest. Running it twice is safe — anything already imported is skipped, and a
+        milestone that has been invoiced or paid is never touched.
+      </p>
+      {err ? <div className="bl-err">{err}</div> : null}
+
+      {rows === null ? (
+        <Empty>Scanning…</Empty>
+      ) : !todo.length ? (
+        <Empty>Nothing left to import. Every show with a quote schedule or typed pipeline invoices is already in Billing.</Empty>
+      ) : (
+        <div className="rows">
+          <div className="rowhead bl-impgrid"><span>Show</span><span>Client</span><span>In billing</span><span>Available</span><span /></div>
+          {todo.map((r) => (
+            <div className="row bl-impgrid" key={r.eventId}>
+              <span className="bl-name" data-l="Show">{r.name || "Untitled"}</span>
+              <span className="bl-dim" data-l="Client">{r.client || "—"}</span>
+              <span className="bl-dim" data-l="In billing">{r.existing ? r.existing + " invoice" + (r.existing === 1 ? "" : "s") : "none"}</span>
+              <span data-l="Available">
+                {r.fromQuote ? <span className="bl-impsrc">Quote v{r.fromQuote.version} · {r.fromQuote.count} milestones · {blMoney(r.fromQuote.total)}</span> : null}
+                {r.fromPipeline ? <span className="bl-impsrc">Pipeline · {r.fromPipeline.count} typed invoice{r.fromPipeline.count === 1 ? "" : "s"} · {blMoney(r.fromPipeline.total)}</span> : null}
+                {done[r.eventId] ? <span className="bl-impdone">{done[r.eventId]}</span> : null}
+              </span>
+              <span className="bl-impbtns">
+                {r.fromQuote ? (
+                  <button className="btn ghost bl-openbtn" disabled={!!busy} onClick={() => runQuote(r)}>
+                    {busy === r.eventId ? "…" : "From quote"}
+                  </button>
+                ) : null}
+                {r.fromPipeline ? (
+                  <button className="btn ghost bl-openbtn" disabled={!!busy} onClick={() => runPipeline(r)}>
+                    {busy === r.eventId ? "…" : "From pipeline"}
+                  </button>
+                ) : null}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p className="bl-hint" style={{ marginTop: 12 }}>
+        A show with neither a quote schedule nor typed pipeline invoices is not listed. There is nothing to build a
+        schedule from, and inventing one would put made-up figures in a billing ledger. Add its invoices by hand on
+        the show's Billing tab instead.
+      </p>
+    </CtgModal>
+  );
+}
+
 function BillingScreen({ onClose, onOpenShow }) {
   const [rows, setRows] = useState(null);
   const [shows, setShows] = useState([]);
@@ -10324,6 +10426,9 @@ function BillingScreen({ onClose, onOpenShow }) {
   const [err, setErr] = useState("");
   const [sub, setSub] = useState(null);
   const [subBusy, setSubBusy] = useState(false);
+  const [links, setLinks] = useState(null);
+  const [showLinks, setShowLinks] = useState(false);
+  const [imp, setImp] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -10389,11 +10494,20 @@ function BillingScreen({ onClose, onOpenShow }) {
     return ak < bk ? -1 : ak > bk ? 1 : 0;
   });
 
+  const loadLinks = async () => {
+    try { setLinks(await listBillingCalendarLinks()); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the calendar links."); }
+  };
   const doSubscribe = async () => {
     setSubBusy(true);
-    try { setSub(await generateBillingCalendarLink()); }
+    try { setSub(await generateBillingCalendarLink()); await loadLinks(); }
     catch (e) { setErr((e && e.message) || "Couldn't generate the calendar link."); }
     setSubBusy(false);
+  };
+  const doRevoke = async (l) => {
+    if (!window.confirm("Revoke \"" + l.label + "\"?\n\nAnyone subscribed with it stops receiving the calendar straight away. This cannot be undone — issue a new link instead.")) return;
+    try { await revokeBillingCalendarLink(l.id); await loadLinks(); if (sub && sub.id === l.id) setSub(null); }
+    catch (e) { setErr((e && e.message) || "Couldn't revoke it."); }
   };
 
   return (
@@ -10401,7 +10515,9 @@ function BillingScreen({ onClose, onOpenShow }) {
       <div className="cal-top">
         <h1 className="cal-h1">Billing</h1>
         <div className="cal-top-actions">
+          <button className="btn ghost" onClick={() => setImp({ open: true, rows: null, busy: "" })}>Import existing shows</button>
           <button className="btn ghost" disabled={subBusy} onClick={doSubscribe}>Subscribe in calendar</button>
+          <button className="btn ghost" onClick={() => { if (links === null) loadLinks(); setShowLinks((v) => !v); }}>Calendar links</button>
           <button className="btn ghost" onClick={onClose}>Back to shows</button>
         </div>
       </div>
@@ -10413,6 +10529,9 @@ function BillingScreen({ onClose, onOpenShow }) {
           <p>
             Add this to Google or Apple Calendar as a <strong>subscription</strong>, not an import — subscribed, it
             keeps itself current and entries disappear as invoices get paid.
+            <br />
+            <strong>Copy it now.</strong> It is shown once and never again; after this the only thing you can do to it
+            is revoke it. Treat it like a password — anyone holding it can read every client balance without signing in.
           </p>
           <div className="bl-subrow">
             <input readOnly value={sub.url} onFocus={(e) => e.target.select()} />
@@ -10420,6 +10539,45 @@ function BillingScreen({ onClose, onOpenShow }) {
             <a className="btn ghost" href={sub.webcal}>Open in Calendar</a>
           </div>
         </div>
+      ) : null}
+
+      {showLinks ? (
+        <div className="bl-subbox">
+          <div className="bl-linkhead">
+            <strong>Calendar links</strong>
+            <button className="btn ghost" onClick={() => setShowLinks(false)}>Hide</button>
+          </div>
+          {links === null ? (
+            <Empty>Loading…</Empty>
+          ) : !links.length ? (
+            <Empty>None issued yet. Subscribe in calendar makes one.</Empty>
+          ) : (
+            <div className="rows">
+              <div className="rowhead bl-linkgrid"><span>Label</span><span>Issued</span><span>Last used</span><span>State</span><span /></div>
+              {links.map((l) => (
+                <div className={"row bl-linkgrid" + (l.revokedAt ? " bl-void" : "")} key={l.id}>
+                  <span data-l="Label">{l.label}</span>
+                  <span className="bl-dim" data-l="Issued">{l.createdAt ? new Date(l.createdAt).toLocaleDateString() : "—"}{l.createdBy ? " · " + l.createdBy : ""}</span>
+                  <span className="bl-dim" data-l="Last used">{l.lastUsedAt ? new Date(l.lastUsedAt).toLocaleString() : "never"}</span>
+                  <span data-l="State">{l.revokedAt ? <span className="bl-act bad">Revoked</span> : <span className="bl-act good">Active</span>}</span>
+                  <span>{l.revokedAt ? null : <button className="btn danger bl-openbtn" onClick={() => doRevoke(l)}>Revoke</button>}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="bl-hint">
+            A link that says <em>never</em> used is one nothing is subscribed to — safe to revoke. A link being used
+            that you do not recognise is the reason this list exists.
+          </p>
+        </div>
+      ) : null}
+
+      {imp && imp.open ? (
+        <BillingImport
+          state={imp}
+          setState={setImp}
+          onDone={() => listBilling().then((r) => setRows(r || [])).catch(() => {})}
+        />
       ) : null}
 
       {rows === null ? (
@@ -14028,6 +14186,27 @@ const CSS = `
 .cb .diagram-open a{color:var(--amber); font-weight:600; text-decoration:none; font-size:13px;}
 
 /* billing home (cloud build) */
+.cb .bl-linkhead{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px;}
+.cb .bl-linkgrid{grid-template-columns:1.2fr 1.3fr 1.3fr 96px 92px;}
+.cb .bl-impgrid{grid-template-columns:1.3fr 1fr 110px 1.7fr 190px;}
+.cb .bl-impsrc{display:block; font-size:12px; color:var(--dim);}
+.cb .bl-impdone{display:block; font-size:12px; color:var(--green); font-weight:600; margin-top:2px;}
+.cb .bl-impbtns{display:flex; gap:6px; justify-content:flex-end; flex-wrap:wrap;}
+@media (max-width:900px){
+  .cb .row.bl-linkgrid, .cb .row.bl-impgrid{
+    grid-template-columns:1fr; gap:3px;
+    background:var(--panel2); border:1px solid var(--line); border-radius:10px;
+    padding:10px 11px; margin-bottom:7px;
+  }
+  .cb .rowhead.bl-linkgrid, .cb .rowhead.bl-impgrid{display:none;}
+  .cb .row.bl-linkgrid > span[data-l], .cb .row.bl-impgrid > span[data-l]{display:flex; align-items:baseline; gap:8px;}
+  .cb .row.bl-linkgrid > span[data-l]::before, .cb .row.bl-impgrid > span[data-l]::before{
+    content:attr(data-l); flex:none; min-width:80px;
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:700;
+  }
+  .cb .bl-impbtns{justify-content:flex-start; margin-top:6px;}
+}
+
 .cb .bl-cards{display:grid; grid-template-columns:repeat(6,1fr); gap:8px; margin-bottom:16px;}
 .cb .bl-card{text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:11px 13px; cursor:pointer; min-width:0; font-family:inherit;}
 .cb .bl-card:hover{border-color:#3C4454;}
