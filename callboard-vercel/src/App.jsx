@@ -611,8 +611,19 @@ function demoEvent() {
     billableAct: "42000",
   };
 }
+/* Dates in this app are calendar days, not instants — a note written at 8pm on
+   a show night belongs to that show night. toISOString() reports UTC, so from
+   late afternoon Pacific onwards it hands back tomorrow. Read the local
+   calendar fields instead. */
+function ymdLocal(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+}
+function todayLocal() {
+  return ymdLocal(new Date());
+}
 function blankEvent() {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   return {
     id: uid(),
     name: "New Event",
@@ -1695,7 +1706,7 @@ function pipeDerive(row, quote) {
     set("logistics", String(it.hotelName || "").trim() ? "Hotel on the itinerary" : legs + " travel legs booked");
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayLocal();
   if (row.end && row.end < today) set("show", "End date has passed");
 
   // The rest need a quote linked to this show. Shows that predate the quoting
@@ -1762,7 +1773,7 @@ function PipelineBoard({ onClose, onOpenShow }) {
     persist(nr, patchSummary && patchSummary(nr));
     return nr;
   }));
-  const toggleMs = (id, key) => mut(id, (r) => { const m = r.pipe.milestones[key]; m.done = !m.done; if (m.done && !m.date) m.date = new Date().toISOString().slice(0, 10); });
+  const toggleMs = (id, key) => mut(id, (r) => { const m = r.pipe.milestones[key]; m.done = !m.done; if (m.done && !m.date) m.date = todayLocal(); });
   const setMsDate = (id, key, v) => mut(id, (r) => { r.pipe.milestones[key].date = v; });
   const setNotes = (id, v) => mut(id, (r) => { r.pipe.notes = v; });
   const setDates = (id, which, v) => mut(id, (r) => { if (which === "start") r.start = v; else r.end = v; }, (nr) => ({ startDate: nr.start, endDate: nr.end }));
@@ -1797,7 +1808,7 @@ function PipelineBoard({ onClose, onOpenShow }) {
     toggleMs(r.id, k);
   };
   const filtered = (rows || []).filter((r) => { if (filter !== "all" && stageOf(r) !== filter) return false; if (q) { const hay = ((r.name || "") + " " + (r.client || "")).toLowerCase(); if (hay.indexOf(q.toLowerCase()) < 0) return false; } return true; });
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = todayLocal();
   const dueList = [];
   (rows || []).forEach((r) => (r.pipe.invoices || []).forEach((x) => { if ((x.status === "Sent" || x.status === "Overdue") && money(x.amount) > 0) dueList.push({ show: r.name || "Untitled", label: x.label || "", amount: money(x.amount), due: x.dueDate || "", overdue: !!(x.dueDate && x.dueDate < todayStr) }); }));
   dueList.sort((a, b) => (a.due || "9999-99-99").localeCompare(b.due || "9999-99-99"));
@@ -2938,7 +2949,7 @@ const qtShiftDate = (iso, days) => {
   try {
     const d = new Date(iso + "T12:00:00");
     d.setDate(d.getDate() + days);
-    return d.toISOString().slice(0, 10);
+    return ymdLocal(d);
   } catch (e) { return ""; }
 };
 /* start = load-in, end = strike. With no show dates yet a relative milestone
@@ -4465,7 +4476,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const setPaid = async (row, paid, amountNow) => {
     const next = (data.deposits || []).map((x) =>
       x.id === row.id
-        ? { ...x, paid, paidAmount: paid ? Math.round(qtNum(amountNow) * 100) / 100 : undefined, paidDate: paid ? new Date().toISOString().slice(0, 10) : "" }
+        ? { ...x, paid, paidAmount: paid ? Math.round(qtNum(amountNow) * 100) / 100 : undefined, paidDate: paid ? todayLocal() : "" }
         : x
     );
     if (!locked) { setDeposits(next); return; }
@@ -4574,7 +4585,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         );
       }
       e.pull = qtMergePull(e.pull, rows || []);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayLocal();
       e.pipeline = normPipe({
         milestones: won
           ? {
@@ -5283,9 +5294,9 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    is one line rather than a search. Bump APP_VERSION when you deploy something
    worth telling apart — the number under the sidebar title is what you and I
    will both quote when working out which build you are looking at.
-   Minor tracks the round: 1.15.x is round 15. */
+   Minor tracks the round: 1.17.x is round 17. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.17.0";
 
 const ADM_NAV = [
   { key: "shows", label: "Shows" },
@@ -8337,7 +8348,7 @@ function NotesTab({ event, update }) {
       <Panel
         title="Notes"
         sub="Pre-con notes, gear reminders, changes"
-        action={<AddBtn onClick={() => update((ev) => ev.notes.push({ id: uid(), date: new Date().toISOString().slice(0, 10), text: "" }))}>Note</AddBtn>}
+        action={<AddBtn onClick={() => update((ev) => ev.notes.push({ id: uid(), date: todayLocal(), text: "" }))}>Note</AddBtn>}
       >
         <div className="rows">
           {event.notes.map((n, i) => (
@@ -9528,7 +9539,7 @@ function DocumentsTab({ event, update }) {
 function RecordsTab({ event, update }) {
   const add = () =>
     update((ev) =>
-      ev.records.push({ id: uid(), date: new Date().toISOString().slice(0, 10), crew: "", type: "Post-show note", text: "" })
+      ev.records.push({ id: uid(), date: todayLocal(), crew: "", type: "Post-show note", text: "" })
     );
   return (
     <div className="stack">
