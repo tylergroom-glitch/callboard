@@ -226,6 +226,18 @@ export const voidInvoice = (id, reason) =>
 export const deleteInvoice = (id) =>
   api("DELETE", "/api/billing?id=" + encodeURIComponent(id));
 
+// A quote whose total moved after its schedule was built. Nothing happens
+// automatically — the Billing tab asks, and this does whichever you chose.
+// mode: "recalc" | "final" | "change"
+export const reconcileQuoteChange = (quoteId, mode) =>
+  api("POST", "/api/billing?reconcile=1", { quoteId, mode });
+
+// Daily digest settings and manual runs.
+export const getDigestSettings = () => api("GET", "/api/billing-digest?settings=1");
+export const saveDigestSettings = (s) => api("POST", "/api/billing-digest?settings=1", s);
+export const previewDigest = () => api("GET", "/api/billing-digest?preview=1");
+export const sendTestDigest = () => api("POST", "/api/billing-digest?test=1");
+
 // Bring in what already exists: won quotes that never generated a schedule, and
 // the invoice rows typed by hand on the pipeline before billing existed.
 export const scanBillingImport = () => api("GET", "/api/billing?importScan=1");
