@@ -469,6 +469,163 @@ export default async function handler(req, res) {
       });
     }
 
+    /* ---- importing what already exists -------------------------------------
+       Two sources, and they are different in kind.
+
+       A show with a won quote has a real payment schedule behind it, so it
+       imports as proper milestones — same path as generation.
+
+       A show that predates the quoting system has no schedule. What it has is
+       the invoice rows you typed by hand on the Pipeline: a label, an amount, a
+       sent date, a due date and a status. Those are a genuine record of what was
+       billed, so they import as invoices already in the state they were left in
+       — a row marked Paid arrives paid, with a payment against it, because it
+       was. Nothing is invented: no percentages, no milestone types beyond what
+       the ordering tells us.
+    ------------------------------------------------------------------------ */
+    if (q.importScan) {
+      if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
+
+      // Only the pipe sub-object, not the whole show blob — a show's data holds
+      // rundowns and pull lists and is not something to pull down in bulk.
+      const shows = await supabaseRest(
+        "GET",
+        "/shows?select=id,name,client,start_date,end_date,pipe:data->pipe&order=start_date.desc.nullslast",
+        null
+      );
+      const quotes = await supabaseRest(
+        "GET",
+        "/quotes?status=eq.won&select=id,event_id,version,total,data&order=version.desc",
+        null
+      );
+      const existing = await supabaseRest("GET", "/billing_invoices?select=id,event_id,milestone_key", null);
+
+      const haveByEvent = {};
+      const keysByEvent = {};
+      (existing || []).forEach((r) => {
+        if (!r.event_id) return;
+        haveByEvent[r.event_id] = (haveByEvent[r.event_id] || 0) + 1;
+        (keysByEvent[r.event_id] = keysByEvent[r.event_id] || []).push(r.milestone_key || "");
+      });
+      const quoteByEvent = {};
+      (quotes || []).forEach((qq) => {
+        if (!qq.event_id) return;
+        if (!quoteByEvent[qq.event_id]) quoteByEvent[qq.event_id] = qq;  // newest version wins
+      });
+
+      const out = (shows || []).map((sh) => {
+        const qq = quoteByEvent[sh.id] || null;
+        const deps = qq && qq.data && Array.isArray(qq.data.deposits) ? qq.data.deposits : [];
+        const pipeRows = (sh.pipe && Array.isArray(sh.pipe.invoices) ? sh.pipe.invoices : [])
+          .filter((x) => x && (String(x.label || "").trim() || num(x.amount)));
+        const already = keysByEvent[sh.id] || [];
+        const newPipe = pipeRows.filter((x) => already.indexOf("pipe:" + x.id) < 0);
+        return {
+          eventId: sh.id,
+          name: sh.name || "",
+          client: sh.client || "",
+          startDate: sh.start_date || "",
+          existing: haveByEvent[sh.id] || 0,
+          fromQuote: deps.length
+            ? { quoteId: qq.id, version: qq.version, count: deps.length, total: money(qq.total) }
+            : null,
+          fromPipeline: newPipe.length
+            ? { count: newPipe.length, total: money(newPipe.reduce((t, x) => t + num(x.amount), 0)) }
+            : null,
+        };
+      }).filter((r) => r.fromQuote || r.fromPipeline || r.existing);
+
+      return json(res, 200, out);
+    }
+
+    if (q.importPipeline) {
+      if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+      const b = await readBody(req);
+      const eventId = b.eventId;
+      if (!eventId) return json(res, 400, { error: "eventId required" });
+
+      const shows = await supabaseRest(
+        "GET",
+        "/shows?id=eq." + encodeURIComponent(eventId) + "&select=id,name,pipe:data->pipe",
+        null
+      );
+      const sh = shows && shows[0];
+      if (!sh) return json(res, 404, { error: "Show not found" });
+      const rows = (sh.pipe && Array.isArray(sh.pipe.invoices) ? sh.pipe.invoices : [])
+        .filter((x) => x && (String(x.label || "").trim() || num(x.amount)));
+      if (!rows.length) return json(res, 400, { error: "There are no typed invoice rows on this show's pipeline." });
+
+      const existing = await supabaseRest(
+        "GET",
+        "/billing_invoices?event_id=eq." + encodeURIComponent(eventId) + "&select=milestone_key",
+        null
+      );
+      const have = (existing || []).map((r) => r.milestone_key || "");
+
+      const who = await actorName(p);
+      const nowIso = new Date().toISOString();
+      const grand = money(rows.reduce((t, x) => t + num(x.amount), 0));
+      let created = 0, skipped = 0;
+
+      for (let i = 0; i < rows.length; i++) {
+        const x = rows[i];
+        const key = "pipe:" + (x.id || i);
+        if (have.indexOf(key) >= 0) { skipped++; continue; }
+
+        const amount = money(x.amount);
+        const st = String(x.status || "").toLowerCase();
+        const isPaid = st === "paid";
+        const isSent = isPaid || st === "sent" || st === "overdue";
+
+        const row = {
+          event_id: eventId,
+          quote_id: null,
+          milestone_key: key,
+          sort_order: i,
+          milestone_type: rows.length === 1 ? "full" : i === 0 ? "deposit" : i === rows.length - 1 ? "final" : "interim",
+          label: String(x.label || "").trim() || "Invoice",
+          pct: 0,
+          scheduled_amount: amount,
+          planned_send_date: x.date || null,
+          scheduled_due_date: x.dueDate || x.date || null,
+          quote_total_at_generation: grand,
+          // It was a real invoice, so the actual columns are the truthful place
+          // for its figures — not just the schedule.
+          actual_amount: amount,
+          actual_invoice_date: x.date || null,
+          actual_due_date: x.dueDate || x.date || null,
+          qb_link: String(x.link || ""),
+          status: isSent ? "sent" : "drafted_in_qb",
+          sent_at: isSent ? (x.date ? x.date + "T12:00:00Z" : nowIso) : null,
+          sent_by: isSent ? who : "",
+          payments: isPaid
+            ? [{
+                id: "imported-" + key,
+                date: x.dueDate || x.date || today(),
+                amount,
+                method: "",
+                reference: "",
+                note: "Imported from the pipeline, where this row was marked paid",
+                recordedBy: who,
+                recordedAt: nowIso,
+              }]
+            : [],
+          reconciliation_status: "matches",
+          created_by: who,
+          history: [{
+            at: nowIso,
+            by: who,
+            action: "imported",
+            note: "From the pipeline's typed invoice rows" + (x.status ? " (was marked " + x.status + ")" : ""),
+          }],
+          updated_at: nowIso,
+        };
+        await supabaseRest("POST", "/billing_invoices", row, "return=minimal");
+        created++;
+      }
+      return json(res, 200, { ok: true, created, skipped });
+    }
+
     /* ---- payments ---------------------------------------------------------- */
     if (q.payment || q.paymentId) {
       if (!q.id) return json(res, 400, { error: "id required" });
