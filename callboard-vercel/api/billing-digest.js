@@ -231,7 +231,7 @@ function render(b, host) {
     '<p style="font:13px/1.6 -apple-system,Segoe UI,sans-serif;color:#666;margin:24px 0 0;border-top:1px solid #e5e5e5;padding-top:12px">' +
     "Outstanding " + money(b.totals.outstanding) +
     (b.totals.overdue ? " · overdue " + money(b.totals.overdue) : "") +
-    (host ? '<br><a href="https://' + esc(host) + '/" style="color:#00699F">Open Crew Call</a>' : "") +
+    (host ? '<br><a href="https://' + esc(host) + '/" style="color:#00699F">Open Touchstone Command</a>' : "") +
     "</p></div>";
 }
 
