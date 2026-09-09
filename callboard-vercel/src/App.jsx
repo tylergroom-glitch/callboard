@@ -2117,6 +2117,241 @@ function PeopleAccess({ events, onClose }) {
    ============================================================ */
 
 const CTG_DEPTS = ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"];
+
+/* ---------------------------------------------------------------------------
+   Reconcile the case inventory against the pricing catalog.
+
+   The two answer different questions — the inventory says what is in a case,
+   the catalog says what a thing costs — so they drift. This finds the three
+   ways they disagree and lets you fix each one deliberately.
+
+   Matching is on item name, case-insensitively, which is the same rule the
+   rest of the app already uses for catalog and inventory upserts.
+--------------------------------------------------------------------------- */
+const ciKey = (s) => String(s || "").trim().toLowerCase();
+const num = (v) => { const n = parseInt(String(v ?? "").replace(/[^0-9]/g, ""), 10); return Number.isFinite(n) ? n : 0; };
+
+function reconcile(invCases, catItems) {
+  // What the cases collectively contain. Each inventory case is one physical
+  // case, so quantities SUM across cases: four monitors in one and two in
+  // another means six.
+  const inCases = new Map();
+  (invCases || []).forEach((c) => {
+    const items = (c.data && Array.isArray(c.data.items)) ? c.data.items : [];
+    items.forEach((it) => {
+      const k = ciKey(it.item);
+      if (!k) return;
+      const g = inCases.get(k) || { key: k, name: String(it.item).trim(), department: "Misc", qty: 0, cases: [], anyOwned: false };
+      g.name = String(it.item).trim();
+      g.department = ["Audio","Video","Lighting","Power","Scenic","Misc"].indexOf(c.category) >= 0 ? c.category : "Misc";
+      const owned = String(it.source || "").toLowerCase() === "tcg";
+      if (owned) { g.qty += num(it.qty); g.anyOwned = true; }
+      if (g.cases.indexOf(c.name) < 0) g.cases.push(c.name);
+      inCases.set(k, g);
+    });
+  });
+
+  const catByKey = new Map((catItems || []).map((c) => [ciKey(c.name), c]));
+
+  const missing = [];   // in your cases, absent from the catalog
+  const mismatch = [];  // in both, but the catalog's Qty owned disagrees
+  inCases.forEach((g, k) => {
+    const hit = catByKey.get(k);
+    if (!hit) { missing.push(g); return; }
+    // Only flag a count when the cases actually claim ownership. An item that
+    // is only ever sub-rented tells us nothing about what we own.
+    if (!g.anyOwned) return;
+    if (num(hit.qtyOwned) !== g.qty) mismatch.push({ ...g, cat: hit, catQty: num(hit.qtyOwned) });
+  });
+
+  // Catalog rows nothing contains. Often correct — labour, packages, services
+  // and sub-rented gear have no case — so this is for review, not cleanup.
+  const catalogOnly = (catItems || []).filter((c) => !inCases.has(ciKey(c.name)));
+
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  return {
+    missing: missing.sort(byName),
+    mismatch: mismatch.sort(byName),
+    catalogOnly: catalogOnly.slice().sort(byName),
+    matched: inCases.size - missing.length,
+    totalInCases: inCases.size,
+  };
+}
+
+function CatalogReconcile({ onClose, onDone }) {
+  const [step, setStep] = useState("loading");
+  const [err, setErr] = useState("");
+  const [rec, setRec] = useState(null);
+  const [pickAdd, setPickAdd] = useState(new Set());
+  const [pickQty, setPickQty] = useState(new Set());
+  const [prog, setProg] = useState({ done: 0, total: 0 });
+  const [result, setResult] = useState(null);
+
+  const load = async () => {
+    setErr(""); setStep("loading");
+    try {
+      const [inv, cat] = await Promise.all([listInventory(), listCatalog()]);
+      const r = reconcile(inv, cat);
+      setRec(r);
+      // Nothing is ticked. This screen exists because you wanted to choose.
+      setPickAdd(new Set());
+      setPickQty(new Set());
+      setStep("review");
+    } catch (ex) {
+      setErr((ex && ex.message) || "Couldn't read your inventory or catalog.");
+      setStep("review");
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const toggle = (setter) => (k) =>
+    setter((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const allOf = (setter, keys) => (on) => setter(on ? new Set(keys) : new Set());
+
+  const apply = async () => {
+    const adds = rec.missing.filter((g) => pickAdd.has(g.key));
+    const qtys = rec.mismatch.filter((g) => pickQty.has(g.key));
+    setErr(""); setStep("working");
+    setProg({ done: 0, total: (adds.length ? 1 : 0) + qtys.length });
+    let added = 0, fixed = 0, failed = [];
+    try {
+      if (adds.length) {
+        await bulkCatalogImport(adds.map((g) => ({
+          name: g.name, department: g.department, rate: "",
+          qtyOwned: g.anyOwned && g.qty ? String(g.qty) : "",
+          subCost: "", isGeneric: false, substitutes: [], components: [],
+          notes: "In " + g.cases.join(", "),
+        })));
+        added = adds.length;
+        setProg((p) => ({ ...p, done: p.done + 1 }));
+      }
+      for (const g of qtys) {
+        try {
+          // Spread the existing row so only Qty owned moves — rates, notes,
+          // substitutes and components all survive untouched.
+          await saveCatalogItem({ ...g.cat, qtyOwned: String(g.qty) });
+          fixed++;
+        } catch (ex) { failed.push(g.name); }
+        setProg((p) => ({ ...p, done: p.done + 1 }));
+      }
+      setResult({ added, fixed, failed });
+      setStep("done");
+    } catch (ex) {
+      setErr((ex && ex.message) || "Update failed. Anything before the failure was saved.");
+      setStep("review");
+    }
+  };
+
+  const Section = ({ title, hint, rows, picked, onToggle, onAll, render }) => (
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ fontWeight: 700, fontSize: 13 }}>{title} ({rows.length})</div>
+        {rows.length > 0 && onAll && (
+          <>
+            <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => onAll(true)}>All</button>
+            <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => onAll(false)}>None</button>
+            <span style={{ color: "var(--dim)", fontSize: 12 }}>{picked.size} selected</span>
+          </>
+        )}
+      </div>
+      <div style={{ color: "var(--dim)", fontSize: 12, margin: "3px 0 6px" }}>{hint}</div>
+      <div style={{ maxHeight: 190, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
+        {rows.length === 0
+          ? <div style={{ padding: 12, color: "var(--dim)", fontSize: 13 }}>Nothing here — these two agree.</div>
+          : rows.map(render)}
+      </div>
+    </div>
+  );
+
+  const line = (on, onToggle, left, right) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--line)", cursor: onToggle ? "pointer" : "default" }}>
+      {onToggle ? <input type="checkbox" checked={on} onChange={onToggle} /> : <span style={{ width: 13 }} />}
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</span>
+      <span style={{ color: "var(--dim)", fontSize: 12, whiteSpace: "nowrap" }}>{right}</span>
+    </label>
+  );
+
+  return (
+    <div style={ctgOv} onClick={(e) => { if (e.target === e.currentTarget && step !== "working") onClose(); }}>
+      <div style={{ ...ctgCard, maxWidth: 780 }}>
+        <h3 style={{ margin: "0 0 4px" }}>Inventory and catalog</h3>
+        <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+          Where your saved cases and your pricing catalog disagree. Tick what you want changed — nothing
+          happens on its own.
+        </p>
+        {err && <div style={{ background: "rgba(179,38,30,.15)", color: "#F08A84", padding: "8px 10px", borderRadius: 8, marginBottom: 12, fontSize: 13 }}>{err}</div>}
+
+        {step === "loading" && <div style={{ padding: "26px 0", color: "var(--dim)" }}>Reading your inventory and catalog…</div>}
+
+        {step === "review" && rec && (
+          <>
+            <div style={{ fontSize: 13, color: "var(--dim)" }}>
+              <b style={{ color: "var(--text, #E6EDF7)" }}>{rec.matched}</b> of {rec.totalInCases} items in your cases are already priced.
+            </div>
+
+            <Section
+              title="In your cases, not in the catalog"
+              hint="Add these so you can quote them. Rates come across blank; Qty owned is seeded from the cases."
+              rows={rec.missing} picked={pickAdd}
+              onAll={allOf(setPickAdd, rec.missing.map((g) => g.key))}
+              render={(g) => line(pickAdd.has(g.key), () => toggle(setPickAdd)(g.key), g.name,
+                `${g.department}${g.anyOwned && g.qty ? ` · own ${g.qty}` : ""} · ${g.cases.join(", ")}`)}
+            />
+
+            <Section
+              title="Qty owned disagrees"
+              hint="Your cases hold a different number than the catalog says you own. Ticking updates the catalog to match the cases; nothing else on the item is touched."
+              rows={rec.mismatch} picked={pickQty}
+              onAll={allOf(setPickQty, rec.mismatch.map((g) => g.key))}
+              render={(g) => line(pickQty.has(g.key), () => toggle(setPickQty)(g.key), g.name,
+                `catalog ${g.catQty} → cases ${g.qty}`)}
+            />
+
+            <Section
+              title="In the catalog, not in any case"
+              hint="Usually correct — labour, packages, services and gear you only ever sub-rent have no case. Shown so you can spot anything that should have one."
+              rows={rec.catalogOnly} picked={new Set()}
+              render={(c) => line(false, null, c.name, c.department || "Misc")}
+            />
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+              <button className="btn ghost" onClick={onClose}>Close</button>
+              <button className="btn" onClick={apply} disabled={pickAdd.size === 0 && pickQty.size === 0}>
+                {pickAdd.size === 0 && pickQty.size === 0
+                  ? "Nothing selected"
+                  : "Apply" + (pickAdd.size ? ` · add ${pickAdd.size}` : "") + (pickQty.size ? ` · fix ${pickQty.size}` : "")}
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "working" && (
+          <div style={{ padding: "26px 0" }}>
+            <div style={{ marginBottom: 8 }}>Updating… {prog.done} of {prog.total}</div>
+            <div style={{ height: 6, background: "var(--line)", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ height: "100%", width: `${prog.total ? (prog.done / prog.total) * 100 : 0}%`, background: "#00699F" }} />
+            </div>
+          </div>
+        )}
+
+        {step === "done" && result && (
+          <>
+            <div style={{ fontSize: 14, lineHeight: 1.8 }}>
+              <div><b>{result.added}</b> item{result.added === 1 ? "" : "s"} added to the catalog, unpriced</div>
+              <div><b>{result.fixed}</b> Qty owned corrected</div>
+              {result.failed.length > 0 && <div style={{ color: "#E0A34A", marginTop: 8 }}>Could not update: {result.failed.join(", ")}</div>}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+              <button className="btn ghost" onClick={load}>Check again</button>
+              <button className="btn" onClick={() => { onDone && onDone(); onClose(); }}>Done</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const CTG_DEPT_COLOR = { Audio: "#5FD08A", Video: "#5A7FE0", Lighting: "#FFB020", Power: "#FF6B6B", Scenic: "#C77DA0", Misc: "#96A0B2" };
 const ctgMoney = (n) => "$" + (Math.round((Number(n) || 0) * 100) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const ctgOv = { position: "fixed", inset: 0, background: "rgba(4,8,18,0.72)", display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "40px 16px", zIndex: 2000, overflowY: "auto" };
@@ -2377,6 +2612,7 @@ function CatalogItems() {
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
   const [wizard, setWizard] = useState(false);
+  const [catRecon, setCatRecon] = useState(false);
   const [notice, setNotice] = useState("");
   const [sel, setSel] = useState(() => new Set());
 
@@ -2445,6 +2681,7 @@ function CatalogItems() {
         <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search items…" style={{ flex: "1 1 200px" }} />
         <button className="btn" onClick={() => setDraft({ name: "", department: "Misc", rate: "", qtyOwned: "", subCost: "", isGeneric: false, substitutes: [], components: [], notes: "" })}>+ Add item</button>
         <button className="btn ghost" onClick={() => setWizard(true)}>Import from quote PDF</button>
+        <button className="btn ghost" onClick={() => setCatRecon(true)} title="Compare your saved cases against the catalog">Match to inventory</button>
       </div>
       <div style={{ ...ctgRow, marginBottom: 14 }}>
         <button onClick={() => setDept("")} style={ctgChip(!dept, "#96A0B2")}>All ({items.length})</button>
@@ -2521,6 +2758,13 @@ function CatalogItems() {
         <CtgImportWizard
           onCancel={() => setWizard(false)}
           onDone={async (n) => { setWizard(false); setNotice("Imported " + n + " items."); await load(); }}
+        />
+      ) : null}
+
+      {catRecon ? (
+        <CatalogReconcile
+          onClose={() => setCatRecon(false)}
+          onDone={async () => { setNotice("Catalog updated from your inventory."); await load(); }}
         />
       ) : null}
     </div>
@@ -5294,9 +5538,9 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    is one line rather than a search. Bump APP_VERSION when you deploy something
    worth telling apart — the number under the sidebar title is what you and I
    will both quote when working out which build you are looking at.
-   Minor tracks the round: 1.17.x is round 17. */
+   Minor tracks the round: 1.18.x is round 18. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.17.0";
+const APP_VERSION = "1.18.0";
 
 const ADM_NAV = [
   { key: "shows", label: "Shows" },
