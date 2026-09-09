@@ -2178,6 +2178,56 @@ function reconcile(invCases, catItems) {
   };
 }
 
+/* Section and Row live at module scope on purpose. Defined inside
+   CatalogReconcile they would be a NEW component type on every render, so
+   React would unmount and remount the list — which is exactly why ticking a
+   box scrolled you back to the top. */
+function CrRow({ on, onToggle, name, dept, meta }) {
+  return (
+    <label className="cr-row">
+      {onToggle ? <input type="checkbox" checked={on} onChange={onToggle} /> : <span className="cr-spacer" />}
+      <span className="cr-name">{name}</span>
+      {dept && <span className="cr-dept" style={{ background: (CTG_DEPT_COLOR[dept] || "#96A0B2") + "22", color: CTG_DEPT_COLOR[dept] || "#96A0B2" }}>{dept}</span>}
+      {meta && <span className="cr-meta">{meta}</span>}
+    </label>
+  );
+}
+
+function CrSection({ title, hint, rows, picked, setPicked, keyOf, find, setFind, render, selectable }) {
+  const q = (find || "").trim().toLowerCase();
+  const shown = q ? rows.filter((r) => String(r.name || "").toLowerCase().indexOf(q) >= 0) : rows;
+  return (
+    <div>
+      <div className="cr-head">
+        <span className="cr-title">{title} ({rows.length})</span>
+        {selectable && rows.length > 0 && (
+          <>
+            {/* All/None act on what is FILTERED, so searching then pressing All
+                selects the thing you searched for rather than everything. */}
+            <button className="cr-mini" onClick={() => setPicked((s) => { const n = new Set(s); shown.forEach((r) => n.add(keyOf(r))); return n; })}>
+              All{q ? " shown" : ""}
+            </button>
+            <button className="cr-mini" onClick={() => setPicked((s) => { const n = new Set(s); shown.forEach((r) => n.delete(keyOf(r))); return n; })}>
+              None{q ? " shown" : ""}
+            </button>
+            <span className="cr-count">{picked.size} selected</span>
+          </>
+        )}
+      </div>
+      <div className="cr-hint">{hint}</div>
+      {rows.length > 8 && (
+        <input className="cr-find" value={find} onChange={(e) => setFind(e.target.value)}
+          placeholder={"Filter " + rows.length + " items…"} />
+      )}
+      <div className="cr-list">
+        {shown.length === 0
+          ? <div className="cr-empty">{rows.length === 0 ? "Nothing here — these two agree." : "Nothing matches that filter."}</div>
+          : shown.map(render)}
+      </div>
+    </div>
+  );
+}
+
 function CatalogReconcile({ onClose, onDone }) {
   const [step, setStep] = useState("loading");
   const [err, setErr] = useState("");
@@ -2186,6 +2236,9 @@ function CatalogReconcile({ onClose, onDone }) {
   const [pickQty, setPickQty] = useState(new Set());
   const [prog, setProg] = useState({ done: 0, total: 0 });
   const [result, setResult] = useState(null);
+  const [fMiss, setFMiss] = useState("");
+  const [fQty, setFQty] = useState("");
+  const [fOnly, setFOnly] = useState("");
 
   const load = async () => {
     setErr(""); setStep("loading");
@@ -2242,35 +2295,6 @@ function CatalogReconcile({ onClose, onDone }) {
     }
   };
 
-  const Section = ({ title, hint, rows, picked, onToggle, onAll, render }) => (
-    <div style={{ marginTop: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ fontWeight: 700, fontSize: 13 }}>{title} ({rows.length})</div>
-        {rows.length > 0 && onAll && (
-          <>
-            <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => onAll(true)}>All</button>
-            <button className="btn ghost" style={{ padding: "2px 8px", fontSize: 12 }} onClick={() => onAll(false)}>None</button>
-            <span style={{ color: "var(--dim)", fontSize: 12 }}>{picked.size} selected</span>
-          </>
-        )}
-      </div>
-      <div style={{ color: "var(--dim)", fontSize: 12, margin: "3px 0 6px" }}>{hint}</div>
-      <div style={{ maxHeight: 190, overflowY: "auto", border: "1px solid var(--line)", borderRadius: 8 }}>
-        {rows.length === 0
-          ? <div style={{ padding: 12, color: "var(--dim)", fontSize: 13 }}>Nothing here — these two agree.</div>
-          : rows.map(render)}
-      </div>
-    </div>
-  );
-
-  const line = (on, onToggle, left, right) => (
-    <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 8px", borderBottom: "1px solid var(--line)", cursor: onToggle ? "pointer" : "default" }}>
-      {onToggle ? <input type="checkbox" checked={on} onChange={onToggle} /> : <span style={{ width: 13 }} />}
-      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{left}</span>
-      <span style={{ color: "var(--dim)", fontSize: 12, whiteSpace: "nowrap" }}>{right}</span>
-    </label>
-  );
-
   return (
     <div style={ctgOv} onClick={(e) => { if (e.target === e.currentTarget && step !== "working") onClose(); }}>
       <div style={{ ...ctgCard, maxWidth: 780 }}>
@@ -2289,29 +2313,36 @@ function CatalogReconcile({ onClose, onDone }) {
               <b style={{ color: "var(--text, #E6EDF7)" }}>{rec.matched}</b> of {rec.totalInCases} items in your cases are already priced.
             </div>
 
-            <Section
+            <CrSection
               title="In your cases, not in the catalog"
               hint="Add these so you can quote them. Rates come across blank; Qty owned is seeded from the cases."
-              rows={rec.missing} picked={pickAdd}
-              onAll={allOf(setPickAdd, rec.missing.map((g) => g.key))}
-              render={(g) => line(pickAdd.has(g.key), () => toggle(setPickAdd)(g.key), g.name,
-                `${g.department}${g.anyOwned && g.qty ? ` · own ${g.qty}` : ""} · ${g.cases.join(", ")}`)}
+              rows={rec.missing} picked={pickAdd} setPicked={setPickAdd} keyOf={(g) => g.key}
+              find={fMiss} setFind={setFMiss} selectable
+              render={(g) => (
+                <CrRow key={g.key} on={pickAdd.has(g.key)} onToggle={() => toggle(setPickAdd)(g.key)}
+                  name={g.name} dept={g.department}
+                  meta={(g.anyOwned && g.qty ? "own " + g.qty + " · " : "") + g.cases.join(", ")} />
+              )}
             />
 
-            <Section
+            <CrSection
               title="Qty owned disagrees"
               hint="Your cases hold a different number than the catalog says you own. Ticking updates the catalog to match the cases; nothing else on the item is touched."
-              rows={rec.mismatch} picked={pickQty}
-              onAll={allOf(setPickQty, rec.mismatch.map((g) => g.key))}
-              render={(g) => line(pickQty.has(g.key), () => toggle(setPickQty)(g.key), g.name,
-                `catalog ${g.catQty} → cases ${g.qty}`)}
+              rows={rec.mismatch} picked={pickQty} setPicked={setPickQty} keyOf={(g) => g.key}
+              find={fQty} setFind={setFQty} selectable
+              render={(g) => (
+                <CrRow key={g.key} on={pickQty.has(g.key)} onToggle={() => toggle(setPickQty)(g.key)}
+                  name={g.name} dept={g.department}
+                  meta={<span className="cr-qty">{g.catQty} → {g.qty}</span>} />
+              )}
             />
 
-            <Section
+            <CrSection
               title="In the catalog, not in any case"
               hint="Usually correct — labour, packages, services and gear you only ever sub-rent have no case. Shown so you can spot anything that should have one."
-              rows={rec.catalogOnly} picked={new Set()}
-              render={(c) => line(false, null, c.name, c.department || "Misc")}
+              rows={rec.catalogOnly} picked={new Set()} setPicked={() => {}} keyOf={(c) => c.id || c.name}
+              find={fOnly} setFind={setFOnly}
+              render={(c) => <CrRow key={c.id || c.name} name={c.name} dept={c.department || "Misc"} />}
             />
 
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
@@ -5540,7 +5571,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.18.x is round 18. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.18.0";
+const APP_VERSION = "1.18.1";
 
 const ADM_NAV = [
   { key: "shows", label: "Shows" },
@@ -15096,6 +15127,28 @@ const CSS = `
 .pl-invrow input { width:16px; height:16px; flex-shrink:0; cursor:pointer; }
 .pl-invname { flex:1; font-size:13px; font-weight:600; color:var(--ink); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .pl-invmeta { font-size:11.5px; color:var(--faint); flex-shrink:0; }
+
+/* Inventory / catalog reconcile. The checkbox needs an explicit size: the
+   global .cb input rule sets width:100%, which stretches it otherwise and
+   squeezes the name out of the row entirely. */
+.cr-head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-top:16px; }
+.cr-title { font-weight:700; font-size:13px; color:var(--ink); }
+.cr-mini { border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:6px; padding:2px 9px; font-size:11.5px; font-weight:600; cursor:pointer; }
+.cr-mini:hover { color:var(--ink); }
+.cr-count { font-size:11.5px; color:var(--faint); }
+.cr-hint { font-size:11.5px; color:var(--faint); margin:4px 0 7px; line-height:1.45; }
+.cr-find { width:100%; box-sizing:border-box; margin-bottom:7px; padding:6px 9px !important; font-size:12.5px !important; }
+.cr-list { max-height:270px; overflow-y:auto; border:1px solid var(--line); border-radius:9px; }
+.cr-empty { padding:14px; color:var(--faint); font-size:12.5px; }
+.cr-row { display:flex; align-items:center; gap:9px; padding:7px 10px; border-bottom:1px solid var(--line); cursor:pointer; }
+.cr-row:last-child { border-bottom:none; }
+.cr-row:hover { background:var(--panel2); }
+.cr-row input[type="checkbox"] { width:15px; height:15px; flex:0 0 auto; margin:0; padding:0; cursor:pointer; accent-color:var(--amber); }
+.cr-spacer { width:15px; flex:0 0 auto; }
+.cr-name { flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cr-meta { font-size:11.5px; color:var(--faint); flex-shrink:0; white-space:nowrap; }
+.cr-dept { font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; padding:2px 7px; border-radius:9px; flex-shrink:0; }
+.cr-qty { font-size:11.5px; font-weight:700; color:var(--amber); flex-shrink:0; white-space:nowrap; }
 .pl-sheetimport { border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:10px; }
 .pl-sheetrow { display:flex; gap:8px; align-items:center; }
 .pl-sheetpreview { margin-top:8px; }
