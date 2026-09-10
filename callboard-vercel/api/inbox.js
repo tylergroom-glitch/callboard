@@ -50,18 +50,47 @@ function sameSecret(a, b) {
 /* Twilio signs every request: base64 HMAC-SHA1 over the full URL followed by
    each POST parameter, sorted by name, key and value concatenated. Without
    this the SMS endpoint is an open door for anyone who finds the URL. */
+/* Behind Vercel's proxy the host and path Twilio signed are not always the ones
+   this function sees, so every plausible spelling is tried rather than one.
+   A wrong guess costs a hash; a missed match costs a silently dropped text. */
+function twilioSignedUrls(req) {
+  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
+  const hosts = [];
+  const fwd = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
+  if (fwd) hosts.push(fwd);
+  if (req.headers.host && hosts.indexOf(req.headers.host) < 0) hosts.push(req.headers.host);
+  const url = req.url || "/api/inbox";
+  const paths = [url];
+  const bare = url.split("?")[0];
+  if (bare !== url) paths.push(bare);   // Twilio may have been given the plain URL
+  const out = [];
+  hosts.forEach((h) => paths.forEach((p) => out.push(proto + "://" + h + p)));
+  return out;
+}
+
 function twilioSignatureValid(req, params) {
   const token = process.env.TWILIO_AUTH_TOKEN;
-  const given = req.headers["x-twilio-signature"];
-  if (!token || !given) return false;
-  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
-  const url = proto + "://" + req.headers.host + req.url;
-  let base = url;
-  Object.keys(params).sort().forEach((k) => { base += k + params[k]; });
-  const mine = crypto.createHmac("sha1", token).update(Buffer.from(base, "utf8")).digest("base64");
-  try {
-    return crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(String(given)));
-  } catch (e) { return false; }
+  const given = String(req.headers["x-twilio-signature"] || "");
+  if (!token || !given) {
+    console.log("[inbox] twilio sig: token=" + (token ? "set/" + token.length + "ch" : "MISSING")
+      + " header=" + (given ? "present" : "MISSING"));
+    return false;
+  }
+  let tail = "";
+  Object.keys(params).sort().forEach((k) => { tail += k + params[k]; });
+  const urls = twilioSignedUrls(req);
+  for (let i = 0; i < urls.length; i++) {
+    const mine = crypto.createHmac("sha1", token)
+      .update(Buffer.from(urls[i] + tail, "utf8")).digest("base64");
+    try {
+      if (crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(given))) return true;
+    } catch (e) { /* length mismatch, so not this candidate */ }
+  }
+  /* Diagnostic only — no secret is printed. The token's LENGTH is the tell:
+     a Twilio auth token is 32 characters, so 34 means an SID was pasted. */
+  console.log("[inbox] twilio sig mismatch. token=" + token.length + "ch tried="
+    + JSON.stringify(urls) + " params=" + Object.keys(params).sort().join(","));
+  return false;
 }
 
 async function loadSettings() {
@@ -193,7 +222,13 @@ export default async function handler(req, res) {
       body: String(it.ExtractedMarkdownMessage || it.RawTextBody || "").slice(0, 40000),
     };
   } else if (body && (body.Body !== undefined || body.MessageSid)) {
-    if (!twilioSignatureValid(req, body)) { res.status(401).end(); return; }
+    /* Two ways to prove the caller is Twilio, and either is enough.
+       The signature is stronger and is preferred. The URL secret is the same
+       protection the email channel runs on, and exists because an auth token
+       that will not validate should not be able to take texting offline. */
+    const signed = twilioSignatureValid(req, body);
+    const urlSecret = !!process.env.INBOX_SECRET && sameSecret(q.k, process.env.INBOX_SECRET);
+    if (!signed && !urlSecret) { res.status(401).end(); return; }
     const from = String(body.From || "");
     const text = String(body.Body || "").slice(0, 4000);
 
