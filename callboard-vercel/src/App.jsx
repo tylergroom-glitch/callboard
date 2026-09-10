@@ -916,10 +916,12 @@ function Callboard({ auth, onLogout }) {
   const [navOpen, setNavOpen] = useState(false); // section switcher dropdown
   const [ready, setReady] = useState(false);
   const [atLanding, setAtLanding] = useState(false);
-  const [pipelineOpen, setPipelineOpen] = useState(false);
-  const [catalogOpen, setCatalogOpen] = useState(false);
-  const [quotesOpen, setQuotesOpen] = useState(false);
-  const [billingOpen, setBillingOpen] = useState(false);
+  /* Which admin screen is showing. This used to be one boolean per screen, and
+     three separate places had to enumerate them: this state, the derivation
+     below, and the landing guard. Adding To Do and Crew Roster without touching
+     all three is exactly what broke them — the sidebar lit up and nothing
+     happened. One value cannot fall out of step with itself. */
+  const [admSec, setAdmSec] = useState("shows");
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -960,7 +962,6 @@ function Callboard({ auth, onLogout }) {
       .catch(() => {});
     return () => { live = false; };
   }, [isSuperAdmin]);
-  const [staffOpen, setStaffOpen] = useState(false);
   const [pendingInvoice, setPendingInvoice] = useState(null);
   const [tab, setTab] = useState(initCrew ? "mycall" : "home");
   const [status, setStatus] = useState("idle"); // idle | saving | saved | error
@@ -1111,9 +1112,9 @@ function Callboard({ auth, onLogout }) {
 
      The landing guard renders the admin shell when EITHER atLanding is true OR
      an admin section is open. Clearing only atLanding therefore did nothing
-     visible: pipelineOpen / quotesOpen / billingOpen were still set, the guard
-     still matched, and the section you clicked from stayed on screen. goAdmin
-     clears all of them, so the show can actually come forward.
+     visible: the section was still set, the guard still matched, and the screen
+     you clicked from stayed put. goAdmin("shows") resets it, so the show can
+     actually come forward.
 
      This was already broken for "Open show" on the Pipeline and inside a quote —
      same helper, same missing step. Fixing it here fixes those too.
@@ -1267,16 +1268,9 @@ function Callboard({ auth, onLogout }) {
         <div className="loading">Loading the callboard…</div>
       </div>
     );
-  const admSection = isSuperAdmin
-    ? (pipelineOpen ? "pipeline" : catalogOpen ? "catalog" : quotesOpen ? "quotes" : billingOpen ? "billing" : staffOpen ? "staff" : "shows")
-    : "shows";
-  const goAdmin = (s) => {
-    setPipelineOpen(s === "pipeline");
-    setCatalogOpen(s === "catalog");
-    setQuotesOpen(s === "quotes");
-    setBillingOpen(s === "billing");
-    setStaffOpen(s === "staff");
-  };
+  // Nobody but a TCG admin ever sees a section, whatever the state says.
+  const admSection = isSuperAdmin ? admSec : "shows";
+  const goAdmin = (s) => setAdmSec(s || "shows");
   const goAdminFromShow = (s) => { goAdmin(s); setAtLanding(true); };
   const calendar = (
     <ShowsCalendar
@@ -1294,7 +1288,7 @@ function Callboard({ auth, onLogout }) {
     />
   );
 
-  if (atLanding || (isSuperAdmin && (pipelineOpen || catalogOpen || quotesOpen || billingOpen || staffOpen)))
+  if (atLanding || (isSuperAdmin && admSection !== "shows"))
     return (
       <div className="cb">
         <style>{CSS}</style>
@@ -6181,7 +6175,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.21.1";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
