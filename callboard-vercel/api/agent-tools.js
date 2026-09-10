@@ -22,12 +22,50 @@ const money = (n) => "$" + (Math.round((Number(n) || 0) * 100) / 100).toLocaleSt
 export function makeCtx() {
   return { _shows: null };
 }
+/* Only id, name and client. Every other file in this project selects exactly
+   these three from /shows, and asking for anything else returns an error from
+   PostgREST rather than an empty column — which the agent then reports as "the
+   shows table is unavailable". Dates come from the show's own record instead. */
 async function shows(ctx) {
   if (!ctx._shows) {
-    ctx._shows = (await supabaseRest("GET", "/shows?select=id,name,client,startDate,endDate", null)) || [];
+    ctx._shows = (await supabaseRest("GET", "/shows?select=id,name,client", null)) || [];
   }
   return ctx._shows;
 }
+
+/* One show, whole row. select=* is safe here in a way it would not be across
+   every show at once: it is one record, and it means no column name has to be
+   guessed. The event body has lived at the top level and under `data` at
+   different times, so accept either. */
+async function showRow(id) {
+  const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=*", null);
+  const row = (rows && rows[0]) || {};
+  const underData = !!(row.data && typeof row.data === "object");
+  const ev = underData ? row.data : row;
+  return { row, ev, underData };
+}
+
+/* Write the body back the same shape it was read in. Guessing here is the one
+   place a wrong guess does damage rather than just failing: patching a `data`
+   column onto a table that keeps the body flat would either error or bury the
+   show's real contents one level down. */
+async function saveShow(id, underData, ev) {
+  await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id),
+    underData ? { data: ev } : ev);
+}
+
+/* Venue is an object — {name, address, mapLink} — in the event body, but has
+   been a plain string in older records. */
+function venueText(v) {
+  if (!v) return "";
+  if (typeof v === "string") return v;
+  return [v.name, v.address].filter(Boolean).join(", ");
+}
+const showDates = (row, ev) => {
+  const a = ev.startDate || row.startDate || row.start_date || "";
+  const b = ev.endDate || row.endDate || row.end_date || a;
+  return a ? a + (b && b !== a ? " to " + b : "") : "";
+};
 
 /* The model is given ids and told to use them, but people say "the Acme job".
    Resolve loosely so a near-miss finds the show instead of failing. */
@@ -54,9 +92,7 @@ export const READ_TOOLS = {
     run: async (ctx) => {
       const list = await shows(ctx);
       if (!list.length) return "No shows yet.";
-      return list.map((s) =>
-        `${s.id} | ${s.name}${s.client ? " | " + s.client : ""}${s.startDate ? " | " + s.startDate + " to " + (s.endDate || s.startDate) : ""}`
-      ).join("\n");
+      return list.map((s) => `${s.id} | ${s.name}${s.client ? " | " + s.client : ""}`).join("\n");
     },
   },
 
@@ -73,16 +109,16 @@ export const READ_TOOLS = {
     run: async (ctx, input) => {
       const s = await resolveShow(ctx, input.show);
       if (!s) return "No show matches that. Call list_shows.";
-      const d = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(s.id) + "&select=data", null);
-      const ev = (d && d[0] && d[0].data) || {};
+      const { row, ev } = await showRow(s.id);
       const cases = (ev.pull && ev.pull.cases) || (Array.isArray(ev.pull) ? ev.pull : []);
       const items = cases.reduce((n, c) => n + ((c.items || []).length), 0);
       const crew = (ev.crew || []).length;
       const todos = (ev.todos || []).filter((t) => !t.done).length;
+      const dates = showDates(row, ev);
       return [
         `${s.name}${s.client ? " for " + s.client : ""}`,
-        s.startDate ? `Dates: ${s.startDate} to ${s.endDate || s.startDate}` : "Dates: not set",
-        ev.venue ? `Venue: ${ev.venue}` : "",
+        dates ? `Dates: ${dates}` : "Dates: not set",
+        venueText(ev.venue) ? `Venue: ${venueText(ev.venue)}` : "",
         `Crew: ${crew}`,
         `Pull list: ${cases.length} cases, ${items} items`,
         `Open to-dos: ${todos}`,
@@ -104,8 +140,7 @@ export const READ_TOOLS = {
     run: async (ctx, input) => {
       const s = await resolveShow(ctx, input.show);
       if (!s) return "No show matches that.";
-      const d = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(s.id) + "&select=data", null);
-      const ev = (d && d[0] && d[0].data) || {};
+      const { ev } = await showRow(s.id);
       const cases = (ev.pull && ev.pull.cases) || (Array.isArray(ev.pull) ? ev.pull : []);
       if (!cases.length) return "That show has no pull list yet.";
       return cases.map((c) =>
@@ -124,8 +159,7 @@ export const READ_TOOLS = {
     run: async (ctx, input) => {
       const s = await resolveShow(ctx, input.show);
       if (!s) return "No show matches that.";
-      const d = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(s.id) + "&select=data", null);
-      const ev = (d && d[0] && d[0].data) || {};
+      const { ev } = await showRow(s.id);
       const crew = ev.crew || [];
       if (!crew.length) return "No crew on that show yet.";
       return crew.map((c) => `${c.name || "(unnamed)"} — ${c.role || c.position || "no position"}${c.call ? " — call " + c.call : ""}`).join("\n");
@@ -250,8 +284,7 @@ export const WRITE_TOOLS = {
     apply: async (ctx, i) => {
       const s = await resolveShow(ctx, i.show);
       if (!s) return "That show no longer exists.";
-      const d = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(s.id) + "&select=data", null);
-      const ev = (d && d[0] && d[0].data) || {};
+      const { ev, underData } = await showRow(s.id);
       const pull = ev.pull && ev.pull.cases ? ev.pull : { cases: Array.isArray(ev.pull) ? ev.pull : [], loose: [] };
       const cases = pull.cases.slice();
       const uid = () => "ag" + Math.random().toString(36).slice(2, 10);
@@ -270,8 +303,7 @@ export const WRITE_TOOLS = {
         source: "TCG", rentedFrom: "", notes: "", out: false, in: false,
       }));
       cases[idx] = { ...cases[idx], items: (cases[idx].items || []).concat(add) };
-      await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(s.id),
-        { data: { ...ev, pull: { ...pull, cases } } });
+      await saveShow(s.id, underData, { ...ev, pull: { ...pull, cases } });
       return `Added ${add.length} item${add.length === 1 ? "" : "s"} to ${i.case_name} on ${s.name}.`;
     },
   },
@@ -298,14 +330,13 @@ export const WRITE_TOOLS = {
     apply: async (ctx, i) => {
       const s = await resolveShow(ctx, i.show);
       if (!s) return "That show no longer exists.";
-      const d = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(s.id) + "&select=data", null);
-      const ev = (d && d[0] && d[0].data) || {};
+      const { ev, underData } = await showRow(s.id);
       const todos = (ev.todos || []).concat([{
         id: "ag" + Math.random().toString(36).slice(2, 10),
         title: String(i.title).slice(0, 300), assignee: i.assignee || "",
         due: i.due || "", dueTime: "", priority: "", urgent: false, done: false, notes: "",
       }]);
-      await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(s.id), { data: { ...ev, todos } });
+      await saveShow(s.id, underData, { ...ev, todos });
       return `Added to ${s.name}'s task list.`;
     },
   },
