@@ -92,6 +92,17 @@ import {
   deleteInvoice,
   getQuoteTermsPdf,
   saveQuoteTermsPdf,
+  listTasks,
+  createTask,
+  updateTask,
+  deleteTask,
+  getInboxSettings,
+  saveInboxSettings,
+  getAgentThread,
+  sendAgent,
+  confirmAgent,
+  cancelAgent,
+  resetAgent,
   deleteQuoteTermsPdf,
   saveQuoteTerms,
 } from "./db.js";
@@ -925,6 +936,30 @@ function Callboard({ auth, onLogout }) {
   const deptCanEdit = (lockKey) => isEditor && myDepts.includes(effDeptOf(lockKey));
   const tabCanEdit = (lockKey) => isShowAdmin || deptCanEdit(lockKey) || !!(event && event[lockKey]);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  /* The sidebar badge, and the nudge on sign-in. Counted once when an admin
+     signs in rather than polled: the number only has to be roughly right to do
+     its job, and a poll on every admin page would cost a request a minute for
+     a number that changes twice a day. Opening To Do reloads it properly. */
+  const [taskCount, setTaskCount] = useState(0);
+  const [taskNudge, setTaskNudge] = useState(null);
+  const [agentOpen, setAgentOpen] = useState(false);
+  useEffect(() => {
+    if (!isSuperAdmin) return;
+    let live = true;
+    listTasks("open")
+      .then((r) => {
+        if (!live) return;
+        const rows = r.tasks || [];
+        const review = rows.filter((t) => t.review).length;
+        const late = rows.filter((t) => !t.review && t.due && r.today && t.due < r.today).length;
+        setTaskCount(rows.length);
+        // Only interrupt when there is something genuinely waiting. A nudge
+        // that appears every single sign-in stops being read within a week.
+        if (review > 0 || late > 0) setTaskNudge({ review, late });
+      })
+      .catch(() => {});
+    return () => { live = false; };
+  }, [isSuperAdmin]);
   const [staffOpen, setStaffOpen] = useState(false);
   const [pendingInvoice, setPendingInvoice] = useState(null);
   const [tab, setTab] = useState(initCrew ? "mycall" : "home");
@@ -1264,12 +1299,33 @@ function Callboard({ auth, onLogout }) {
       <div className="cb">
         <style>{CSS}</style>
         {peopleOpen && <PeopleAccess events={events} onClose={() => setPeopleOpen(false)} />}
+      {isSuperAdmin && !agentOpen && (
+        <button className="ag-fab" onClick={() => setAgentOpen(true)} title="Ask the assistant">Ask</button>
+      )}
+      {agentOpen && <AgentPanel onClose={() => setAgentOpen(false)} />}
+
+      {taskNudge && (
+        <div className="tk-nudge" role="status">
+          <div className="tk-nudgebody">
+            <b>
+              {taskNudge.review > 0 && (taskNudge.review + " thing" + (taskNudge.review === 1 ? "" : "s") + " came in")}
+              {taskNudge.review > 0 && taskNudge.late > 0 && " · "}
+              {taskNudge.late > 0 && (taskNudge.late + " overdue")}
+            </b>
+            <span>on your to-do list.</span>
+          </div>
+          <button className="btn" onClick={() => { setTaskNudge(null); goAdmin("todo"); setAtLanding(true); }}>Open</button>
+          <button className="tk-nudgex" onClick={() => setTaskNudge(null)} title="Dismiss">×</button>
+        </div>
+      )}
         <div className="adm-shell">
           {isSuperAdmin ? (
-            <AdminSidebar active={admSection} go={goAdmin} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} />
+            <AdminSidebar active={admSection} go={goAdmin} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} taskCount={taskCount} />
           ) : null}
           <div className="adm-main">
-            {admSection === "pipeline" ? (
+            {admSection === "todo" ? (
+              <TasksScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
+            ) : admSection === "pipeline" ? (
               <PipelineBoard onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "catalog" ? (
               <CatalogScreen onClose={() => goAdmin("shows")} />
@@ -1281,6 +1337,8 @@ function Callboard({ auth, onLogout }) {
               />
             ) : admSection === "billing" ? (
               <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
+            ) : admSection === "roster" ? (
+              <RosterScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
             ) : (
@@ -1314,7 +1372,7 @@ function Callboard({ auth, onLogout }) {
       <div className="adm-shell">
         {isSuperAdmin ? (
           /* A show sits underneath Shows, so that stays lit while you're in one. */
-          <AdminSidebar active="shows" go={goAdminFromShow} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} />
+          <AdminSidebar active="shows" go={goAdminFromShow} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} taskCount={taskCount} />
         ) : null}
         <div className="adm-main">
 
@@ -1425,7 +1483,6 @@ function Callboard({ auth, onLogout }) {
               />
             )}
             {tab === "costing" && isShowAdmin && <CostingTab event={event} />}
-            {tab === "roster" && isSuperAdmin && <RosterTab />}
             {tab === "survey" && isShowAdmin && <SurveyTab event={event} update={update} showId={currentId} />}
           </main>
         </>
@@ -1534,7 +1591,6 @@ const SECTIONS = [
   { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
   { key: "billing", label: "Billing", desc: "Invoices, payments & what is owed", color: "#C9A227", adminOnly: true, group: "Admin" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
-  { key: "roster", label: "Labor Roster", desc: "Crew directory — account admin only", color: "#7B5EA7", superOnly: true, group: "Admin" },
 ];
 const GROUP_ORDER = ["Show Documents", "Tech Documents", "Admin"];
 const GROUP_META = { "Show Documents": "#5A7FE0", "Tech Documents": "#C77DA0", "Admin": "#3FA37B" };
@@ -1613,7 +1669,6 @@ function tileStat(key, event) {
     case "rundown": { const n = (event.rundown && event.rundown.rows ? event.rundown.rows : []).filter((r) => r.kind === "item").length; return `${n} segment${n === 1 ? "" : "s"}`; }
     case "todos": { const open = (event.todos || []).filter((t) => !t.done).length; const over = (event.todos || []).filter(todoOverdue).length; return over > 0 ? `${open} open · ${over} overdue` : `${open} open`; }
     case "costing": return "Admin only";
-    case "roster": return "Admin only";
     default: return "";
   }
 }
@@ -2117,6 +2172,561 @@ function PeopleAccess({ events, onClose }) {
    ============================================================ */
 
 const CTG_DEPTS = ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"];
+
+/* ---------------------------------------------------------------------------
+   The assistant, as a drawer you can pull open from any admin screen.
+
+   The same conversation as the one you have by text — threads live on the
+   server, keyed by who is talking, so a question you asked from the truck is
+   still here when you sit down.
+
+   The confirmation card is the point of the whole design. When the assistant
+   wants to change something it cannot; it can only describe the change. That
+   card is the only thing on this screen that can write to a show.
+--------------------------------------------------------------------------- */
+function AgentPanel({ onClose }) {
+  const [msgs, setMsgs] = useState([]);
+  const [pending, setPending] = useState(null);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [ready, setReady] = useState(false);
+  const endRef = useRef(null);
+  const inputRef = useRef(null);
+
+  /* Only plain text turns are shown. The transcript also holds tool calls and
+     their results, which are the assistant's working, not the conversation. */
+  const visible = (list) =>
+    (list || []).map((m) => {
+      const text = typeof m.content === "string"
+        ? m.content
+        : (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n");
+      return { role: m.role, text: (text || "").trim() };
+    }).filter((m) => m.text);
+
+  useEffect(() => {
+    getAgentThread()
+      .then((r) => { setMsgs(visible(r.messages)); setPending(r.pending || null); setReady(true); })
+      .catch(() => setReady(true));
+  }, []);
+  useEffect(() => { try { endRef.current && endRef.current.scrollIntoView({ block: "end" }); } catch (e) {} }, [msgs, pending, busy]);
+  useEffect(() => { try { inputRef.current && inputRef.current.focus(); } catch (e) {} }, [ready]);
+
+  const send = async () => {
+    const text = input.trim();
+    if (!text || busy) return;
+    setErr(""); setBusy(true);
+    setMsgs((m) => m.concat([{ role: "user", text }]));
+    setInput("");
+    try {
+      const r = await sendAgent(text);
+      setMsgs((m) => m.concat([{ role: "assistant", text: r.reply }]));
+      setPending(r.pending || null);
+    } catch (e) {
+      setErr((e && e.message) || "Couldn't reach the assistant.");
+    }
+    setBusy(false);
+  };
+
+  const decide = async (yes) => {
+    setBusy(true); setErr("");
+    try {
+      const r = yes ? await confirmAgent() : await cancelAgent();
+      setMsgs((m) => m.concat([{ role: "user", text: yes ? "Yes, do it" : "No" }, { role: "assistant", text: r.reply }]));
+      setPending(null);
+    } catch (e) { setErr((e && e.message) || "Couldn't save that."); }
+    setBusy(false);
+  };
+
+  const clear = async () => {
+    setBusy(true);
+    try { await resetAgent(); setMsgs([]); setPending(null); } catch (e) {}
+    setBusy(false);
+  };
+
+  return (
+    <div className="ag-scrim" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="ag-drawer" role="dialog" aria-label="Assistant">
+        <div className="ag-top">
+          <div className="ag-title">Assistant</div>
+          <button className="ag-mini" onClick={clear} disabled={busy} title="Forget this conversation">Clear</button>
+          <button className="ag-x" onClick={onClose} title="Close">×</button>
+        </div>
+
+        <div className="ag-body">
+          {!ready ? (
+            <div className="ag-hint">Opening…</div>
+          ) : msgs.length === 0 && !pending ? (
+            <div className="ag-hint">
+              <b>Ask about a show, or tell me to change something.</b>
+              <div className="ag-eg">"what's on the Acme pull list"</div>
+              <div className="ag-eg">"add 4 truss and 2 motors to Acme"</div>
+              <div className="ag-eg">"who owes me money"</div>
+              <div className="ag-eg">"remind me to send the Northwind invoice Friday"</div>
+              <div className="ag-note">
+                I can look at anything. I can't change anything without showing you first and
+                asking. This is the same conversation as the one you have by text.
+              </div>
+            </div>
+          ) : null}
+
+          {msgs.map((m, i) => (
+            <div key={i} className={"ag-msg " + (m.role === "user" ? "me" : "it")}>{m.text}</div>
+          ))}
+
+          {busy && <div className="ag-msg it ag-thinking">Thinking…</div>}
+
+          {pending && (
+            <div className="ag-confirm">
+              <div className="ag-confirmhd">About to change something</div>
+              <div className="ag-confirmsays">{pending.says}</div>
+              <div className="ag-confirmacts">
+                <button className="btn ghost" onClick={() => decide(false)} disabled={busy}>No</button>
+                <button className="btn" onClick={() => decide(true)} disabled={busy}>Yes, do it</button>
+              </div>
+            </div>
+          )}
+
+          {err ? <div className="ag-err">{err}</div> : null}
+          <div ref={endRef} />
+        </div>
+
+        <div className="ag-foot">
+          <textarea
+            ref={inputRef} className="ag-inp" rows={1} value={input} placeholder="Ask, or tell me what to do…"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+          />
+          <button className="btn" onClick={send} disabled={!input.trim() || busy}>Send</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* One inbox proposal. Everything the agent decided is editable before you
+   accept it, and the message it read is one click away — when the reading is
+   wrong you want the client's actual words, not a summary of them. */
+function TkProposal({ t, shows, busy, rawOpen, onToggleRaw, onConfirm, onDismiss }) {
+  const [title, setTitle] = useState(t.title || "");
+  const [ev, setEv] = useState(t.event_id || "");
+  const [due, setDue] = useState(t.due || "");
+  const [pri, setPri] = useState(t.priority || "");
+  const conf = t.agent && typeof t.agent.confidence === "number" ? t.agent.confidence : null;
+
+  return (
+    <div className="tk-prop">
+      <div className="tk-propmeta">
+        <span className="tk-src">{t.source === "sms" ? "TEXT" : "EMAIL"}</span>
+        <span className="tk-propfrom">{t.source_from}</span>
+        {t.source_subject ? <span className="tk-propsub">{t.source_subject}</span> : null}
+        {conf !== null && (
+          <span className={"tk-conf" + (conf < 0.6 ? " low" : "")}>
+            {conf < 0.6 ? "unsure" : Math.round(conf * 100) + "% sure"}
+          </span>
+        )}
+        <span className="tk-spacer" />
+        <button className="tk-raw" onClick={onToggleRaw}>{rawOpen ? "Hide message" : "Show message"}</button>
+      </div>
+
+      {rawOpen && <pre className="tk-rawbody">{t.source_body || "(empty)"}</pre>}
+
+      <div className="tk-propedit">
+        <input className="tk-propinp" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="What needs doing" />
+        <select className="tk-propsel" value={ev} onChange={(e) => setEv(e.target.value)}>
+          <option value="">General — no show</option>
+          {shows.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+        <input className="tk-propdue" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
+        <select className="tk-propsel sm" value={pri} onChange={(e) => setPri(e.target.value)}>
+          <option value="">No priority</option>
+          <option value="high">High</option>
+          <option value="med">Med</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+
+      <div className="tk-propacts">
+        <button className="btn ghost" onClick={onDismiss} disabled={busy}>Bin it</button>
+        <button
+          className="btn"
+          disabled={busy || !title.trim()}
+          onClick={() => onConfirm({ title: title.trim(), event_id: ev || null, due: due || null, priority: pri })}
+        >
+          {busy ? "Saving…" : "Confirm"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* Who is allowed to file things, and where they send them. The allowlist is
+   the whole of the security model on the inbound side — an address you have
+   forwarded from is not a secret — so it is deliberately the first thing on
+   this panel rather than buried. */
+function TkSettings({ onClose }) {
+  const [s, setS] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    getInboxSettings()
+      .then((v) => setS({ ...v, senders: (v.senders || []).join("\n") }))
+      .catch((e) => setErr((e && e.message) || "Couldn't load settings."));
+  }, []);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setSaved(false);
+    try {
+      const next = await saveInboxSettings({
+        senders: String(s.senders || "").split(/[\n,]/).map((x) => x.trim()).filter(Boolean),
+        digest: s.digest !== false,
+        inboxAddress: s.inboxAddress || "",
+        smsNumber: s.smsNumber || "",
+      });
+      setS({ ...next, senders: (next.senders || []).join("\n") });
+      setSaved(true);
+    } catch (e) { setErr((e && e.message) || "Couldn't save."); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={ctgOv} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div style={{ ...ctgCard, maxWidth: 560 }}>
+        <h3 style={{ margin: "0 0 4px" }}>Inbox settings</h3>
+        <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+          What is allowed to put things on your list without you typing them.
+        </p>
+        {err ? <div className="tk-err">{err}</div> : null}
+        {!s ? <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div> : (
+          <>
+            <label className="tk-lbl">Allowed senders</label>
+            <div className="tk-help">
+              One per line. Email addresses in full; phone numbers any way you like — only the last
+              ten digits are compared. Anything arriving from anywhere else is silently binned, so if
+              a forward of yours never turns up, check the address you sent it from is on this list.
+            </div>
+            <textarea
+              className="tk-ta" rows={4} value={s.senders}
+              onChange={(e) => setS({ ...s, senders: e.target.value })}
+              placeholder={"tyler.groom@gmail.com\n+1 559 555 1234"}
+            />
+
+            <label className="tk-lbl">Your inbox address</label>
+            <div className="tk-help">For your own reference — where you forward things. Set up in Brevo.</div>
+            <input className="tk-inp" value={s.inboxAddress || ""} placeholder="notes@inbox.touchstonecreativegroup.com"
+              onChange={(e) => setS({ ...s, inboxAddress: e.target.value })} />
+
+            <label className="tk-lbl">Your text-in number</label>
+            <div className="tk-help">For your own reference — the Twilio number you text.</div>
+            <input className="tk-inp" value={s.smsNumber || ""} placeholder="+1 559 555 0000"
+              onChange={(e) => setS({ ...s, smsNumber: e.target.value })} />
+
+            <label className="tk-check">
+              <input type="checkbox" checked={s.digest !== false} onChange={() => setS({ ...s, digest: s.digest === false })} />
+              Include my tasks in the daily email
+            </label>
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18, alignItems: "center" }}>
+              {saved && <span style={{ color: "var(--green, #6FD08A)", fontSize: 12.5 }}>Saved</span>}
+              <button className="btn ghost" onClick={onClose}>Close</button>
+              <button className="btn" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+   To Do — everything you owe, in one place.
+
+   Two sources feed this screen and they behave differently:
+
+     * TASKS live in their own table. General items you type, plus anything the
+       inbox captured. These are the only things that can be a PROPOSAL.
+     * SHOW TO-DOS live inside a show's own record, exactly where they always
+       have. This screen reads across them and can tick one off, but the Tasks
+       tab inside a show remains where you'd manage them properly.
+
+   Nothing about the per-show lists changed. This is a read-across bolted on
+   top, so if this screen were removed tomorrow nothing else would notice.
+--------------------------------------------------------------------------- */
+const TK_PRI = { high: "#FF6B6B", med: "#FFB020", low: "#96A0B2", "": "transparent" };
+const TK_KIND = {
+  quote: "Quote", invoice: "Invoice", gear: "Gear", crew: "Crew", admin: "Admin", "": "",
+};
+
+function tkOverdue(due, today) { return !!due && !!today && due < today; }
+function tkDueLabel(due, today) {
+  if (!due) return "";
+  if (due === today) return "Today";
+  const d = new Date(due + "T12:00:00");
+  const t = new Date(today + "T12:00:00");
+  const days = Math.round((d - t) / 86400000);
+  if (days === 1) return "Tomorrow";
+  if (days === -1) return "Yesterday";
+  if (days < 0) return Math.abs(days) + "d late";
+  if (days <= 7) return days + "d";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/* One row's worth of what the list needs, whichever source it came from, so
+   sorting and rendering never have to care which table it lives in. */
+function tkRow(x) { return x; }
+
+function TasksScreen({ onClose, onOpenShow }) {
+  const [state, setState] = useState("loading");
+  const [err, setErr] = useState("");
+  const [tasks, setTasks] = useState([]);
+  const [showRows, setShowRows] = useState([]);
+  const [today, setToday] = useState("");
+  const [scope, setScope] = useState("all");      // all | general | show id
+  const [showDone, setShowDone] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
+  const [newDue, setNewDue] = useState("");
+  const [busy, setBusy] = useState("");
+  const [openRaw, setOpenRaw] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const load = async () => {
+    setState("loading"); setErr("");
+    try {
+      const [tk, list] = await Promise.all([listTasks(), listEvents()]);
+      setTasks(tk.tasks || []);
+      setToday(tk.today || "");
+      // Same fan-out the Pipeline board uses. A show that fails to load is
+      // skipped rather than taking the whole screen down with it.
+      const full = await Promise.all(
+        (list || []).map((sm) =>
+          getEvent(sm.id)
+            .then((d) => ({ id: sm.id, name: sm.name, todos: (d && d.todos) || [] }))
+            .catch(() => null)
+        )
+      );
+      setShowRows(full.filter(Boolean));
+      setState("ready");
+    } catch (e) {
+      setErr((e && e.message) || "Couldn't load your tasks.");
+      setState("ready");
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  const shows = showRows.map((s) => ({ id: s.id, name: s.name }));
+  const showName = (id) => (showRows.find((s) => s.id === id) || {}).name || "";
+
+  const proposals = tasks.filter((t) => t.review && t.status === "open");
+
+  /* The merged list. Tasks and show to-dos are flattened into one shape here
+     and nowhere else. */
+  const rows = [];
+  tasks.forEach((t) => {
+    if (t.review && t.status === "open") return;          // proposals have their own band
+    if (t.status === "dismissed") return;
+    rows.push(tkRow({
+      key: "t:" + t.id, id: t.id, kind: "task",
+      title: t.title, notes: t.notes,
+      showId: t.event_id || "", showLabel: t.event_id ? showName(t.event_id) : "General",
+      due: t.due || "", priority: t.priority || "", tag: TK_KIND[t.kind] || "",
+      done: t.status === "done",
+      source: t.source, from: t.source_from, subject: t.source_subject, body: t.source_body,
+    }));
+  });
+  showRows.forEach((s) => {
+    (s.todos || []).forEach((td) => {
+      if (!String(td.title || "").trim()) return;
+      rows.push(tkRow({
+        key: "s:" + s.id + ":" + td.id, id: td.id, kind: "showtodo", showId: s.id,
+        title: td.title, notes: td.notes || "", showLabel: s.name,
+        due: td.due || "", priority: td.priority || "", tag: "",
+        done: !!td.done, assignee: td.assignee || "",
+      }));
+    });
+  });
+
+  const visible = rows
+    .filter((r) => (showDone ? true : !r.done))
+    .filter((r) => scope === "all" || (scope === "general" ? !r.showId : r.showId === scope))
+    .sort((a, b) => {
+      if (a.done !== b.done) return a.done ? 1 : -1;
+      // Undated work sinks below dated work rather than pretending to be urgent.
+      const ad = a.due || "9999-12-31", bd = b.due || "9999-12-31";
+      if (ad !== bd) return ad.localeCompare(bd);
+      const rank = (p) => (p === "high" ? 0 : p === "med" ? 1 : p === "low" ? 2 : 3);
+      return rank(a.priority) - rank(b.priority);
+    });
+
+  const openCount = rows.filter((r) => !r.done).length;
+  const lateCount = rows.filter((r) => !r.done && tkOverdue(r.due, today)).length;
+
+  /* ---- actions ---------------------------------------------------------- */
+  const toggle = async (r) => {
+    setBusy(r.key);
+    try {
+      if (r.kind === "task") {
+        const out = await updateTask(r.id, { status: r.done ? "open" : "done" });
+        setTasks((prev) => prev.map((t) => (t.id === r.id ? out.task : t)));
+      } else {
+        // Show to-dos live inside the show record, so this is a read, a change
+        // and a write of that show — the same path the Pull List push uses.
+        const full = await getEvent(r.showId);
+        const next = (full.todos || []).map((t) => (t.id === r.id ? { ...t, done: !r.done } : t));
+        await updateEvent(r.showId, { data: { ...full, todos: next } });
+        setShowRows((prev) => prev.map((s) => (s.id === r.showId ? { ...s, todos: next } : s)));
+      }
+    } catch (e) {
+      setErr((e && e.message) || "Couldn't save that.");
+    }
+    setBusy("");
+  };
+
+  const add = async () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    setBusy("add");
+    try {
+      const out = await createTask({
+        title, due: newDue || null,
+        event_id: scope !== "all" && scope !== "general" ? scope : null,
+      });
+      setTasks((prev) => [out.task].concat(prev));
+      setNewTitle(""); setNewDue("");
+    } catch (e) { setErr((e && e.message) || "Couldn't add that."); }
+    setBusy("");
+  };
+
+  const confirmProposal = async (t, patch) => {
+    setBusy(t.id);
+    try {
+      const out = await updateTask(t.id, { review: false, ...patch });
+      setTasks((prev) => prev.map((x) => (x.id === t.id ? out.task : x)));
+    } catch (e) { setErr((e && e.message) || "Couldn't confirm that."); }
+    setBusy("");
+  };
+  const dismissProposal = async (t) => {
+    setBusy(t.id);
+    try {
+      await updateTask(t.id, { status: "dismissed" });
+      setTasks((prev) => prev.filter((x) => x.id !== t.id));
+    } catch (e) { setErr((e && e.message) || "Couldn't dismiss that."); }
+    setBusy("");
+  };
+
+  if (state === "loading")
+    return <div className="cal-wrap"><div className="cal-top"><h1 className="cal-h1">To Do</h1></div>
+      <div style={{ color: "var(--dim)", padding: "26px 0" }}>Reading your tasks and every show's list…</div></div>;
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">
+          To Do
+          {openCount > 0 && <span className="tk-h1count">{openCount}</span>}
+          {lateCount > 0 && <span className="tk-h1late">{lateCount} late</span>}
+        </h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={() => setSettingsOpen(true)}>Inbox settings</button>
+          <button className="btn ghost" onClick={load}>Refresh</button>
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      {err ? <div className="tk-err">{err}</div> : null}
+
+      {/* ---- proposals ---------------------------------------------------- */}
+      {proposals.length > 0 && (
+        <div className="tk-review">
+          <div className="tk-reviewhd">
+            {proposals.length} thing{proposals.length === 1 ? "" : "s"} came in — confirm or bin
+          </div>
+          {proposals.map((t) => (
+            <TkProposal
+              key={t.id} t={t} shows={shows} busy={busy === t.id}
+              rawOpen={openRaw === t.id}
+              onToggleRaw={() => setOpenRaw(openRaw === t.id ? null : t.id)}
+              onConfirm={(patch) => confirmProposal(t, patch)}
+              onDismiss={() => dismissProposal(t)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* ---- add ---------------------------------------------------------- */}
+      <div className="tk-add">
+        <input
+          className="tk-addinp" value={newTitle} placeholder="Something you need to remember…"
+          onChange={(e) => setNewTitle(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") add(); }}
+        />
+        <input className="tk-adddue" type="date" value={newDue} onChange={(e) => setNewDue(e.target.value)} />
+        <button className="btn" onClick={add} disabled={!newTitle.trim() || busy === "add"}>Add</button>
+      </div>
+
+      {/* ---- filters ------------------------------------------------------ */}
+      <div className="tk-filters">
+        <button className={"tk-chip" + (scope === "all" ? " on" : "")} onClick={() => setScope("all")}>
+          Everything ({rows.filter((r) => !r.done).length})
+        </button>
+        <button className={"tk-chip" + (scope === "general" ? " on" : "")} onClick={() => setScope("general")}>
+          General ({rows.filter((r) => !r.showId && !r.done).length})
+        </button>
+        {shows.map((s) => {
+          const n = rows.filter((r) => r.showId === s.id && !r.done).length;
+          if (!n) return null;
+          return (
+            <button key={s.id} className={"tk-chip" + (scope === s.id ? " on" : "")} onClick={() => setScope(s.id)}>
+              {s.name} ({n})
+            </button>
+          );
+        })}
+        <span className="tk-spacer" />
+        <label className="tk-donetog">
+          <input type="checkbox" checked={showDone} onChange={() => setShowDone(!showDone)} /> Show done
+        </label>
+      </div>
+
+      {/* ---- the list ------------------------------------------------------ */}
+      <div className="tk-list">
+        {visible.length === 0 ? (
+          <div className="tk-empty">
+            {rows.length === 0
+              ? "Nothing here yet. Add something above, or forward an email to your inbox address."
+              : "Nothing open in this view."}
+          </div>
+        ) : visible.map((r) => (
+          <div key={r.key} className={"tk-row" + (r.done ? " done" : "")}>
+            <input type="checkbox" checked={r.done} disabled={busy === r.key} onChange={() => toggle(r)} />
+            <div className="tk-main">
+              <div className="tk-title">{r.title}</div>
+              {r.notes ? <div className="tk-notes">{r.notes}</div> : null}
+            </div>
+            {r.priority ? <span className="tk-pri" style={{ background: TK_PRI[r.priority] }} title={r.priority} /> : null}
+            {r.tag ? <span className="tk-tag">{r.tag}</span> : null}
+            {r.source && r.source !== "app"
+              ? <span className="tk-src" title={"Came in by " + r.source + " from " + r.from}>{r.source === "sms" ? "TEXT" : "EMAIL"}</span>
+              : null}
+            <button
+              className={"tk-show" + (r.showId ? "" : " gen")}
+              onClick={() => (r.showId && onOpenShow ? onOpenShow(r.showId, r.kind === "showtodo" ? "todos" : undefined) : null)}
+              disabled={!r.showId}
+              title={r.showId ? "Open " + r.showLabel : "Not tied to a show"}
+            >
+              {r.showLabel}
+            </button>
+            {r.due
+              ? <span className={"tk-due" + (tkOverdue(r.due, today) && !r.done ? " late" : "")}>{tkDueLabel(r.due, today)}</span>
+              : <span className="tk-due none">—</span>}
+          </div>
+        ))}
+      </div>
+
+      {settingsOpen && <TkSettings onClose={() => setSettingsOpen(false)} />}
+    </div>
+  );
+}
 
 /* ---------------------------------------------------------------------------
    Reconcile the case inventory against the pricing catalog.
@@ -5569,11 +6179,12 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    is one line rather than a search. Bump APP_VERSION when you deploy something
    worth telling apart — the number under the sidebar title is what you and I
    will both quote when working out which build you are looking at.
-   Minor tracks the round: 1.18.x is round 18. */
+   Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.18.1";
+const APP_VERSION = "1.21.0";
 
 const ADM_NAV = [
+  { key: "todo", label: "To Do" },
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
   { key: "quotes", label: "Quotes" },
@@ -5581,7 +6192,7 @@ const ADM_NAV = [
   { key: "catalog", label: "Catalog" },
 ];
 
-function AdminSidebar({ active, go, onPeople, onLogout }) {
+function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
   return (
     <nav className="adm-side">
       <div className="adm-brand">
@@ -5595,11 +6206,13 @@ function AdminSidebar({ active, go, onPeople, onLogout }) {
           className={"adm-navbtn" + (active === n.key ? " on" : "")}
           onClick={() => go(n.key)}
         >
+          {n.key === "todo" && taskCount > 0 ? <span className="adm-badge">{taskCount > 99 ? "99+" : taskCount}</span> : null}
           {n.label}
         </button>
       ))}
       <div className="adm-div" />
       <button className="adm-navbtn" onClick={onPeople}>People &amp; Access</button>
+      <button className={"adm-navbtn" + (active === "roster" ? " on" : "")} onClick={() => go("roster")}>Crew Roster</button>
       <button className={"adm-navbtn" + (active === "staff" ? " on" : "")} onClick={() => go("staff")}>TCG Staff</button>
       <div className="adm-spacer" />
       {onLogout ? <button className="adm-navbtn dim" onClick={onLogout}>Sign out</button> : null}
@@ -5607,6 +6220,28 @@ function AdminSidebar({ active, go, onPeople, onLogout }) {
   );
 }
 
+
+/* The crew roster is account-wide, not per-show — the same people turn up on
+   every job — so it lives in the sidebar rather than inside one show. Nothing
+   gates it explicitly: AdminSidebar only renders for isSuperAdmin, so only a
+   TCG admin can ever reach this route. */
+function RosterScreen({ onClose }) {
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Crew Roster</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0, maxWidth: 640 }}>
+        Everyone you crew from, with their positions, rates and travel details. Shared across every
+        show — adding someone here makes them available to assign anywhere.
+      </p>
+      <RosterTab />
+    </div>
+  );
+}
 
 /* Who has full run of the platform. This is the is_tcg flag on the account —
    not a per-show role — so it opens every show plus Pipeline, Quotes, Catalog
@@ -15149,6 +15784,107 @@ const CSS = `
 .cr-meta { font-size:11.5px; color:var(--faint); flex-shrink:0; white-space:nowrap; }
 .cr-dept { font-size:10px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; padding:2px 7px; border-radius:9px; flex-shrink:0; }
 .cr-qty { font-size:11.5px; font-weight:700; color:var(--amber); flex-shrink:0; white-space:nowrap; }
+/* ---- To Do -------------------------------------------------------------- */
+.tk-h1count { display:inline-block; margin-left:10px; font-size:13px; font-weight:700; background:var(--panel2); color:var(--dim); border-radius:11px; padding:2px 10px; vertical-align:middle; }
+.tk-h1late { display:inline-block; margin-left:6px; font-size:13px; font-weight:700; background:rgba(255,107,107,.16); color:var(--danger); border-radius:11px; padding:2px 10px; vertical-align:middle; }
+.tk-err { background:rgba(255,107,107,.12); border:1px solid var(--danger); color:var(--danger); border-radius:8px; padding:9px 12px; font-size:13px; margin-bottom:12px; }
+.tk-spacer { flex:1; }
+
+.tk-review { border:1px solid var(--amber); background:rgba(255,176,32,.06); border-radius:12px; padding:12px 14px; margin-bottom:16px; }
+.tk-reviewhd { font-size:12px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--amber); margin-bottom:10px; }
+.tk-prop { border-top:1px solid var(--line); padding:11px 0; }
+.tk-prop:first-of-type { border-top:none; padding-top:2px; }
+.tk-propmeta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:7px; }
+.tk-propfrom { font-size:12px; color:var(--dim); }
+.tk-propsub { font-size:12px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:280px; }
+.tk-conf { font-size:10.5px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--green,#6FD08A); background:rgba(111,208,138,.14); border-radius:9px; padding:2px 7px; }
+.tk-conf.low { color:var(--amber); background:rgba(255,176,32,.16); }
+.tk-raw { border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:6px; padding:2px 9px; font-size:11.5px; cursor:pointer; }
+.tk-rawbody { background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:12px; line-height:1.5; color:var(--ink); white-space:pre-wrap; word-break:break-word; max-height:220px; overflow:auto; margin:0 0 9px; font-family:ui-monospace,Menlo,Consolas,monospace; }
+.tk-propedit { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+.tk-propinp { flex:1 1 240px; min-width:0; }
+.tk-propsel { flex:0 0 190px; }
+.tk-propsel.sm { flex:0 0 130px; }
+.tk-propdue { flex:0 0 150px; }
+.tk-propacts { display:flex; gap:8px; justify-content:flex-end; margin-top:9px; }
+
+.tk-add { display:flex; gap:8px; align-items:center; margin-bottom:14px; }
+.tk-addinp { flex:1 1 auto; min-width:0; }
+.tk-adddue { flex:0 0 160px; }
+
+.tk-filters { display:flex; gap:7px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+.tk-chip { border:1px solid var(--line); background:var(--panel2); color:var(--dim); border-radius:20px; padding:4px 12px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.tk-chip.on { border-color:var(--amber); color:var(--ink); background:rgba(255,176,32,.12); }
+.tk-donetog { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); cursor:pointer; white-space:nowrap; }
+.tk-donetog input[type="checkbox"] { width:14px; height:14px; flex:0 0 auto; margin:0; cursor:pointer; }
+
+.tk-list { border:1px solid var(--line); border-radius:11px; overflow:hidden; }
+.tk-empty { padding:26px 16px; color:var(--faint); font-size:13px; text-align:center; }
+.tk-row { display:flex; align-items:center; gap:10px; padding:9px 12px; border-bottom:1px solid var(--line); }
+.tk-row:last-child { border-bottom:none; }
+.tk-row:hover { background:var(--panel2); }
+.tk-row.done .tk-title { text-decoration:line-through; color:var(--faint); }
+.tk-row input[type="checkbox"] { width:16px; height:16px; flex:0 0 auto; margin:0; padding:0; cursor:pointer; accent-color:var(--amber); }
+.tk-main { flex:1; min-width:0; }
+.tk-title { font-size:13.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-notes { font-size:11.5px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.tk-pri { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
+.tk-tag { font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--dim); border:1px solid var(--line); border-radius:9px; padding:1px 7px; flex:0 0 auto; }
+.tk-src { font-size:9.5px; font-weight:800; letter-spacing:.6px; color:var(--accent,#5A7FE0); background:rgba(90,127,224,.14); border-radius:8px; padding:2px 6px; flex:0 0 auto; }
+.tk-show { font-size:11.5px; font-weight:600; color:var(--dim); background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px 9px; max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:0 0 auto; cursor:pointer; }
+.tk-show:hover:not(:disabled) { color:var(--ink); border-color:var(--amber); }
+.tk-show.gen { cursor:default; color:var(--faint); }
+.tk-due { font-size:11.5px; color:var(--dim); flex:0 0 auto; min-width:62px; text-align:right; white-space:nowrap; }
+.tk-due.late { color:var(--danger); font-weight:700; }
+.tk-due.none { color:var(--faint); }
+
+.tk-lbl { display:block; font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--dim); margin:14px 0 4px; }
+.tk-help { font-size:11.5px; color:var(--faint); line-height:1.5; margin-bottom:6px; }
+.tk-ta { width:100%; box-sizing:border-box; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px !important; }
+.tk-inp { width:100%; box-sizing:border-box; }
+.tk-check { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); margin-top:16px; cursor:pointer; }
+.tk-check input[type="checkbox"] { width:15px; height:15px; flex:0 0 auto; margin:0; cursor:pointer; accent-color:var(--amber); }
+.adm-badge { display:inline-block; min-width:18px; text-align:center; font-size:10.5px; font-weight:800; background:var(--amber); color:#1a1200; border-radius:9px; padding:1px 6px; margin-right:8px; }
+.tk-nudge { position:fixed; right:18px; bottom:18px; z-index:2200; display:flex; align-items:center; gap:12px; background:var(--panel); border:1px solid var(--amber); border-radius:12px; padding:12px 14px; box-shadow:0 10px 34px rgba(0,0,0,.45); max-width:min(420px, calc(100vw - 36px)); }
+.tk-nudgebody { display:flex; flex-direction:column; gap:1px; font-size:13px; color:var(--ink); min-width:0; }
+.tk-nudgebody span { color:var(--dim); font-size:12px; }
+.tk-nudgex { background:transparent; border:0; color:var(--faint); font-size:20px; line-height:1; cursor:pointer; padding:0 2px; }
+.tk-nudgex:hover { color:var(--ink); }
+/* ---- assistant ---------------------------------------------------------- */
+.ag-fab { position:fixed; right:20px; bottom:20px; z-index:2100; display:flex; align-items:center; gap:8px; background:var(--amber); color:#1a1200; border:0; border-radius:26px; padding:11px 18px; font-size:13.5px; font-weight:700; cursor:pointer; box-shadow:0 8px 26px rgba(0,0,0,.42); }
+.ag-fab:hover { filter:brightness(1.06); }
+.ag-scrim { position:fixed; inset:0; background:rgba(4,8,18,.6); z-index:2300; display:flex; justify-content:flex-end; }
+.ag-drawer { width:min(460px, 100vw); height:100%; background:var(--panel); border-left:1px solid var(--line); display:flex; flex-direction:column; }
+.ag-top { display:flex; align-items:center; gap:10px; padding:14px 16px; border-bottom:1px solid var(--line); }
+.ag-title { flex:1; font-size:15px; font-weight:700; color:var(--ink); }
+.ag-mini { border:1px solid var(--line); background:transparent; color:var(--dim); border-radius:7px; padding:3px 10px; font-size:11.5px; cursor:pointer; }
+.ag-mini:hover { color:var(--ink); }
+.ag-x { background:transparent; border:0; color:var(--faint); font-size:24px; line-height:1; cursor:pointer; padding:0 4px; }
+.ag-x:hover { color:var(--ink); }
+.ag-body { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
+.ag-hint { color:var(--dim); font-size:13px; line-height:1.6; }
+.ag-hint b { color:var(--ink); display:block; margin-bottom:8px; }
+.ag-eg { color:var(--faint); font-size:12.5px; padding:3px 0 3px 12px; border-left:2px solid var(--line); margin:3px 0; }
+.ag-note { margin-top:14px; padding-top:12px; border-top:1px solid var(--line); font-size:12px; color:var(--faint); line-height:1.55; }
+.ag-msg { max-width:86%; padding:9px 12px; border-radius:13px; font-size:13.5px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+.ag-msg.me { align-self:flex-end; background:var(--accent,#2E6BB8); color:#fff; border-bottom-right-radius:4px; }
+.ag-msg.it { align-self:flex-start; background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-bottom-left-radius:4px; }
+.ag-thinking { color:var(--faint); font-style:italic; }
+.ag-confirm { align-self:stretch; border:1px solid var(--amber); background:rgba(255,176,32,.08); border-radius:12px; padding:12px 14px; }
+.ag-confirmhd { font-size:10.5px; font-weight:800; letter-spacing:.6px; text-transform:uppercase; color:var(--amber); margin-bottom:7px; }
+.ag-confirmsays { font-size:13.5px; color:var(--ink); line-height:1.5; margin-bottom:11px; }
+.ag-confirmacts { display:flex; gap:8px; justify-content:flex-end; }
+.ag-err { background:rgba(255,107,107,.12); border:1px solid var(--danger); color:var(--danger); border-radius:8px; padding:8px 11px; font-size:12.5px; }
+.ag-foot { display:flex; gap:8px; align-items:flex-end; padding:12px 14px; border-top:1px solid var(--line); }
+.ag-inp { flex:1; min-width:0; resize:none; max-height:120px; box-sizing:border-box; }
+@media (max-width: 560px) { .ag-drawer { width:100vw; } .ag-fab { right:14px; bottom:14px; padding:10px 15px; } }
+
+@media (max-width: 760px) {
+  .tk-add { flex-wrap:wrap; }
+  .tk-adddue { flex:1 1 120px; }
+  .tk-tag, .tk-notes { display:none; }
+  .tk-show { max-width:96px; }
+}
 .pl-sheetimport { border-bottom:1px solid var(--line); padding-bottom:10px; margin-bottom:10px; }
 .pl-sheetrow { display:flex; gap:8px; align-items:center; }
 .pl-sheetpreview { margin-top:8px; }

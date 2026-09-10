@@ -268,3 +268,25 @@ export const getQuoteTermsPdfMeta = () => api("GET", "/api/quotes?termsPdf=meta"
 export const getQuoteTermsPdf = () => api("GET", "/api/quotes?termsPdf=1");
 export const saveQuoteTermsPdf = (payload) => api("POST", "/api/quotes?termsPdf=1", payload);
 export const deleteQuoteTermsPdf = () => api("DELETE", "/api/quotes?termsPdf=1");
+
+/* ============================================================
+   TASKS — the account-wide to-do list, and the inbox that feeds
+   it. Admin-gated on the server, both reading and writing.
+   ============================================================ */
+export const listTasks = (status) =>
+  api("GET", "/api/tasks" + (status ? "?status=" + encodeURIComponent(status) : ""));
+export const createTask = (task) => api("POST", "/api/tasks", { task });
+export const updateTask = (id, patch) =>
+  api("PATCH", "/api/tasks?id=" + encodeURIComponent(id), { patch });
+export const deleteTask = (id) => api("DELETE", "/api/tasks?id=" + encodeURIComponent(id));
+// Which addresses and numbers may file things, and whether the digest is on.
+export const getInboxSettings = () => api("GET", "/api/tasks?settings=1");
+export const saveInboxSettings = (settings) => api("POST", "/api/tasks?settings=1", { settings });
+
+/* The assistant. Threads are kept server-side so a conversation
+   started by text can be picked up in the app and vice versa. */
+export const getAgentThread = () => api("GET", "/api/agent");
+export const sendAgent = (message) => api("POST", "/api/agent", { message });
+export const confirmAgent = () => api("POST", "/api/agent?confirm=1", {});
+export const cancelAgent = () => api("POST", "/api/agent?cancel=1", {});
+export const resetAgent = () => api("POST", "/api/agent?reset=1", {});
