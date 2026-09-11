@@ -213,6 +213,17 @@ export async function cancelPending({ channel, party }) {
   return { threadId: thread.id, reply: "Left it alone.", pending: null };
 }
 
+/* Start a thread over. Additive: the in-app panel resets through the handler
+   below, and this is the same thing addressed by channel and party, for a
+   transport that has no threadId to hand — /new in Telegram. Any pending
+   change is dropped with the history, which is the point: after a reset there
+   must be nothing left that a later "yes" could apply. */
+export async function resetThread(channel, party) {
+  const thread = await loadThread(channel, party);
+  await saveThread(thread.id, { messages: [], pending: null });
+  return { threadId: thread.id };
+}
+
 /* ---------------------------------------------------------------------------
    HTTP
 --------------------------------------------------------------------------- */

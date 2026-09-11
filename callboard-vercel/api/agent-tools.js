@@ -181,6 +181,97 @@ export const READ_TOOLS = {
     },
   },
 
+  /* The holding list. Items the user asked for away from a desk, parked
+     against a show until they decide whether they really go on the job.
+     Stored as tasks so there is no second table and no second screen — an
+     `agent.hold` payload is what makes a task a held item rather than a
+     reminder. */
+  get_holding: {
+    spec: {
+      name: "get_holding",
+      description: "Gear being considered for a show but not yet on its pull list or quote. Omit `show` for everything.",
+      input_schema: { type: "object", properties: { show: { type: "string" } } },
+    },
+    run: async (ctx, input) => {
+      let filter = "";
+      if (input && input.show) {
+        const s = await resolveShow(ctx, input.show);
+        if (!s) return "No show matches that.";
+        filter = "&event_id=eq." + encodeURIComponent(s.id);
+      }
+      const rows = await supabaseRest(
+        "GET", "/tasks?status=eq.open&select=*" + filter + "&order=created_at.asc&limit=200", null);
+      const held = (rows || []).filter((r) => r.agent && r.agent.hold);
+      if (!held.length) return input && input.show ? "Nothing being held for that show." : "Nothing on hold.";
+      const byId = {};
+      (await shows(ctx)).forEach((s) => { byId[s.id] = s.name; });
+      return held.map((r) => {
+        const h = r.agent.hold;
+        const list = (h.items || []).map((x) => `${x.qty ? x.qty + "x " : ""}${x.item}`).join(", ");
+        return `${byId[r.event_id] || "unknown show"} — for the ${h.target === "quote" ? "quote" : "pull list"}` +
+               (h.case_name ? ` (${h.case_name})` : "") + `: ${list}` +
+               (h.note ? ` — ${h.note}` : "");
+      }).join("\n");
+    },
+  },
+
+  get_quotes: {
+    spec: {
+      name: "get_quotes",
+      description:
+        "Quotes. With no arguments, every quote and its status and total. With `show`, that show's quotes. With `quote` (an id or a quote name), that one quote's lines in full.",
+      input_schema: {
+        type: "object",
+        properties: { show: { type: "string" }, quote: { type: "string" } },
+      },
+    },
+    run: async (ctx, input) => {
+      const cols = "id,family_id,version,status,name,start_date,end_date,total,event_id,updated_at";
+      const i = input || {};
+
+      if (i.quote) {
+        let rows = await supabaseRest(
+          "GET", "/quotes?id=eq." + encodeURIComponent(i.quote) + "&select=*", null);
+        if (!rows || !rows.length) {
+          const all = await supabaseRest("GET", "/quotes?select=" + cols + "&order=updated_at.desc&limit=200", null);
+          const q = String(i.quote).trim().toLowerCase();
+          const hit = (all || []).find((r) => String(r.name || "").toLowerCase().includes(q));
+          if (!hit) return "No quote matches that.";
+          rows = await supabaseRest("GET", "/quotes?id=eq." + encodeURIComponent(hit.id) + "&select=*", null);
+        }
+        const r = rows[0];
+        const data = (r.data && typeof r.data === "object") ? r.data : {};
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        if (!lines.length) return `${r.name || "Untitled"} v${r.version} [${r.status || "draft"}] — no lines yet.`;
+        const byDept = {};
+        lines.forEach((l) => {
+          const d = l.department || "Misc";
+          (byDept[d] = byDept[d] || []).push(
+            `${l.qty || 1}x ${l.name || "(unnamed)"}` +
+            (l.days && Number(l.days) !== 1 ? ` for ${l.days} days` : "") +
+            ` @ ${money(l.rate)}`);
+        });
+        const body = Object.keys(byDept).sort()
+          .map((d) => d + ":\n  " + byDept[d].slice(0, 40).join("\n  ")).join("\n");
+        return `${r.name || "Untitled"} v${r.version} [${r.status || "draft"}] — ${money(r.total)}\n${body}`;
+      }
+
+      let filter = "";
+      if (i.show) {
+        const s = await resolveShow(ctx, i.show);
+        if (!s) return "No show matches that.";
+        filter = "&event_id=eq." + encodeURIComponent(s.id);
+      }
+      const rows = await supabaseRest(
+        "GET", "/quotes?select=" + cols + filter + "&order=updated_at.desc&limit=100", null);
+      if (!rows || !rows.length) return i.show ? "No quotes for that show." : "No quotes.";
+      return rows.slice(0, 60).map((r) =>
+        `${r.name || "Untitled"} v${r.version} — ${money(r.total)} [${r.status || "draft"}]` +
+        (r.start_date ? `, ${r.start_date}` : "")
+      ).join("\n");
+    },
+  },
+
   get_billing: {
     spec: {
       name: "get_billing",
@@ -338,6 +429,74 @@ export const WRITE_TOOLS = {
       }]);
       await saveShow(s.id, underData, { ...ev, todos });
       return `Added to ${s.name}'s task list.`;
+    },
+  },
+
+  /* Park gear against a show without touching the pull list or the quote.
+     This is the tool to reach for away from a desk: the pull list keeps
+     meaning "what is going on the truck", the quote keeps meaning "what the
+     client is being charged", and neither acquires a half-decision made in a
+     loading dock. Promoting a held item into the real list happens in the app,
+     where the rest of the list is visible. */
+  hold_for_show: {
+    spec: {
+      name: "hold_for_show",
+      description:
+        "Put gear on a show's holding list — things being considered, not yet committed. Use this rather than add_pull_items when the user is thinking aloud, says 'maybe', 'might need', 'pencil in', or is away from the office. Nothing is added to the pull list or the quote.",
+      input_schema: {
+        type: "object",
+        properties: {
+          show: { type: "string" },
+          target: {
+            type: "string", enum: ["pull", "quote"],
+            description: "Where it is eventually headed. Defaults to the pull list.",
+          },
+          case_name: { type: "string", description: "Suggested case, if the user said one" },
+          category: { type: "string", enum: ["Audio", "Video", "Lighting", "Power", "Scenic", "Misc"] },
+          items: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { item: { type: "string" }, qty: { type: "string" } },
+              required: ["item"],
+            },
+          },
+          note: { type: "string", description: "Why, if the user gave a reason" },
+        },
+        required: ["show", "items"],
+      },
+    },
+    describe: async (ctx, i) => {
+      const s = await resolveShow(ctx, i.show);
+      if (!s) return null;
+      const list = (i.items || []).map((x) => `${x.qty ? x.qty + "x " : ""}${x.item}`).join(", ");
+      return `Hold for ${s.name}, for the ${i.target === "quote" ? "quote" : "pull list"}` +
+             (i.case_name ? ` (${i.case_name})` : "") + `: ${list}` +
+             (i.note ? ` — ${i.note}` : "") +
+             ". Nothing goes on the pull list until you promote it in the app.";
+    },
+    apply: async (ctx, i) => {
+      const s = await resolveShow(ctx, i.show);
+      if (!s) return "That show no longer exists.";
+      const items = (i.items || [])
+        .filter((x) => String(x.item || "").trim())
+        .map((x) => ({ item: String(x.item).trim().slice(0, 200), qty: x.qty == null ? "" : String(x.qty).slice(0, 20) }));
+      if (!items.length) return "Nothing to hold.";
+      const target = i.target === "quote" ? "quote" : "pull";
+      const list = items.map((x) => `${x.qty ? x.qty + "x " : ""}${x.item}`).join(", ");
+      await supabaseRest("POST", "/tasks", {
+        title: ("Considering for the " + (target === "quote" ? "quote" : "pull list") + ": " + list).slice(0, 300),
+        notes: i.note ? String(i.note).slice(0, 1000) : "",
+        event_id: s.id,
+        kind: "gear",
+        status: "open",
+        /* review = true puts it in the same "waiting on you" bucket as an
+           inbox proposal, so it cannot be mistaken for a settled to-do. */
+        review: true,
+        source: "app",
+        agent: { hold: { target, case_name: i.case_name || "", category: i.category || "Misc", items, note: i.note || "" } },
+      }, "return=representation");
+      return `Holding ${items.length} item${items.length === 1 ? "" : "s"} for ${s.name}. Promote it in the app when you've decided.`;
     },
   },
 };

@@ -61,12 +61,17 @@ async function loadSettings() {
       // public the moment you forward from it, so an allowlist is the only
       // thing standing between your task list and anyone who learns it.
       senders: Array.isArray(v && v.senders) ? v.senders : [],
+      // Numeric Telegram user ids. Separate from `senders` because they are a
+      // different kind of thing: an id is issued by Telegram and cannot be
+      // chosen, so it is compared exactly rather than loosely the way a phone
+      // number is.
+      telegramIds: Array.isArray(v && v.telegramIds) ? v.telegramIds : [],
       digest: !(v && v.digest === false),
       inboxAddress: (v && v.inboxAddress) || "",
       smsNumber: (v && v.smsNumber) || "",
     };
   } catch (e) {
-    return { senders: [], digest: true, inboxAddress: "", smsNumber: "" };
+    return { senders: [], telegramIds: [], digest: true, inboxAddress: "", smsNumber: "" };
   }
 }
 
@@ -74,6 +79,13 @@ async function saveSettings(next) {
   const clean = {
     senders: (Array.isArray(next.senders) ? next.senders : [])
       .map((s) => String(s || "").trim().toLowerCase())
+      .filter(Boolean)
+      .slice(0, 50),
+    // Digits only. Anything else is a paste accident — a @username, a link —
+    // and storing it would create an entry that can never match, which reads
+    // later as "I am on the list" when you are not.
+    telegramIds: (Array.isArray(next.telegramIds) ? next.telegramIds : [])
+      .map((s) => String(s || "").trim().replace(/[^0-9]/g, ""))
       .filter(Boolean)
       .slice(0, 50),
     digest: next.digest !== false,
