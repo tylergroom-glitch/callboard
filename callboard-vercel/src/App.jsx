@@ -6296,7 +6296,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.22.0";
+const APP_VERSION = "1.23.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
@@ -10873,6 +10873,12 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
             })}
           </div>
         </div>
+        <div className="roster-form-col full">
+          <label className="roster-chk">
+            <input type="checkbox" checked={!!vals.travelIntl} onChange={(e) => onChange("travelIntl", e.target.checked)} />
+            Willing and able to travel internationally
+          </label>
+        </div>
         <div className="roster-form-col">
           <label className="roster-lbl">Phone</label>
           <input className="roster-inp" value={vals.phone || ""} placeholder="555-000-0000" onChange={(e) => onChange("phone", e.target.value)} onBlur={(e) => { const f = fmtPhone(e.target.value); if (f !== e.target.value) onChange("phone", f); }} />
@@ -11024,6 +11030,13 @@ function RosterTab() {
   };
   const copyLink = () => { navigator.clipboard?.writeText(onboardUrl).catch(() => {}); };
 
+  /* One row per person still waiting on an answer. A suggestion that has since
+     been added to the list by hand is not pending any more, so it is filtered
+     out rather than left sitting there asking to be approved twice. */
+  const suggestions = (roster || [])
+    .map((m) => ({ m, sug: String((m.data || {}).positionSuggest || "").trim() }))
+    .filter(({ sug }) => sug && !positions.some((p) => p.toLowerCase() === sug.toLowerCase()));
+
   const addPosition = async () => {
     const p = newPos.trim();
     if (!p || positions.includes(p)) return;
@@ -11033,6 +11046,38 @@ function RosterTab() {
     catch (e) { window.alert("Couldn't save: " + e.message); }
     finally { setPosBusy(false); }
   };
+  /* Suggestions come in through the PUBLIC onboarding form, so nothing a crew
+     member types reaches the master list on its own. Approving is an admin
+     action here: it adds the position to the list AND gives it to the person
+     who asked for it, then clears the suggestion so it cannot be approved
+     twice. */
+  const approveSuggestion = async (m, sug) => {
+    setPosBusy(true);
+    try {
+      if (!positions.some((p) => p.toLowerCase() === sug.toLowerCase())) {
+        await savePositions([...positions, sug]);
+      }
+      const cur = memberPositions(m.data);
+      await saveRosterMember(m.name, {
+        ...m.data,
+        positions: cur.includes(sug) ? cur : [...cur, sug],
+        positionSuggest: "",
+      }, m.id);
+      await reloadPositions();
+      await reload();
+    } catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+
+  const ignoreSuggestion = async (m) => {
+    setPosBusy(true);
+    try {
+      await saveRosterMember(m.name, { ...m.data, positionSuggest: "" }, m.id);
+      await reload();
+    } catch (e) { window.alert("Couldn't save: " + e.message); }
+    finally { setPosBusy(false); }
+  };
+
   const removePosition = async (pos) => {
     if (!window.confirm(`Remove "${pos}" from the positions list?`)) return;
     const next = positions.filter((p) => p !== pos);
@@ -11071,6 +11116,27 @@ function RosterTab() {
           </div>
         )}
       </div>
+
+      {/* ---- suggested positions ------------------------------------------
+           Anything a crew member typed into the "Other" box on the onboarding
+           form. It is already saved against them; what is pending is whether it
+           joins the list everyone picks from. */}
+      {suggestions.length > 0 && (
+        <div className="roster-sugg">
+          <div className="roster-sugghd">
+            {suggestions.length} suggested position{suggestions.length === 1 ? "" : "s"} from crew
+          </div>
+          {suggestions.map(({ m, sug }) => (
+            <div className="roster-suggrow" key={m.id}>
+              <span className="roster-suggpos">{sug}</span>
+              <span className="roster-suggwho">suggested by {m.name}</span>
+              <span className="tk-spacer" />
+              <button className="pl-quotecancelbtn" disabled={posBusy} onClick={() => ignoreSuggestion(m)}>Ignore</button>
+              <button className="pl-btn" disabled={posBusy} onClick={() => approveSuggestion(m, sug)}>Add to list</button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* position management */}
       <div className="roster-posbar">
@@ -15949,6 +16015,14 @@ const CSS = `
 /* Holding. Amber rather than blue, because a held item is a decision you have
    not made yet, not a message you have not read yet. */
 .tk-src.hold { color:#b45309; background:#fef3c7; }
+/* suggested positions, waiting on an admin */
+.roster-sugg{border:1px solid #f59e0b55; background:#f59e0b12; border-radius:10px; padding:12px 14px; margin-bottom:12px;}
+.roster-sugghd{font-size:11px; font-weight:800; letter-spacing:.5px; text-transform:uppercase; color:#b45309; margin-bottom:8px;}
+.roster-suggrow{display:flex; align-items:center; gap:10px; padding:6px 0; flex-wrap:wrap;}
+.roster-suggpos{font-size:14px; font-weight:700;}
+.roster-suggwho{font-size:12.5px; color:var(--dim);}
+.roster-chk{display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:600; cursor:pointer;}
+.roster-chk input{width:16px; height:16px;}
 .tk-hold { border-left:3px solid #f59e0b; }
 .tk-holditems { margin:8px 0 0; padding:0 0 0 18px; font-size:13.5px; line-height:1.65; }
 .tk-holditems li { margin:0; }
