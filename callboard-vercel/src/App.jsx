@@ -2354,6 +2354,50 @@ function TkProposal({ t, shows, busy, rawOpen, onToggleRaw, onConfirm, onDismiss
   );
 }
 
+/* A held item. Gear the agent was told about away from a desk, parked against
+   a show so that neither the pull list nor the quote acquires a half-decision
+   made in a loading dock. Promoting is the moment it becomes real, and it
+   happens here rather than over Telegram because this is where the rest of the
+   list is visible.
+
+   Quote-targeted holds are shown but not promotable: a quote line needs a rate,
+   days and a catalog link to be worth anything, and inventing those from a text
+   message would put a number in front of a client that nobody chose. */
+function TkHold({ t, showName, busy, onPromote, onBin }) {
+  const h = (t.agent && t.agent.hold) || {};
+  const items = Array.isArray(h.items) ? h.items : [];
+  const toQuote = h.target === "quote";
+  return (
+    <div className="tk-prop tk-hold">
+      <div className="tk-propmeta">
+        <span className="tk-src hold">HOLDING</span>
+        <span className="tk-propfrom">{showName || "unknown show"}</span>
+        <span className="tk-propsub">{toQuote ? "for the quote" : "for the pull list"}</span>
+        {h.case_name ? <span className="tk-propsub">{h.case_name}</span> : null}
+        <span className="tk-spacer" />
+      </div>
+
+      <ul className="tk-holditems">
+        {items.map((x, i) => (
+          <li key={i}>{x.qty ? <b>{x.qty}&times;</b> : null} {x.item}</li>
+        ))}
+      </ul>
+      {h.note ? <div className="tk-holdnote">{h.note}</div> : null}
+
+      <div className="tk-propacts">
+        <button className="btn ghost" onClick={onBin} disabled={busy}>Bin it</button>
+        {toQuote ? (
+          <span className="tk-holdhint">Add these on the quote yourself &mdash; they need rates.</span>
+        ) : (
+          <button className="btn" onClick={onPromote} disabled={busy || !items.length || !t.event_id}>
+            {busy ? "Adding\u2026" : "Add to pull list"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /* Who is allowed to file things, and where they send them. The allowlist is
    the whole of the security model on the inbound side — an address you have
    forwarded from is not a secret — so it is deliberately the first thing on
@@ -2366,7 +2410,7 @@ function TkSettings({ onClose }) {
 
   useEffect(() => {
     getInboxSettings()
-      .then((v) => setS({ ...v, senders: (v.senders || []).join("\n") }))
+      .then((v) => setS({ ...v, senders: (v.senders || []).join("\n"), telegramIds: (v.telegramIds || []).join("\n") }))
       .catch((e) => setErr((e && e.message) || "Couldn't load settings."));
   }, []);
 
@@ -2375,11 +2419,12 @@ function TkSettings({ onClose }) {
     try {
       const next = await saveInboxSettings({
         senders: String(s.senders || "").split(/[\n,]/).map((x) => x.trim()).filter(Boolean),
+        telegramIds: String(s.telegramIds || "").split(/[\n,]/).map((x) => x.trim()).filter(Boolean),
         digest: s.digest !== false,
         inboxAddress: s.inboxAddress || "",
         smsNumber: s.smsNumber || "",
       });
-      setS({ ...next, senders: (next.senders || []).join("\n") });
+      setS({ ...next, senders: (next.senders || []).join("\n"), telegramIds: (next.telegramIds || []).join("\n") });
       setSaved(true);
     } catch (e) { setErr((e && e.message) || "Couldn't save."); }
     setBusy(false);
@@ -2405,6 +2450,18 @@ function TkSettings({ onClose }) {
               className="tk-ta" rows={4} value={s.senders}
               onChange={(e) => setS({ ...s, senders: e.target.value })}
               placeholder={"tyler.groom@gmail.com\n+1 559 555 1234"}
+            />
+
+            <label className="tk-lbl">Telegram user ids</label>
+            <div className="tk-help">
+              One per line, digits only. Not your @username &mdash; Telegram issues everyone a
+              numeric id, and that is what the bot checks. To find yours, message the bot once and
+              look in Vercel&rsquo;s log: it writes the id of anyone it turns away.
+            </div>
+            <textarea
+              className="tk-ta" rows={2} value={s.telegramIds || ""}
+              onChange={(e) => setS({ ...s, telegramIds: e.target.value })}
+              placeholder={"123456789"}
             />
 
             <label className="tk-lbl">Your inbox address</label>
@@ -2512,7 +2569,13 @@ function TasksScreen({ onClose, onOpenShow }) {
   const shows = showRows.map((s) => ({ id: s.id, name: s.name }));
   const showName = (id) => (showRows.find((s) => s.id === id) || {}).name || "";
 
-  const proposals = tasks.filter((t) => t.review && t.status === "open");
+  /* Both are "waiting on you", but they ask different questions. A proposal
+     asks "did I read that right?"; a held item asks "does this gear actually go
+     on the job?". Mixing them would make one of those two questions invisible. */
+  const awaiting = tasks.filter((t) => t.review && t.status === "open");
+  const isHold = (t) => !!(t.agent && t.agent.hold);
+  const holds = awaiting.filter(isHold);
+  const proposals = awaiting.filter((t) => !isHold(t));
 
   /* The merged list. Tasks and show to-dos are flattened into one shape here
      and nowhere else. */
@@ -2592,6 +2655,47 @@ function TasksScreen({ onClose, onOpenShow }) {
     setBusy("");
   };
 
+  /* Read the show, fold the held items into its pull list, write it back, then
+     close the held item off. A merge, never an overwrite, exactly as the Quotes
+     push does — a pull list someone has already started is added to. */
+  const promoteHold = async (t) => {
+    const h = (t.agent && t.agent.hold) || {};
+    const items = (Array.isArray(h.items) ? h.items : []).filter((x) => String(x.item || "").trim());
+    if (!t.event_id || !items.length) return;
+    setBusy(t.id); setErr("");
+    try {
+      const full = await getEvent(t.event_id);
+      const pull = full.pull && full.pull.cases
+        ? full.pull
+        : { cases: Array.isArray(full.pull) ? full.pull : [], loose: [] };
+      const cases = (pull.cases || []).slice();
+      const wanted = String(h.case_name || "").trim().toLowerCase();
+      let idx = wanted ? cases.findIndex((c) => String(c.case || "").trim().toLowerCase() === wanted) : -1;
+      if (idx < 0) {
+        cases.push({
+          id: uid(),
+          caseNo: cases.reduce((m, c) => Math.max(m, Number(c.caseNo) || 0), 0) + 1,
+          case: h.case_name || "From holding",
+          category: h.category || "Misc",
+          drawers: [], items: [],
+        });
+        idx = cases.length - 1;
+      }
+      const add = items.map((x) => ({
+        id: uid(), drawer: null, item: String(x.item).trim(),
+        qty: x.qty == null ? "" : String(x.qty),
+        source: "TCG", rentedFrom: "", notes: "", out: false, in: false,
+      }));
+      cases[idx] = { ...cases[idx], items: (cases[idx].items || []).concat(add) };
+      await updateEvent(t.event_id, { data: { ...full, pull: { ...pull, cases } } });
+      const out = await updateTask(t.id, { review: false, status: "done" });
+      setTasks((prev) => prev.map((x) => (x.id === t.id ? out.task : x)));
+    } catch (e) {
+      setErr((e && e.message) || "Couldn't add those to the pull list.");
+    }
+    setBusy("");
+  };
+
   const confirmProposal = async (t, patch) => {
     setBusy(t.id);
     try {
@@ -2629,6 +2733,23 @@ function TasksScreen({ onClose, onOpenShow }) {
       </div>
 
       {err ? <div className="tk-err">{err}</div> : null}
+
+      {/* ---- holding ------------------------------------------------------ */}
+      {holds.length > 0 && (
+        <div className="tk-review">
+          <div className="tk-reviewhd">
+            {holds.length} thing{holds.length === 1 ? "" : "s"} on hold &mdash; add or bin
+          </div>
+          {holds.map((t) => (
+            <TkHold
+              key={t.id} t={t} busy={busy === t.id}
+              showName={(shows.find((s2) => s2.id === t.event_id) || {}).name}
+              onPromote={() => promoteHold(t)}
+              onBin={() => dismissProposal(t)}
+            />
+          ))}
+        </div>
+      )}
 
       {/* ---- proposals ---------------------------------------------------- */}
       {proposals.length > 0 && (
@@ -6175,7 +6296,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.21.1";
+const APP_VERSION = "1.22.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
@@ -15825,6 +15946,14 @@ const CSS = `
 .tk-pri { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
 .tk-tag { font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--dim); border:1px solid var(--line); border-radius:9px; padding:1px 7px; flex:0 0 auto; }
 .tk-src { font-size:9.5px; font-weight:800; letter-spacing:.6px; color:var(--accent,#5A7FE0); background:rgba(90,127,224,.14); border-radius:8px; padding:2px 6px; flex:0 0 auto; }
+/* Holding. Amber rather than blue, because a held item is a decision you have
+   not made yet, not a message you have not read yet. */
+.tk-src.hold { color:#b45309; background:#fef3c7; }
+.tk-hold { border-left:3px solid #f59e0b; }
+.tk-holditems { margin:8px 0 0; padding:0 0 0 18px; font-size:13.5px; line-height:1.65; }
+.tk-holditems li { margin:0; }
+.tk-holdnote { margin-top:8px; font-size:12.5px; color:var(--dim); font-style:italic; }
+.tk-holdhint { font-size:12px; color:var(--dim); align-self:center; }
 .tk-show { font-size:11.5px; font-weight:600; color:var(--dim); background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px 9px; max-width:170px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:0 0 auto; cursor:pointer; }
 .tk-show:hover:not(:disabled) { color:var(--ink); border-color:var(--amber); }
 .tk-show.gen { cursor:default; color:var(--faint); }
