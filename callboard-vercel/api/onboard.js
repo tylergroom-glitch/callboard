@@ -5,9 +5,17 @@
 //
 // The token is HMAC-signed with your existing APP_SECRET — no new env vars.
 // Links are valid for 60 days. Regenerate to invalidate old links.
-import { auth, isAdmin, airtableTable, signToken, verifyToken } from "./_lib.js";
+//
+// ---- what this endpoint may and may not write ------------------------------
+// This is the only PUBLIC write path in the application: anyone holding a link
+// can POST to it. So it writes exactly one kind of record — a person — and
+// never touches the "__positions__" record that holds the master position
+// list. A crew member can SUGGEST a position; only an admin, through
+// /api/roster, can add one. That boundary is the whole reason the suggestion
+// is stored on the person rather than appended to the list.
+import { auth, isAdmin, supabaseRest, signToken, verifyToken } from "./_lib.js";
+import { DEFAULT_POSITIONS } from "./roster.js";
 
-const TABLE = process.env.AIRTABLE_ROSTER_TABLE || "Roster";
 const POS_KEY = "__positions__";
 const DURATION = 1000 * 60 * 60 * 24 * 60; // 60 days
 
@@ -16,27 +24,53 @@ const verify = (t) => {
   return p?.scope === "onboard" ? p : null;
 };
 
-async function getPositions() {
-  try {
-    const enc = encodeURIComponent(`{Name}='${POS_KEY}'`);
-    const d = await airtableTable(TABLE, "GET", `?filterByFormula=${enc}&maxRecords=1`);
-    const rec = d.records?.[0];
-    if (rec?.fields?.Data) return JSON.parse(rec.fields.Data);
-  } catch {}
-  return ["Show Caller","Technical Director","Audio Engineer (A1)","Monitor Engineer (A2)",
-          "Camera Operator","Camera TD","Graphics Operator","Lighting Designer","Lighting Tech",
-          "LED Tech","Record Op","Playback Operator","Rigging Supervisor","Rigger",
-          "Production Manager","Stage Manager"];
+/* Position names are admin-authored, but they still reach the browser inside
+   an attribute, so they are escaped rather than trusted. */
+const esc = (s) =>
+  String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+/* jsonb comes back as an object, but a row written while this lived in
+   Airtable may still hold a JSON string. Accept both. */
+function asData(v) {
+  if (v && typeof v === "object") return v;
+  if (typeof v === "string") { try { return JSON.parse(v) || {}; } catch { return {}; } }
+  return {};
 }
 
+/* The same list /api/roster serves, read from the same row. A failure here
+   falls back to the shared default rather than to an empty form: a crew member
+   staring at no positions at all would type into the Other box, and you would
+   approve seventeen suggestions you already had. */
+async function getPositions() {
+  try {
+    const rows = await supabaseRest(
+      "GET", `/roster?name=eq.${encodeURIComponent(POS_KEY)}&select=data&limit=1`, null);
+    const d = rows && rows[0] ? asData(rows[0].data) : null;
+    if (d && Array.isArray(d.positions) && d.positions.length) return d.positions;
+  } catch {}
+  return DEFAULT_POSITIONS;
+}
+
+/* Match on name, exactly as the Airtable version did, so a crew member filling
+   the form twice updates their record rather than creating a second one.
+   The config row is excluded from the match: nobody is called __positions__,
+   but this is a public endpoint and the cost of being sure is one query
+   parameter. */
 async function upsert(name, data) {
-  const enc = encodeURIComponent(`AND({Name}='${name.replace(/'/g, "\\'")}', {Name}!='${POS_KEY}')`);
-  const d = await airtableTable(TABLE, "GET", `?filterByFormula=${enc}&maxRecords=1`);
-  const fields = { Name: name, Data: JSON.stringify(data) };
-  if (d.records?.[0]) {
-    await airtableTable(TABLE, "PATCH", "/" + d.records[0].id, { fields });
+  const enc = encodeURIComponent(name);
+  const rows = await supabaseRest(
+    "GET",
+    `/roster?name=eq.${enc}&name=neq.${encodeURIComponent(POS_KEY)}&select=id&limit=1`,
+    null
+  );
+  const now = new Date().toISOString();
+  if (rows && rows[0]) {
+    await supabaseRest("PATCH", `/roster?id=eq.${encodeURIComponent(rows[0].id)}`,
+      { name, data, updated_at: now });
   } else {
-    await airtableTable(TABLE, "POST", "", { fields });
+    await supabaseRest("POST", "/roster", { name, data, updated_at: now }, "return=minimal");
   }
 }
 
@@ -63,6 +97,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .fld input:focus,.fld select:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.1)}
 .fld input::placeholder{color:#94A3B8}
 .req{color:#DC2626}
+.opt{font-weight:500;color:#94A3B8}
 .submit{width:100%;background:#0F1E35;color:#fff;border:none;border-radius:10px;padding:14px;font-size:15px;font-weight:700;cursor:pointer;margin-top:20px}
 .submit:hover{background:#1a2f50}
 .submit:disabled{opacity:.55;cursor:not-allowed}
@@ -71,7 +106,26 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .msg-title{font-size:20px;font-weight:700;color:#0F1E35;margin-bottom:8px}
 .msg-body{font-size:14px;color:#64748B;line-height:1.6}
 .hint{font-size:12.5px;color:#64748B;line-height:1.55;margin:-2px 0 12px}
+.hint.sm{font-size:11.5px;margin:2px 0 0}
 .err{background:#FEF2F2;border:1px solid #FECACA;border-radius:8px;padding:10px 14px;font-size:13px;color:#DC2626;margin-top:12px;display:none}
+/* position chips — tappable, and big enough to hit on a phone */
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #D8DEE7;border-radius:20px;padding:7px 13px;font-size:13px;font-weight:600;color:#475569;cursor:pointer;background:#fff;user-select:none;line-height:1.2}
+.chip input{position:absolute;opacity:0;width:0;height:0;margin:0}
+.chip:has(input:checked){background:#0F1E35;border-color:#0F1E35;color:#fff}
+.chip:has(input:focus-visible){box-shadow:0 0 0 3px rgba(37,99,235,.25)}
+.check{display:flex;align-items:flex-start;gap:10px;font-size:13.5px;color:#334155;font-weight:600;line-height:1.45;cursor:pointer;padding:11px 13px;border:1px solid #D8DEE7;border-radius:10px;background:#fff}
+.check input{width:18px;height:18px;flex:0 0 auto;margin-top:1px;accent-color:#0F1E35}
+.check span{font-weight:500;color:#64748B;display:block;font-size:12.5px;margin-top:2px}
+/* privacy */
+.priv{margin-top:22px;border-top:1px solid #E2E8F0;padding-top:16px}
+.priv-lead{font-size:12.5px;color:#475569;line-height:1.6}
+.priv details{margin-top:8px}
+.priv summary{font-size:12.5px;font-weight:700;color:#2563EB;cursor:pointer;padding:4px 0}
+.priv-body{font-size:12px;color:#64748B;line-height:1.65;margin-top:8px}
+.priv-body h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#94A3B8;margin:14px 0 5px}
+.priv-body ul{margin:0 0 0 17px}
+.priv-body li{margin:3px 0}
 @media(max-width:480px){.grid{grid-template-columns:1fr}}
 </style></head><body>
 <div class="card">${content}</div>
@@ -79,10 +133,79 @@ ${extra}
 </body></html>`;
 }
 
+/* The privacy notice lives on the page rather than behind a link, because a
+   link to a policy is a link nobody opens. The one-line summary is the part
+   that gets read; the detail is there for anyone who wants it. */
+function privacyBlock() {
+  return `
+  <div class="priv">
+    <div class="priv-lead">
+      <strong>How we use this.</strong> To book your travel, get you on a call sheet and
+      look after you on site. We never sell your information and never share your mobile
+      number for marketing.
+    </div>
+    <details>
+      <summary>Read the full privacy notice</summary>
+      <div class="priv-body">
+        <h4>Why the ID details</h4>
+        Airlines require the name, date of birth and gender on a ticket to match your ID
+        exactly &mdash; a TSA rule, not ours. We use those three for booking travel and
+        nothing else, and never in any decision about whether you get work.
+
+        <h4>The sensitive ones</h4>
+        <ul>
+          <li><strong>Dietary restrictions</strong> go to catering as counts and requirements
+              &mdash; &ldquo;one vegetarian, one nut allergy&rdquo; &mdash; never as a list of
+              names and conditions.</li>
+          <li><strong>Your Known Traveler Number</strong> is used when booking your flights
+              and nowhere else.</li>
+        </ul>
+        Every field except your name is optional. Leave any of them blank; the only
+        consequence is we may come back to you before booking a flight.
+
+        <h4>What we never ask for here</h4>
+        Not your passport number &mdash; only the expiry date. Not your Social Security
+        number. Not your bank details. Not your address. If a job later needs any of those,
+        we will ask separately and say why.
+
+        <h4>Who sees it</h4>
+        <ul>
+          <li>The people at Touchstone who staff and run shows.</li>
+          <li>Venues and clients &mdash; usually just your name and position, for a credential.</li>
+          <li>Airlines, hotels and transport, when we are booking for you.</li>
+          <li>Our accountant and payroll provider, for paying you.</li>
+        </ul>
+
+        <h4>Text messages</h4>
+        If you give us your mobile we may text you about jobs &mdash; call times, schedule
+        changes, gear questions. Message frequency varies. Message and data rates may
+        apply. Reply STOP to stop all texts or HELP for help. Stopping texts does not
+        affect your work with us. Your number is never shared with third parties.
+
+        <h4>How long we keep it</h4>
+        While you work with us, and as long afterwards as we might call you for another
+        job. Travel details for as long as we may be booking for you &mdash; ask and we
+        clear them sooner. Payment and tax records for as long as the law requires.
+
+        <h4>Changing or deleting it</h4>
+        Email [YOUR SUPPORT EMAIL] and ask. You can see what we hold, correct it, delete
+        it, clear just the travel details, or stop the texts. No form, no reason needed,
+        and we reply within 30 days.
+
+        <h4>Security</h4>
+        This is a private, invite-only system. The link you used expires after 60 days and
+        we can revoke it sooner. If anything involving your information goes wrong, we
+        will tell you promptly.
+      </div>
+    </details>
+  </div>`;
+}
+
 function formPage(token, positions) {
-  const posOpts = `<option value="">— Select —</option>` +
-    positions.map(p => `<option value="${p}">${p}</option>`).join("") +
-    `<option value="Other">Other</option>`;
+  const chips = positions.map((p, i) =>
+    `<label class="chip"><input type="checkbox" class="posbox" value="${esc(p)}" id="pos${i}">${esc(p)}</label>`
+  ).join("");
+
   return html(200, `
 <div class="hdr">
   <div class="hdr-logo">Touchstone Creative Group</div>
@@ -93,13 +216,25 @@ function formPage(token, positions) {
   <div class="sect">Contact</div>
   <div class="grid">
     <div class="fld full"><label>Full name <span class="req">*</span></label><input id="name" placeholder="First Last" required></div>
-    <div class="fld"><label>Position / role</label><select id="position">${posOpts}</select></div>
+    <div class="fld full">
+      <label>Positions <span class="opt">&mdash; tap all that you work</span></label>
+      <div class="chips">${chips}</div>
+      <input id="positionOther" placeholder="Something else? Type it here" style="margin-top:9px">
+      <div class="hint sm">Anything you type goes to your production manager to add to the list.</div>
+    </div>
     <div class="fld"><label>Phone</label><input id="phone" type="tel" placeholder="(555) 000-0000"></div>
     <div class="fld full"><label>Email</label><input id="email" type="email" placeholder="you@email.com"></div>
   </div>
   <div class="sect">Personal &amp; travel</div>
   <div class="hint">Airlines check these against your ID, so the name, birthday and gender have to match it exactly — not a nickname or a shortened first name. We only use them to book your travel.</div>
   <div class="grid">
+    <div class="fld full">
+      <label class="check"><input type="checkbox" id="travelIntl">
+        <div>Willing and able to travel internationally
+          <span>Tick this only if you hold a valid passport and can travel abroad for work.</span>
+        </div>
+      </label>
+    </div>
     <div class="fld full"><label>Name exactly as printed on your ID</label><input id="legalName" placeholder="Leave blank if it is the same as above"></div>
     <div class="fld"><label>Birthday</label><input id="birthday" type="date"></div>
     <div class="fld"><label>Gender on your ID</label>
@@ -123,6 +258,7 @@ function formPage(token, positions) {
   </div>
   <div id="err" class="err"></div>
   <button class="submit" id="sub">Submit my info</button>
+  ${privacyBlock()}
 </div>`,
   `<script>
 document.getElementById('sub').onclick=async()=>{
@@ -132,9 +268,13 @@ document.getElementById('sub').onclick=async()=>{
   btn.disabled=true;btn.textContent='Saving…';
   document.getElementById('err').style.display='none';
   const get=id=>document.getElementById(id).value;
+  const positions=Array.prototype.slice.call(document.querySelectorAll('.posbox'))
+    .filter(function(b){return b.checked}).map(function(b){return b.value});
   try{
     const r=await fetch('/api/onboard?token=${token}',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({name,position:get('position'),phone:get('phone'),email:get('email'),
+      body:JSON.stringify({name,positions:positions,positionOther:get('positionOther'),
+        travelIntl:document.getElementById('travelIntl').checked,
+        phone:get('phone'),email:get('email'),
         legalName:get('legalName'),gender:get('gender'),
         birthday:get('birthday'),shirtSize:get('shirtSize'),homeAirport:get('homeAirport'),
         tsaPrecheck:get('tsaPrecheck'),passportExp:get('passportExp'),dietary:get('dietary'),
@@ -195,8 +335,33 @@ export default async function handler(req, res) {
     if (!name) { res.status(400).setHeader("Content-Type","application/json").end(JSON.stringify({error:"Name is required"})); return; }
 
     try {
+      const known = await getPositions();
+
+      /* Only positions that are really on the list are accepted. Without this,
+         a crafted POST could put any string on a person's record and it would
+         show up in the roster as though an admin had created it. The "Other"
+         box below is the sanctioned way in, and it goes somewhere else. */
+      const chosen = (Array.isArray(body.positions) ? body.positions : [])
+        .map((p) => String(p || "").trim())
+        .filter((p) => known.includes(p))
+        .slice(0, 20);
+
+      /* A suggestion. Stored ON THE PERSON, never appended to the master list —
+         adding to that list is an admin action through /api/roster, and this is
+         a public endpoint. It is dropped if it already exists, so approving the
+         same thing twice is impossible. */
+      const suggestRaw = String(body.positionOther || "").trim().slice(0, 60);
+      const suggest = suggestRaw &&
+        !known.some((k) => k.toLowerCase() === suggestRaw.toLowerCase()) &&
+        !chosen.some((c) => c.toLowerCase() === suggestRaw.toLowerCase())
+          ? suggestRaw : "";
+
       await upsert(name, {
-        position: body.position || "",
+        positions: chosen,
+        // Kept so anything still reading the old single field keeps working.
+        position: chosen[0] || "",
+        positionSuggest: suggest,
+        travelIntl: body.travelIntl === true,
         phone: body.phone || "",
         email: body.email || "",
         legalName: body.legalName || "",
