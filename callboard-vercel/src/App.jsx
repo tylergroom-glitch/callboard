@@ -2893,11 +2893,43 @@ function reconcile(invCases, catItems) {
   // and sub-rented gear have no case — so this is for review, not cleanup.
   const catalogOnly = (catItems || []).filter((c) => !inCases.has(ciKey(c.name)));
 
+  /* The same inventory seen as CASES rather than as loose items, so a case can
+     be imported as a package — one catalog line at one rate that breaks out
+     into its parts on a pull list. Items are deduplicated within the case and
+     their quantities summed, because two rows of the same thing in one case is
+     a quantity, not two components. */
+  const byCase = (invCases || []).map((c) => {
+    const items = (c.data && Array.isArray(c.data.items)) ? c.data.items : [];
+    const m = new Map();
+    items.forEach((it) => {
+      const k = ciKey(it.item);
+      if (!k) return;
+      const g = m.get(k) || { key: k, name: String(it.item).trim(), qty: 0 };
+      g.qty += num(it.qty) || 1;
+      m.set(k, g);
+    });
+    const members = Array.from(m.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      key: c.id || c.name,
+      name: c.name,
+      category: ["Audio","Video","Lighting","Power","Scenic","Misc"].indexOf(c.category) >= 0 ? c.category : "Misc",
+      members,
+      // How many of its contents the catalog has never heard of. Importing the
+      // case creates those first, because a component is a REFERENCE to a
+      // catalog item and cannot point at something that does not exist.
+      missingCount: members.filter((x) => !catByKey.has(x.key)).length,
+      // A package of this name already in the catalog — importing would replace
+      // its component list, so the user is asked first.
+      existing: catByKey.get(ciKey(c.name)) || null,
+    };
+  }).filter((c) => c.members.length);
+
   const byName = (a, b) => a.name.localeCompare(b.name);
   return {
     missing: missing.sort(byName),
     mismatch: mismatch.sort(byName),
     catalogOnly: catalogOnly.slice().sort(byName),
+    byCase: byCase.sort(byName),
     matched: inCases.size - missing.length,
     totalInCases: inCases.size,
   };
@@ -2959,6 +2991,8 @@ function CatalogReconcile({ onClose, onDone }) {
   const [rec, setRec] = useState(null);
   const [pickAdd, setPickAdd] = useState(new Set());
   const [pickQty, setPickQty] = useState(new Set());
+  const [pickCase, setPickCase] = useState(new Set());
+  const [fCase, setFCase] = useState("");
   const [prog, setProg] = useState({ done: 0, total: 0 });
   const [result, setResult] = useState(null);
   const [fMiss, setFMiss] = useState("");
@@ -2974,6 +3008,7 @@ function CatalogReconcile({ onClose, onDone }) {
       // Nothing is ticked. This screen exists because you wanted to choose.
       setPickAdd(new Set());
       setPickQty(new Set());
+      setPickCase(new Set());
       setStep("review");
     } catch (ex) {
       setErr((ex && ex.message) || "Couldn't read your inventory or catalog.");
@@ -2989,18 +3024,39 @@ function CatalogReconcile({ onClose, onDone }) {
   const apply = async () => {
     const adds = rec.missing.filter((g) => pickAdd.has(g.key));
     const qtys = rec.mismatch.filter((g) => pickQty.has(g.key));
+    const cases = rec.byCase.filter((c) => pickCase.has(c.key));
+
+    /* Importing a case also creates any of its contents the catalog is missing,
+       whether or not they were ticked above — a package cannot reference an
+       item that does not exist. Deduplicated against the explicit ticks so
+       nothing is created twice. */
+    const needed = new Map();
+    cases.forEach((c) => c.members.forEach((m) => {
+      if (rec.missing.some((g) => g.key === m.key) && !pickAdd.has(m.key) && !needed.has(m.key)) {
+        const g = rec.missing.find((x) => x.key === m.key);
+        if (g) needed.set(m.key, g);
+      }
+    }));
+    const autoAdds = Array.from(needed.values());
+
     setErr(""); setStep("working");
-    setProg({ done: 0, total: (adds.length ? 1 : 0) + qtys.length });
-    let added = 0, fixed = 0, failed = [];
+    setProg({ done: 0, total: adds.length + autoAdds.length + qtys.length + cases.length });
+    let added = 0, fixed = 0, packaged = 0, failed = [];
     try {
-      if (adds.length) {
-        await bulkCatalogImport(adds.map((g) => ({
-          name: g.name, department: g.department, rate: "",
-          qtyOwned: g.anyOwned && g.qty ? String(g.qty) : "",
-          subCost: "", isGeneric: false, substitutes: [], components: [],
-          notes: "In " + g.cases.join(", "),
-        })));
-        added = adds.length;
+      /* One call per item rather than bulkCatalogImport. The bulk endpoint
+         deliberately writes only name, department and rate — it exists for the
+         rate-spreadsheet wizard — so Qty owned never landed, despite this
+         screen promising it would. This is the fix. */
+      for (const g of adds.concat(autoAdds)) {
+        try {
+          await saveCatalogItem({
+            name: g.name, department: g.department, rate: "",
+            qtyOwned: g.anyOwned && g.qty ? String(g.qty) : "",
+            subCost: "", isGeneric: false, substitutes: [], components: [],
+            notes: "In " + g.cases.join(", "),
+          });
+          added += 1;
+        } catch (e) { failed.push(g.name); }
         setProg((p) => ({ ...p, done: p.done + 1 }));
       }
       for (const g of qtys) {
@@ -3012,7 +3068,44 @@ function CatalogReconcile({ onClose, onDone }) {
         } catch (ex) { failed.push(g.name); }
         setProg((p) => ({ ...p, done: p.done + 1 }));
       }
-      setResult({ added, fixed, failed });
+
+      /* Packages last, because they reference the items created above and need
+         their ids. One re-read of the catalog gets every id at once rather than
+         a lookup per component. */
+      if (cases.length) {
+        const fresh = await listCatalog();
+        const idByKey = new Map((fresh || []).map((c) => [ciKey(c.name), c.id]));
+        for (const c of cases) {
+          try {
+            const components = c.members
+              .map((m) => ({ itemId: idByKey.get(m.key), qty: String(m.qty || 1) }))
+              .filter((x) => x.itemId);
+            if (!components.length) { failed.push(c.name + " (no contents found)"); }
+            else {
+              const prior = idByKey.get(ciKey(c.name));
+              await saveCatalogItem({
+                ...(prior ? { id: prior } : {}),
+                name: c.name,
+                department: c.category,
+                /* Rate deliberately blank on a new package. A case is worth
+                   what you charge for it, which is not the sum of its parts and
+                   is not something this screen can know. */
+                rate: prior ? (c.existing ? c.existing.rate : "") : "",
+                qtyOwned: prior && c.existing ? c.existing.qtyOwned : "",
+                subCost: prior && c.existing ? c.existing.subCost : "",
+                isGeneric: false,
+                substitutes: prior && c.existing ? (c.existing.substitutes || []) : [],
+                components,
+                notes: "Package — contents from the " + c.name + " case",
+              });
+              packaged++;
+            }
+          } catch (ex) { failed.push(c.name); }
+          setProg((p) => ({ ...p, done: p.done + 1 }));
+        }
+      }
+
+      setResult({ added, fixed, packaged, failed });
       setStep("done");
     } catch (ex) {
       setErr((ex && ex.message) || "Update failed. Anything before the failure was saved.");
@@ -3037,6 +3130,22 @@ function CatalogReconcile({ onClose, onDone }) {
             <div style={{ fontSize: 13, color: "var(--dim)" }}>
               <b style={{ color: "var(--text, #E6EDF7)" }}>{rec.matched}</b> of {rec.totalInCases} items in your cases are already priced.
             </div>
+
+            <CrSection
+              title="Import a whole case as a package"
+              hint="One catalog line at one rate that breaks out into its contents on a pull list — quote the HDMI Workbox, pull the twelve things inside it. Anything in a ticked case that the catalog does not have yet is created automatically, so you do not have to tick it below as well."
+              rows={rec.byCase} picked={pickCase} setPicked={setPickCase} keyOf={(c) => c.key}
+              find={fCase} setFind={setFCase} selectable
+              render={(c) => (
+                <CrRow key={c.key} on={pickCase.has(c.key)} onToggle={() => toggle(setPickCase)(c.key)}
+                  name={c.name} dept={c.category}
+                  meta={
+                    c.members.length + " item" + (c.members.length === 1 ? "" : "s") +
+                    (c.missingCount ? " · " + c.missingCount + " to create first" : "") +
+                    (c.existing ? " · REPLACES the existing catalog item" : "")
+                  } />
+              )}
+            />
 
             <CrSection
               title="In your cases, not in the catalog"
@@ -3072,7 +3181,7 @@ function CatalogReconcile({ onClose, onDone }) {
 
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
               <button className="btn ghost" onClick={onClose}>Close</button>
-              <button className="btn" onClick={apply} disabled={pickAdd.size === 0 && pickQty.size === 0}>
+              <button className="btn" onClick={apply} disabled={pickAdd.size === 0 && pickQty.size === 0 && pickCase.size === 0}>
                 {pickAdd.size === 0 && pickQty.size === 0
                   ? "Nothing selected"
                   : "Apply" + (pickAdd.size ? ` · add ${pickAdd.size}` : "") + (pickQty.size ? ` · fix ${pickQty.size}` : "")}
@@ -3095,6 +3204,9 @@ function CatalogReconcile({ onClose, onDone }) {
             <div style={{ fontSize: 14, lineHeight: 1.8 }}>
               <div><b>{result.added}</b> item{result.added === 1 ? "" : "s"} added to the catalog, unpriced</div>
               <div><b>{result.fixed}</b> Qty owned corrected</div>
+              {result.packaged ? (
+                <div><b>{result.packaged}</b> case{result.packaged === 1 ? "" : "s"} imported as package{result.packaged === 1 ? "" : "s"} — give each one a rate in the catalog</div>
+              ) : null}
               {result.failed.length > 0 && <div style={{ color: "#E0A34A", marginTop: 8 }}>Could not update: {result.failed.join(", ")}</div>}
             </div>
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
@@ -6296,7 +6408,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.25.0";
+const APP_VERSION = "1.26.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
