@@ -110,7 +110,7 @@ import {
 /* ============================================================
    CALLBOARD — a production hub for live-event crews.
    Share the brief with your crew + track hours, per event.
-   Data lives in Airtable via a Vercel serverless proxy; access is per-show.
+   Data lives in Supabase via a Vercel serverless proxy; access is per-show.
    ============================================================ */
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -1007,7 +1007,7 @@ function Callboard({ auth, onLogout }) {
     })();
   }, []);
 
-  /* autosave current event (debounced) → PATCH the Airtable record via our API */
+  /* autosave current event (debounced) → PATCH the show via our API */
   useEffect(() => {
     if (!event) return;
     if (loadingRef.current) {
@@ -6296,7 +6296,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.23.0";
+const APP_VERSION = "1.25.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
@@ -9683,7 +9683,7 @@ function WiringDiagram({ event, update, kind, canEdit }) {
   const canvasRef = useRef(null);
   const drag = useRef(null);
 
-  /* all writes go through the event so they autosave to Airtable */
+  /* all writes go through the event so they autosave */
   const setW = (fn) => update((ev) => {
     if (!ev[kind].wiring) ev[kind].wiring = { devices: [], connections: [] };
     fn(ev[kind].wiring);
@@ -10897,6 +10897,20 @@ function RosterForm({ vals, onChange, onSave, onCancel, saveLabel = "Save", busy
         <div className="roster-form-col">
           <label className="roster-lbl">Rate (${vals.rateType === "hourly" ? "hr" : "day"})</label>
           <input className="roster-inp" value={vals.rate || ""} placeholder="$" onChange={(e) => onChange("rate", e.target.value)} />
+          {/* What they asked for on the onboarding form, shown only while it
+              differs from what you pay. Their number never overwrites yours —
+              copying it across is this button and nothing else. */}
+          {vals.rateAsk && String(vals.rateAsk) !== String(vals.rate || "") ? (
+            <div className="roster-ask">
+              <span>
+                They asked ${vals.rateAsk}/{vals.rateAskType === "hourly" ? "hr" : "day"}
+              </span>
+              <button type="button" className="roster-askbtn" onClick={() => {
+                onChange("rate", String(vals.rateAsk));
+                onChange("rateType", vals.rateAskType === "hourly" ? "hourly" : "day");
+              }}>use this</button>
+            </div>
+          ) : null}
         </div>
         <div className="roster-form-col full">
           <label className="roster-lbl">Notes</label>
@@ -13527,7 +13541,7 @@ function PullTab({ event, update, isAdmin, editor }) {
     }
   };
   const seedInventory = async () => {
-    if (!window.confirm(`Seed your inventory from the built-in gear list?\nThis will add ${PULL_SEED.length} cases to Airtable. Run once to get started.`)) return;
+    if (!window.confirm(`Seed your inventory from the built-in gear list?\nThis will add ${PULL_SEED.length} cases to your catalog. Run once to get started.`)) return;
     setInvSeeding(true);
     try {
       for (const c of PULL_SEED) {
@@ -14029,7 +14043,7 @@ function PullTab({ event, update, isAdmin, editor }) {
               {invState === "loading" && <div className="pl-emptycase">Loading inventory…</div>}
               {invState === "error" && (
                 <div className="pl-emptycase">
-                  Couldn't load inventory — is the "Inventory" table set up in Airtable?
+                  Couldn't load inventory — has setup-inventory-templates.sql been run?
                   <button className="pl-btn" style={{ marginTop: 8 }} onClick={loadInv}>Retry</button>
                 </div>
               )}
@@ -16023,6 +16037,9 @@ const CSS = `
 .roster-suggwho{font-size:12.5px; color:var(--dim);}
 .roster-chk{display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:600; cursor:pointer;}
 .roster-chk input{width:16px; height:16px;}
+.roster-ask{display:flex; align-items:center; gap:8px; margin-top:5px; font-size:12px; color:#b45309;}
+.roster-askbtn{border:1px solid #f59e0b66; background:#f59e0b1a; color:#b45309; border-radius:6px; padding:2px 8px; font-size:11.5px; font-weight:700; cursor:pointer;}
+.roster-askbtn:hover{background:#f59e0b2e;}
 .tk-hold { border-left:3px solid #f59e0b; }
 .tk-holditems { margin:8px 0 0; padding:0 0 0 18px; font-size:13.5px; line-height:1.65; }
 .tk-holditems li { margin:0; }
