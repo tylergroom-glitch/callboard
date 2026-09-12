@@ -6,7 +6,7 @@ import { json, readBody, hashPassword, signToken, supabaseRest, TOKEN_TTL, env, 
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
   if (!env.hasConfig)
-    return json(res, 500, { error: "Server not configured — set AIRTABLE_TOKEN, AIRTABLE_BASE_ID, ADMIN_PASSWORD and APP_SECRET." });
+    return json(res, 500, { error: "Server not configured — set ADMIN_PASSWORD and APP_SECRET." });
 
   let body;
   try {

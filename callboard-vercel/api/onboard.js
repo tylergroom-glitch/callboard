@@ -62,13 +62,18 @@ async function upsert(name, data) {
   const enc = encodeURIComponent(name);
   const rows = await supabaseRest(
     "GET",
-    `/roster?name=eq.${enc}&name=neq.${encodeURIComponent(POS_KEY)}&select=id&limit=1`,
+    `/roster?name=eq.${enc}&name=neq.${encodeURIComponent(POS_KEY)}&select=id,data&limit=1`,
     null
   );
   const now = new Date().toISOString();
   if (rows && rows[0]) {
+    /* MERGE, never replace. This form does not ask about rate, rateType or
+       notes — those are yours, set in the app — so writing a fresh object would
+       erase them the moment somebody re-submitted to correct their phone
+       number. Only the keys the form actually collected are overlaid. */
+    const merged = { ...asData(rows[0].data), ...data };
     await supabaseRest("PATCH", `/roster?id=eq.${encodeURIComponent(rows[0].id)}`,
-      { name, data, updated_at: now });
+      { name, data: merged, updated_at: now });
   } else {
     await supabaseRest("POST", "/roster", { name, data, updated_at: now }, "return=minimal");
   }
@@ -160,8 +165,10 @@ function privacyBlock() {
           <li><strong>Your Known Traveler Number</strong> is used when booking your flights
               and nowhere else.</li>
         </ul>
-        Every field except your name is optional. Leave any of them blank; the only
-        consequence is we may come back to you before booking a flight.
+        The travel fields are optional &mdash; leave any of them blank and the only
+        consequence is we may come back to you before booking a flight. The
+        fields marked with a red asterisk are the ones we cannot book you
+        without.
 
         <h4>What we never ask for here</h4>
         Not your passport number &mdash; only the expiry date. Not your Social Security
@@ -217,13 +224,20 @@ function formPage(token, positions) {
   <div class="grid">
     <div class="fld full"><label>Full name <span class="req">*</span></label><input id="name" placeholder="First Last" required></div>
     <div class="fld full">
-      <label>Positions <span class="opt">&mdash; tap all that you work</span></label>
+      <label>Positions <span class="req">*</span> <span class="opt">&mdash; tap all that you work</span></label>
       <div class="chips">${chips}</div>
       <input id="positionOther" placeholder="Something else? Type it here" style="margin-top:9px">
       <div class="hint sm">Anything you type goes to your production manager to add to the list.</div>
     </div>
-    <div class="fld"><label>Phone</label><input id="phone" type="tel" placeholder="(555) 000-0000"></div>
-    <div class="fld full"><label>Email</label><input id="email" type="email" placeholder="you@email.com"></div>
+    <div class="fld"><label>Phone <span class="req">*</span></label><input id="phone" type="tel" placeholder="(555) 000-0000"></div>
+    <div class="fld full"><label>Email <span class="req">*</span></label><input id="email" type="email" placeholder="you@email.com"></div>
+    <div class="fld"><label>Your rate <span class="req">*</span></label>
+      <input id="rateAsk" inputmode="decimal" placeholder="650"></div>
+    <div class="fld"><label>Per</label>
+      <select id="rateAskType"><option value="day">Day</option><option value="hourly">Hour</option></select>
+    </div>
+    <div class="fld full"><div class="hint sm">What you normally charge. This is a starting point for a
+      conversation, not a booking &mdash; whatever we have already agreed with you stands.</div></div>
   </div>
   <div class="sect">Personal &amp; travel</div>
   <div class="hint">Airlines check these against your ID, so the name, birthday and gender have to match it exactly — not a nickname or a shortened first name. We only use them to book your travel.</div>
@@ -253,8 +267,8 @@ function formPage(token, positions) {
   </div>
   <div class="sect">Emergency contact</div>
   <div class="grid">
-    <div class="fld"><label>Name</label><input id="emergencyName" placeholder="Contact name"></div>
-    <div class="fld"><label>Phone</label><input id="emergencyPhone" type="tel" placeholder="(555) 000-0000"></div>
+    <div class="fld"><label>Name <span class="req">*</span></label><input id="emergencyName" placeholder="Contact name"></div>
+    <div class="fld"><label>Phone <span class="req">*</span></label><input id="emergencyPhone" type="tel" placeholder="(555) 000-0000"></div>
   </div>
   <div id="err" class="err"></div>
   <button class="submit" id="sub">Submit my info</button>
@@ -263,7 +277,17 @@ function formPage(token, positions) {
   `<script>
 document.getElementById('sub').onclick=async()=>{
   const name=document.getElementById('name').value.trim();
-  if(!name){document.getElementById('err').textContent='Name is required.';document.getElementById('err').style.display='block';return;}
+  const show=function(m,id){var e=document.getElementById('err');e.textContent=m;e.style.display='block';
+    var f=id&&document.getElementById(id); if(f){f.focus();f.scrollIntoView({block:'center',behavior:'smooth'});} };
+  const digits=function(id){return document.getElementById(id).value.replace(/[^0-9]/g,'')};
+  const picked=Array.prototype.slice.call(document.querySelectorAll('.posbox')).filter(function(b){return b.checked});
+  if(!name){show('Name is required.','name');return;}
+  if(!picked.length&&!document.getElementById('positionOther').value.trim()){show('Please choose at least one position, or type one in the box.','positionOther');return;}
+  if(digits('phone').length<10){show('A phone number with at least 10 digits is required.','phone');return;}
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(document.getElementById('email').value.trim())){show('A valid email address is required.','email');return;}
+  if(!(parseFloat(document.getElementById('rateAsk').value.replace(/[^0-9.]/g,''))>0)||/-\s*[0-9]/.test(document.getElementById('rateAsk').value)){show('Please give your rate as a number.','rateAsk');return;}
+  if(!document.getElementById('emergencyName').value.trim()){show('An emergency contact name is required.','emergencyName');return;}
+  if(digits('emergencyPhone').length<10){show('An emergency contact phone with at least 10 digits is required.','emergencyPhone');return;}
   const btn=document.getElementById('sub');
   btn.disabled=true;btn.textContent='Saving…';
   document.getElementById('err').style.display='none';
@@ -275,6 +299,7 @@ document.getElementById('sub').onclick=async()=>{
       body:JSON.stringify({name,positions:positions,positionOther:get('positionOther'),
         travelIntl:document.getElementById('travelIntl').checked,
         phone:get('phone'),email:get('email'),
+        rateAsk:get('rateAsk'),rateAskType:get('rateAskType'),
         legalName:get('legalName'),gender:get('gender'),
         birthday:get('birthday'),shirtSize:get('shirtSize'),homeAirport:get('homeAirport'),
         tsaPrecheck:get('tsaPrecheck'),passportExp:get('passportExp'),dietary:get('dietary'),
@@ -332,7 +357,8 @@ export default async function handler(req, res) {
     } catch { res.status(400).setHeader("Content-Type","application/json").end(JSON.stringify({error:"Bad request"})); return; }
 
     const name = (body.name || "").trim();
-    if (!name) { res.status(400).setHeader("Content-Type","application/json").end(JSON.stringify({error:"Name is required"})); return; }
+    const bad = (m) => { res.status(400).setHeader("Content-Type","application/json").end(JSON.stringify({error:m})); };
+    if (!name) { bad("Name is required."); return; }
 
     try {
       const known = await getPositions();
@@ -346,15 +372,56 @@ export default async function handler(req, res) {
         .filter((p) => known.includes(p))
         .slice(0, 20);
 
-      /* A suggestion. Stored ON THE PERSON, never appended to the master list —
-         adding to that list is an admin action through /api/roster, and this is
-         a public endpoint. It is dropped if it already exists, so approving the
-         same thing twice is impossible. */
       const suggestRaw = String(body.positionOther || "").trim().slice(0, 60);
-      const suggest = suggestRaw &&
-        !known.some((k) => k.toLowerCase() === suggestRaw.toLowerCase()) &&
+
+      /* Typing a position that already exists is not a suggestion, it is a
+         clumsy way of ticking the chip — so treat it as one. Without this,
+         someone who types "Rigger" instead of tapping it is told to choose a
+         position when they plainly just did. */
+      const alreadyKnown = suggestRaw
+        ? known.find((k) => k.toLowerCase() === suggestRaw.toLowerCase()) : null;
+      if (alreadyKnown && !chosen.some((c) => c.toLowerCase() === alreadyKnown.toLowerCase())) {
+        chosen.push(alreadyKnown);
+      }
+
+      /* A real suggestion: something not on the list and not already ticked.
+         Stored ON THE PERSON, never appended to the master list — adding to
+         that list is an admin action through /api/roster, and this is a public
+         endpoint. */
+      const suggest = suggestRaw && !alreadyKnown &&
         !chosen.some((c) => c.toLowerCase() === suggestRaw.toLowerCase())
           ? suggestRaw : "";
+
+      /* Digits and one decimal point. A crew member typing "$650/day" should
+         not end up stored as a string the roster cannot compare or sort, and a
+         blank stays blank rather than becoming 0 — which would read as
+         "works for free" rather than "did not say". */
+      const rateSrc = String(body.rateAsk == null ? "" : body.rateAsk);
+      /* Checked BEFORE stripping: removing every non-digit turns "-500" into
+         "500", which is how a negative rate would have got through. */
+      const rateNegative = /-\s*[0-9]/.test(rateSrc);
+      const rateRaw = rateSrc.replace(/[^0-9.]/g, "");
+      const rateNum = rateRaw ? Number(rateRaw) : NaN;
+      const rateAsk = !rateNegative && Number.isFinite(rateNum) && rateNum > 0
+        ? String(Math.round(rateNum * 100) / 100) : "";
+
+      /* Enforced HERE as well as in the browser. This endpoint is public — a
+         POST can arrive without ever having loaded the form, so client-side
+         validation is a courtesy and this is the actual rule. */
+      const digits = String(body.phone || "").replace(/[^0-9]/g, "");
+      const email = String(body.email || "").trim();
+      const emName = String(body.emergencyName || "").trim();
+      const emPhone = String(body.emergencyPhone || "").replace(/[^0-9]/g, "");
+
+      /* A position OR something typed in the Other box. Requiring a ticked chip
+         alone would trap anyone whose role is not on the list yet — they would
+         have no way to submit at all. */
+      if (!chosen.length && !suggest) { bad("Please choose at least one position, or type one in the box."); return; }
+      if (digits.length < 10) { bad("A phone number with at least 10 digits is required."); return; }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { bad("A valid email address is required."); return; }
+      if (!rateAsk) { bad("Please give your rate as a number."); return; }
+      if (!emName) { bad("An emergency contact name is required."); return; }
+      if (emPhone.length < 10) { bad("An emergency contact phone with at least 10 digits is required."); return; }
 
       await upsert(name, {
         positions: chosen,
@@ -364,6 +431,12 @@ export default async function handler(req, res) {
         travelIntl: body.travelIntl === true,
         phone: body.phone || "",
         email: body.email || "",
+        /* What they ASK for, deliberately not `rate`. `rate` is what you have
+           agreed to pay and is set in the app; nothing arriving through a
+           public form is allowed to change it. The roster shows the two side by
+           side so a difference is visible rather than silent. */
+        rateAsk: rateAsk,
+        rateAskType: body.rateAskType === "hourly" ? "hourly" : "day",
         legalName: body.legalName || "",
         gender: body.gender || "",
         birthday: body.birthday || "",

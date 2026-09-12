@@ -19,7 +19,11 @@ const {
 export const env = {
   ADMIN_PASSWORD,
   ADMIN_PASSWORD_2,
-  hasConfig: !!(AIRTABLE_TOKEN && AIRTABLE_BASE_ID && APP_SECRET && ADMIN_PASSWORD),
+  /* Airtable is no longer part of this check. Every feature that reads or
+     writes data is on Supabase now; the only things still touching Airtable
+     are /api/migrate and the airtable* helpers below, and neither should be
+     able to stop anyone signing in. */
+  hasConfig: !!(APP_SECRET && ADMIN_PASSWORD),
 };
 export const TOKEN_TTL = 1000 * 60 * 60 * 12; // 12 hours
 

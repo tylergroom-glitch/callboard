@@ -1,12 +1,18 @@
 // /api/import-inventory
 // POST { sheetUrl, preview: true }   → parse sheet, return preview (no changes)
-// POST { sheetUrl, confirm: true }   → delete all sheet-sourced cases, import fresh
+// POST { sheetUrl, confirm: true }   → replace sheet-sourced cases, import fresh
 //
 // Admin only. Requires the sheet to be shared "Anyone with the link can view."
-import { json, readBody, auth, isAdmin, airtableTable } from "./_lib.js";
+//
+// ---- what confirm actually deletes -----------------------------------------
+// Only cases carrying _source: "sheet" in their data — i.e. ones a previous run
+// of this importer created. Cases you built by hand have no _source and are
+// never touched. That was true on Airtable and it is true here; on Supabase it
+// is expressed as a single filtered delete rather than a scan-and-collect,
+// which is both faster and harder to get wrong.
+import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 
-const TABLE  = process.env.AIRTABLE_INVENTORY_TABLE || "Inventory";
-const SRC    = "sheet"; // _source tag written to every sheet-imported case's Data JSON
+const SRC = "sheet"; // _source tag written to every sheet-imported case's data
 
 /* ---- CSV parser ---- */
 function parseCSV(text) {
@@ -119,38 +125,32 @@ async function fetchCSV(url) {
   return res.text();
 }
 
-/* ---- Airtable helpers ---- */
-async function getSheetSourceIds() {
-  const ids = []; let offset;
-  do {
-    const d = await airtableTable(TABLE, "GET", offset ? `?offset=${offset}` : "");
-    for (const r of d.records) {
-      let data = {};
-      try { data = r.fields.Data ? JSON.parse(r.fields.Data) : {}; } catch {}
-      if (data._source === SRC) ids.push(r.id);
-    }
-    offset = d.offset;
-  } while (offset);
-  return ids;
+/* ---- Supabase helpers ---- */
+
+/* Matches on the jsonb key rather than reading every case and filtering in
+   JavaScript, so a hand-built case can never be caught by a bug in a loop. */
+const SHEET_FILTER = "data->>_source=eq." + SRC;
+
+async function countSheetSourced() {
+  const rows = await supabaseRest("GET", `/inventory?${SHEET_FILTER}&select=id&limit=5000`, null);
+  return (rows || []).length;
 }
 
-async function batchDelete(ids) {
-  for (let i = 0; i < ids.length; i += 10) {
-    const qs = ids.slice(i, i + 10).map(id => `records[]=${id}`).join("&");
-    await airtableTable(TABLE, "DELETE", `?${qs}`);
-  }
+async function deleteSheetSourced() {
+  await supabaseRest("DELETE", `/inventory?${SHEET_FILTER}`, null);
 }
 
 async function batchCreate(cases) {
-  const records = cases.map(c => ({
-    fields: {
-      Name: c.name,
-      Category: c.category,
-      Data: JSON.stringify({ drawers: [], items: c.items, _source: SRC }),
-    }
+  const now = new Date().toISOString();
+  const rows = cases.map((c) => ({
+    name: c.name,
+    category: c.category,
+    data: { drawers: [], items: c.items, _source: SRC },
+    updated_at: now,
   }));
-  for (let i = 0; i < records.length; i += 10) {
-    await airtableTable(TABLE, "POST", "", { records: records.slice(i, i + 10) });
+  const CHUNK = 100;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    await supabaseRest("POST", "/inventory", rows.slice(i, i + CHUNK), "return=minimal");
   }
 }
 
@@ -181,10 +181,19 @@ export default async function handler(req, res) {
     }
 
     if (doConfirm) {
-      const oldIds = await getSheetSourceIds();
-      if (oldIds.length) await batchDelete(oldIds);
+      /* A sheet that parses to nothing — headers present, every row skipped —
+         used to delete the previous import and put nothing back. Refusing is
+         the right answer: an import that would leave you with less than you
+         started with is a mistake, not an instruction. */
+      if (!cases.length) {
+        return json(res, 400, {
+          error: "That sheet produced no cases, so nothing was changed. Check the Model/Brand and Case columns have data.",
+        });
+      }
+      const replaced = await countSheetSourced();
+      if (replaced) await deleteSheetSourced();
       await batchCreate(cases);
-      return json(res, 200, { ok: true, created: cases.length, replaced: oldIds.length, items: totalItems });
+      return json(res, 200, { ok: true, created: cases.length, replaced, items: totalItems });
     }
 
     return json(res, 400, { error: "Specify preview:true or confirm:true" });
