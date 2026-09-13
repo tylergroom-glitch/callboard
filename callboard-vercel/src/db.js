@@ -56,7 +56,6 @@ export async function loginSupabase(supabaseToken) {
   return { scope: r.scope, token: r.token, is_tcg: r.is_tcg };
 }
 
-export const runMigration = () => api("POST", "/api/migrate");
 export const listProfiles = () => api("GET", "/api/members?profiles=1");
 export const listShowMembers = (showId) => api("GET", "/api/members?showId=" + encodeURIComponent(showId));
 export const saveShowMember = (payload) => api("POST", "/api/members", payload);
@@ -290,3 +289,9 @@ export const sendAgent = (message) => api("POST", "/api/agent", { message });
 export const confirmAgent = () => api("POST", "/api/agent?confirm=1", {});
 export const cancelAgent = () => api("POST", "/api/agent?cancel=1", {});
 export const resetAgent = () => api("POST", "/api/agent?reset=1", {});
+
+/* AV Studio. Crew Call holds only a view link, so the only thing it can do
+   about editing rights is ask on someone's behalf. This grants nothing — it
+   files a request that has to be approved inside AV Studio. */
+export const requestAvStudioAccess = (payload) =>
+  api("POST", "/api/avstudio-access", payload);

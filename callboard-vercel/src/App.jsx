@@ -5,7 +5,6 @@ import {
   logout as dbLogout,
   loginAdmin,
   loginSupabase,
-  runMigration,
   listShowMembers,
   listProfiles,
   setTcgAdmin,
@@ -105,6 +104,7 @@ import {
   resetAgent,
   deleteQuoteTermsPdf,
   saveQuoteTerms,
+  requestAvStudioAccess,
 } from "./db.js";
 
 /* ============================================================
@@ -1188,7 +1188,10 @@ function Callboard({ auth, onLogout }) {
     if (!event) return;
     const e = clone(event);
     e.name = event.name + " (copy)";
-    e.time = { days: event.time.days.map((d) => ({ ...d })), entries: {} };
+    /* The server omits `time` for a role that may not see it. Duplicating is
+       an admin action so this should always be present — but a missing key
+       here would be a blank screen rather than a missing figure. */
+    e.time = { days: ((event.time && event.time.days) || []).map((d) => ({ ...d })), entries: {} };
     e.records = [];
     e.diagrams = (e.diagrams || []).map((d) => ({ ...d, id: uid() }));
     try {
@@ -1458,15 +1461,15 @@ function Callboard({ auth, onLogout }) {
             {tab === "documents" && <LockWrapper canEdit={tabCanEdit("documentsUnlocked")} label="Show Documents"><DocumentsTab event={event} update={update} /></LockWrapper>}
             {tab === "itinerary" && <LockWrapper canEdit={tabCanEdit("itineraryUnlocked")} label="Itinerary"><ItineraryTab event={event} update={update} /></LockWrapper>}
             {tab === "notes" && <NotesTab event={event} update={update} />}
-            {tab === "audio" && <IOTab event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={deptCanEdit("audioUnlocked")} />}
-            {tab === "video" && <IOTab event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={deptCanEdit("videoUnlocked")} />}
+            {tab === "audio" && <IOPage event={event} update={update} kind="audio" isAdmin={isShowAdmin} editor={deptCanEdit("audioUnlocked")} />}
+            {tab === "video" && <IOPage event={event} update={update} kind="video" isAdmin={isShowAdmin} editor={deptCanEdit("videoUnlocked")} />}
             {tab === "comms" && <CommPatchTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("commsUnlocked")} />}
             {tab === "wifi" && <LockWrapper canEdit={tabCanEdit("wifiUnlocked")} label="Wi-Fi Info"><WifiTab event={event} update={update} /></LockWrapper>}
             {tab === "diagrams" && <LockWrapper canEdit={tabCanEdit("diagramsUnlocked")} label="Diagrams"><DiagramsTab event={event} update={update} /></LockWrapper>}
             {tab === "floorplans" && <LockWrapper canEdit={tabCanEdit("floorplansUnlocked")} label="Floorplans"><FloorplansTab event={event} update={update} /></LockWrapper>}
             {tab === "pull" && <PullTab event={event} update={update} isAdmin={isShowAdmin} editor={deptCanEdit("gearEditUnlocked")} />}
             {tab === "records" && <LockWrapper canEdit={tabCanEdit("recordsUnlocked")} label="Records"><RecordsTab event={event} update={update} /></LockWrapper>}
-            {tab === "hours" && canEditTabs && <LockWrapper canEdit={tabCanEdit("hoursUnlocked")} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
+            {tab === "hours" && isShowAdmin && <LockWrapper canEdit={tabCanEdit("hoursUnlocked")} label="Hours"><HoursTab event={event} update={update} /></LockWrapper>}
             {tab === "billing" && isShowAdmin && (
               <BillingTab
                 event={event}
@@ -1581,7 +1584,10 @@ const SECTIONS = [
   { key: "pull", label: "Pull List", desc: "Gear pull & load-out", color: "#8E7CC3", group: "Tech Documents" },
   { key: "comms", label: "Comm Patch", desc: "Intercom channels & assignments", color: "#4FB0A5", group: "Tech Documents" },
   { key: "wifi", label: "Wi-Fi Info", desc: "Networks, SSIDs & passwords", color: "#2E9BB5", group: "Tech Documents" },
-  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", editorOnly: true, group: "Admin" },
+  /* adminOnly, not editorOnly: isShowAdmin is a TCG admin or a producer. A
+   department editor does not need everyone else's in and out times, and the
+   server no longer sends them the timesheet at all. */
+  { key: "hours", label: "Hours", desc: "Crew timesheet", color: "#6FD08A", adminOnly: true, group: "Admin" },
   { key: "survey", label: "Post-Show Survey", desc: "Crew feedback, kept with the show", color: "#C77DFF", adminOnly: true, group: "Admin" },
   { key: "billing", label: "Billing", desc: "Invoices, payments & what is owed", color: "#C9A227", adminOnly: true, group: "Admin" },
   { key: "costing", label: "P&L / Costing", desc: "Budget vs actual — admin only", color: "#2E9E7B", adminOnly: true, group: "Admin" },
@@ -1652,6 +1658,11 @@ function tileStat(key, event) {
     }
     case "records": return `${event.records.length} record${event.records.length === 1 ? "" : "s"}`;
     case "hours": {
+      /* Only ever rendered for a tile the viewer can see, and Hours is now
+         admin-only — but the server omits `time` entirely below producer, and
+         iterating undefined here would blank the whole home screen rather than
+         one subtitle. */
+      if (!event.time || !Array.isArray(event.time.days)) return "";
       let t = 0;
       for (const c of event.crew)
         for (const d of event.time.days) {
@@ -2422,7 +2433,6 @@ function TkSettings({ onClose }) {
         telegramIds: String(s.telegramIds || "").split(/[\n,]/).map((x) => x.trim()).filter(Boolean),
         digest: s.digest !== false,
         inboxAddress: s.inboxAddress || "",
-        smsNumber: s.smsNumber || "",
       });
       setS({ ...next, senders: (next.senders || []).join("\n"), telegramIds: (next.telegramIds || []).join("\n") });
       setSaved(true);
@@ -2442,14 +2452,13 @@ function TkSettings({ onClose }) {
           <>
             <label className="tk-lbl">Allowed senders</label>
             <div className="tk-help">
-              One per line. Email addresses in full; phone numbers any way you like — only the last
-              ten digits are compared. Anything arriving from anywhere else is silently binned, so if
+              One per line, in full. Anything arriving from anywhere else is silently binned, so if
               a forward of yours never turns up, check the address you sent it from is on this list.
             </div>
             <textarea
               className="tk-ta" rows={4} value={s.senders}
               onChange={(e) => setS({ ...s, senders: e.target.value })}
-              placeholder={"tyler.groom@gmail.com\n+1 559 555 1234"}
+              placeholder={"tyler.groom@gmail.com"}
             />
 
             <label className="tk-lbl">Telegram user ids</label>
@@ -2468,11 +2477,6 @@ function TkSettings({ onClose }) {
             <div className="tk-help">For your own reference — where you forward things. Set up in Brevo.</div>
             <input className="tk-inp" value={s.inboxAddress || ""} placeholder="notes@inbox.touchstonecreativegroup.com"
               onChange={(e) => setS({ ...s, inboxAddress: e.target.value })} />
-
-            <label className="tk-lbl">Your text-in number</label>
-            <div className="tk-help">For your own reference — the Twilio number you text.</div>
-            <input className="tk-inp" value={s.smsNumber || ""} placeholder="+1 559 555 0000"
-              onChange={(e) => setS({ ...s, smsNumber: e.target.value })} />
 
             <label className="tk-check">
               <input type="checkbox" checked={s.digest !== false} onChange={() => setS({ ...s, digest: s.digest === false })} />
@@ -6408,7 +6412,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.26.0";
+const APP_VERSION = "1.30.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
@@ -6597,8 +6601,6 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
   const [ym, setYm] = useState({ y: now.getFullYear(), m: now.getMonth() });
   const [subUrl, setSubUrl] = useState(null);
   const [subBusy, setSubBusy] = useState(false);
-  const [migrating, setMigrating] = useState(false);
-  const doMigrate = async () => { if (!window.confirm("Copy all shows from Airtable into Supabase? Airtable is only read, never changed. Safe to run more than once.")) return; setMigrating(true); try { const r = await runMigration(); window.alert("Migrated from Airtable:\n" + r.shows + " shows\n" + r.roster + " roster\n" + (r.templates || 0) + " templates\n" + (r.inventory || 0) + " inventory\n\nReload to see them."); } catch (e) { window.alert("Migration failed: " + ((e && e.message) || e)); } setMigrating(false); };
   const doSubscribe = async () => { setSubBusy(true); try { const r = await generateCalendarLink(); setSubUrl(r); } catch (e) { window.alert("Couldn't generate the calendar link. Try again in a moment."); } setSubBusy(false); };
   const two = (n) => (n < 10 ? "0" : "") + n;
   const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -6626,7 +6628,6 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
           {isAdmin && <button className="btn ghost" onClick={doSubscribe} disabled={subBusy}>{subBusy ? "…" : "Subscribe"}</button>}
           {isAdmin && <button className="btn" onClick={onNew}>+ New show</button>}
           {isAdmin && <button className="btn ghost" onClick={onDemo}>Demo</button>}
-          {isAdmin && <button className="btn ghost" onClick={doMigrate} disabled={migrating} title="One-time copy of Airtable shows into Supabase">{migrating ? "Migrating\u2026" : "Migrate from Airtable"}</button>}
           {onLogout && !hasSidebar && <button className="btn ghost" onClick={onLogout}>Sign out</button>}
         </div>
       </div>
@@ -6821,13 +6822,23 @@ function RosterProvider({ children }) {
   const loaded = useRef(false);
   const reload = async () => {
     setLoading(true);
-    try {
-      const [list, posData] = await Promise.all([listRoster(), getPositions()]);
-      setRoster(list);
-      if (posData.positions?.length) setPositions(posData.positions);
-      loaded.current = true;
-    } catch { /* silently — roster is non-critical */ }
-    finally { setLoading(false); }
+    /* The two calls fail INDEPENDENTLY, which is why this is not a bare
+       Promise.all any more.
+
+       As of v1.30.0 the crew list is TCG-admin only; the positions list is not,
+       and must not be — the crew tab's position dropdown needs it. Sharing one
+       rejection meant a 403 on the roster also threw away the positions, so
+       every non-admin would have silently fallen back to the hardcoded default
+       list and lost any position added since. Nothing would have looked broken;
+       the dropdown would just have been quietly wrong. */
+    const [list, posData] = await Promise.all([
+      listRoster().catch(() => null),
+      getPositions().catch(() => null),
+    ]);
+    if (Array.isArray(list)) setRoster(list);
+    if (posData && posData.positions?.length) setPositions(posData.positions);
+    loaded.current = true;
+    setLoading(false);
   };
   const reloadPositions = async () => {
     try { const d = await getPositions(); if (d.positions?.length) setPositions(d.positions); } catch {}
@@ -10293,7 +10304,414 @@ function WiringDiagram({ event, update, kind, canEdit }) {
   );
 }
 
-function IOTab({ event, update, kind, isAdmin, editor }) {
+/* ============================================================
+   AV STUDIO EMBED — the Video and Audio I/O tabs
+
+   These tabs used to be hand-built patch sheets: a device, a list of named
+   inputs, a list of named outputs. AV Studio does the same job properly —
+   real ports, cables with lengths, snakes, racks, an IP plan — so the tab is
+   now a window onto the show's AV Studio drawing.
+
+   ONE drawing per show, embedded twice. The `dept` parameter added to AV
+   Studio means the Video tab opens filtered to the video department and the
+   Audio tab to audio, from the same project, so nobody maintains two
+   drawings of one show. Each tab keeps its own crew-editing lock, exactly as
+   before.
+
+   Crew Call stores ONLY the link. AV Studio remains the single source of
+   truth for signal flow — nothing is copied here, so nothing can drift.
+   Who can edit is decided by AV Studio, from the same URL: a crew member
+   with no account gets it read-only; someone signed in and on that
+   project's editor list gets it editable.
+   ============================================================ */
+
+/* AV Studio puts the view token in the URL's HASH and its options in the
+   QUERY, so the department has to go in before the '#'. Splitting on the hash
+   rather than string-appending is the difference between a working link and
+   one that silently loads unfiltered. */
+function avStudioUrl(raw, kind) {
+  const base = String(raw || "").trim();
+  if (!base) return "";
+  const hashAt = base.indexOf("#");
+  let head = hashAt >= 0 ? base.slice(0, hashAt) : base;
+  const tail = hashAt >= 0 ? base.slice(hashAt) : "";
+  // Respect a department the user pasted in themselves rather than doubling it.
+  if (!/[?&]dept=/i.test(head)) {
+    head += (head.indexOf("?") >= 0 ? "&" : "?") + "dept=" + encodeURIComponent(kind);
+  }
+  if (!/[?&]embed=1/.test(head)) head += "&embed=1";
+  if (!/[?&]page=/.test(head)) head += "&page=wiring";
+  return head + tail;
+}
+
+/* ---------- Video / Audio I/O: two ways of doing the same job ----------
+ *
+ * Round 26 replaced the typed patch sheet with an AV Studio drawing outright.
+ * That was too blunt. Some shows are a drawing; some are three lines you would
+ * rather just type; and plenty are one of each — the video world drawn, the
+ * audio world a list. So the choice is per tab, per show.
+ *
+ * THE RULE THAT MATTERS: switching never deletes anything. The patch sheet and
+ * the AV Studio link live in different places on the show and neither is
+ * touched by choosing the other, so flipping back and forth is free and a
+ * wrong choice costs nothing.
+ */
+const IO_MODES = { SHEET: "sheet", STUDIO: "avstudio", BOTH: "both" };
+
+/* Does the typed sheet actually have anything on it?
+ *
+ * Not `blocks.length > 0` — every show is seeded with one empty block called
+ * "Main", so that test is true for a brand-new show and would have claimed a
+ * blank sheet was existing work. (Round 26's legacy fallback got this wrong and
+ * would have shown a "previous patch sheet" panel on shows that never had one.)
+ */
+function sheetHasContent(d) {
+  const blocks = d && Array.isArray(d.blocks) ? d.blocks : [];
+  if (blocks.length > 1) return true;
+  return blocks.some(
+    (b) =>
+      (b.ins && b.ins.length) ||
+      (b.outs && b.outs.length) ||
+      (b.name && b.name !== "Main" && b.name !== "New device")
+  );
+}
+
+function IOPage({ event, update, kind, isAdmin, editor }) {
+  const title = kind === "audio" ? "Audio" : "Video";
+  const canEdit = isAdmin || editor || !!event[kind === "audio" ? "audioUnlocked" : "videoUnlocked"];
+
+  const chosen = (event.ioMode || {})[kind] || "";
+  const linked = !!((event.avStudio && event.avStudio.url) || "").trim();
+  const typed = sheetHasContent(event[kind]);
+
+  /* What an unconfigured show should open as. Inferred from what is actually
+     there rather than defaulted to one or the other, so nobody has to set a
+     mode on a show that already answers the question. A pasted link wins over
+     an existing sheet: pasting one is a deliberate act, and the sheet is still
+     one click away. */
+  const mode = chosen || (linked ? IO_MODES.STUDIO : typed ? IO_MODES.SHEET : "");
+  const setMode = (m) =>
+    update((ev) => {
+      if (!ev.ioMode) ev.ioMode = {};
+      ev.ioMode[kind] = m;
+    });
+
+  if (!mode) {
+    return canEdit ? (
+      <div className="stack">
+        <div className="pl-import">
+          <div className="pl-importbody">
+            <div className="pl-tplhdr" style={{ margin: "0 0 8px" }}>How do you want to do {title} I/O on this show?</div>
+            <p className="pl-tplnote" style={{ margin: "0 0 14px" }}>
+              You can change this later, and changing it never throws anything away — the two
+              keep their own data. The {kind === "audio" ? "Video" : "Audio"} tab is set separately.
+            </p>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <button className="pl-btn" onClick={() => setMode(IO_MODES.SHEET)}>
+                📝 Patch sheet — type it in here
+              </button>
+              <button className="pl-btn" onClick={() => setMode(IO_MODES.STUDIO)}>
+                📐 AV Studio — link a drawing
+              </button>
+              <button className="pl-btn" onClick={() => setMode(IO_MODES.BOTH)}>
+                ⊞ Both — drawing on top, list underneath
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    ) : (
+      <div className="pl-emptycase">{title} I/O hasn&rsquo;t been set up on this show yet.</div>
+    );
+  }
+
+  /* The switch sits above whichever one is showing. Only people who could edit
+     the tab anyway get it — it is a change to the show, not a view preference,
+     and it is what everyone else on the show sees too. */
+  const switcher = canEdit ? (
+    <div className="pl-bar" style={{ marginBottom: 10 }}>
+      <span className="pl-locknote">{title} I/O</span>
+      <span className="tk-spacer" />
+      <button
+        className={mode === IO_MODES.SHEET ? "pl-btn" : "pl-quotecancelbtn"}
+        onClick={() => mode !== IO_MODES.SHEET && setMode(IO_MODES.SHEET)}
+        title="Type the patch in here"
+      >
+        📝 Patch sheet{typed && mode !== IO_MODES.SHEET ? " ·" : ""}
+      </button>
+      <button
+        className={mode === IO_MODES.STUDIO ? "pl-btn" : "pl-quotecancelbtn"}
+        onClick={() => mode !== IO_MODES.STUDIO && setMode(IO_MODES.STUDIO)}
+        title="Show the AV Studio drawing"
+      >
+        📐 AV Studio{linked && mode !== IO_MODES.STUDIO ? " ·" : ""}
+      </button>
+      <button
+        className={mode === IO_MODES.BOTH ? "pl-btn" : "pl-quotecancelbtn"}
+        onClick={() => mode !== IO_MODES.BOTH && setMode(IO_MODES.BOTH)}
+        title="The drawing and the patch sheet together — signal flow above, the things a drawing is bad at below"
+      >
+        ⊞ Both
+      </button>
+    </div>
+  ) : null;
+
+  return (
+    <div className="stack">
+      {switcher}
+
+      {/* Both: the drawing on top, the sheet underneath.
+          The drawing is what you glance at to orient; the sheet is what you read
+          and edit, and it holds the things a drawing is bad at — channel lists,
+          rack contents, "25ft XLR for the lectern". So the picture anchors and
+          the text sits under it.
+          One lock bar, not two: they drive the same key and would flip each
+          other. The frame shrinks too, or the sheet starts a screen and a half
+          down the page. */}
+      {mode === IO_MODES.BOTH ? (
+        <>
+          <AvStudioTab event={event} update={update} kind={kind} isAdmin={isAdmin} editor={editor} compact />
+          <IOTab event={event} update={update} kind={kind} isAdmin={isAdmin} editor={editor} bare />
+        </>
+      ) : mode === IO_MODES.SHEET ? (
+        <IOTab event={event} update={update} kind={kind} isAdmin={isAdmin} editor={editor} />
+      ) : (
+        <AvStudioTab event={event} update={update} kind={kind} isAdmin={isAdmin} editor={editor} />
+      )}
+    </div>
+  );
+}
+
+/* Ask to be allowed to edit the drawing.
+ *
+ * Crew Call cannot grant this and does not pretend to. The two apps keep
+ * separate accounts on purpose — the embedded drawing is read-only for
+ * everyone except people already on AV Studio's editor list for that project.
+ * All this does is carry the ask across, so the answer to "how do I edit
+ * this?" is a button rather than a text message to Tyler.
+ *
+ * The email is typed rather than taken from the session because most crew sign
+ * in with a show password and have no account to take it from. That is safe
+ * precisely because nothing here grants anything: it is a line in a list
+ * someone reads before deciding. */
+const AVS_EMAIL_KEY = "cb_avstudio_email";
+function AvStudioAccessPanel({ eventId, onClose }) {
+  const remembered = (() => {
+    try { return localStorage.getItem(AVS_EMAIL_KEY) || ""; } catch { return ""; }
+  })();
+  const [email, setEmail] = useState(remembered);
+  const [name, setName] = useState("");
+  /* Everyone signs in with a real account now, so the address is known and the
+     server uses the verified one regardless of what is sent. Showing it instead
+     of asking for it removes the only way this feature can quietly fail: being
+     approved at one address and signing up at another. */
+  const [mine, setMine] = useState(null);
+  useEffect(() => {
+    let off = false;
+    if (!supabase) return;
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        const e = data && data.session && data.session.user && data.session.user.email;
+        if (!off && e) { setMine(e); setEmail(e); }
+      })
+      .catch(() => {});
+    return () => { off = true; };
+  }, []);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(null);   // { tone, text }
+
+  const send = async () => {
+    setBusy(true);
+    setDone(null);
+    try {
+      const r = await requestAvStudioAccess({ eventId, email: email.trim(), name: name.trim(), note: note.trim() });
+      try { localStorage.setItem(AVS_EMAIL_KEY, email.trim()); } catch {}
+      setDone({ tone: r.status === "already" ? "info" : "ok", text: r.message || "Sent." });
+    } catch (e) {
+      setDone({ tone: "bad", text: (e && e.message) || "Could not send that." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="pl-import">
+      <div className="pl-importbody">
+        <div className="pl-tplhdr" style={{ margin: "0 0 8px" }}>Request edit access</div>
+        <p className="pl-tplnote" style={{ margin: "0 0 12px" }}>
+          The drawing opens read-only here. Editing happens in AV Studio, which keeps its own
+          accounts — so this sends Tyler a request. Once he approves it, create an AV Studio
+          account {mine ? <>at <b>{mine}</b></> : "at the address below"} and the drawing
+          becomes editable, here and there.
+        </p>
+
+        {done ? (
+          <>
+            <div
+              className="pl-tplnote"
+              style={{
+                margin: "0 0 10px",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: "1px solid var(--line)",
+                color: done.tone === "bad" ? "var(--bad, #d66)" : "var(--fg)",
+              }}
+            >
+              {done.text}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="pl-btn" onClick={onClose}>Close</button>
+              {done.tone === "bad" && (
+                <button className="pl-quotecancelbtn" onClick={() => setDone(null)}>Try again</button>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: "grid", gap: 8 }}>
+              {mine ? (
+                <div className="pl-tplnote" style={{ margin: 0 }}>
+                  Requesting as <b>{mine}</b> — your Crew Call sign-in. Use the same address
+                  when you create your AV Studio account.
+                </div>
+              ) : (
+                <>
+                  <input
+                    className="roster-inp" type="email" value={email} autoComplete="email"
+                    placeholder="Your email — the one you'll sign in to AV Studio with"
+                    onChange={(e) => setEmail(e.target.value)}
+                  />
+                  <input
+                    className="roster-inp" value={name}
+                    placeholder="Your name (optional)"
+                    onChange={(e) => setName(e.target.value)}
+                  />
+                </>
+              )}
+              <input
+                className="roster-inp" value={note} maxLength={140}
+                placeholder="Why, briefly (optional) — e.g. patching FOH tomorrow"
+                onChange={(e) => setNote(e.target.value)}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+              <button className="pl-btn" onClick={send} disabled={busy || !email.trim()}>
+                {busy ? "Sending…" : "Send request"}
+              </button>
+              <button className="pl-quotecancelbtn" onClick={onClose}>Cancel</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* `bare` drops the lock button and `compact` shortens the frame. Both are set
+   only by IOPage's Both mode, where this sits above the patch sheet: two lock
+   buttons driving the same key would flip each other, and a 72vh frame would
+   push the sheet a screen and a half down the page. */
+function AvStudioTab({ event, update, kind, isAdmin, editor, bare, compact }) {
+  const title = kind === "audio" ? "Audio" : "Video";
+  const lockKey = kind === "audio" ? "audioUnlocked" : "videoUnlocked";
+  const unlocked = !!event[lockKey];
+  const canEdit = isAdmin || editor || unlocked;
+
+  const saved = (event.avStudio && event.avStudio.url) || "";
+  const [draft, setDraft] = useState(saved);
+  const [editing, setEditing] = useState(false);
+  const [asking, setAsking] = useState(false);
+  useEffect(() => { setDraft(saved); }, [saved]);
+  useEffect(() => { setAsking(false); }, [saved, kind]);
+
+  const src = avStudioUrl(saved, kind);
+  const save = () => {
+    update((ev) => { if (!ev.avStudio) ev.avStudio = {}; ev.avStudio.url = draft.trim(); });
+    setEditing(false);
+  };
+
+  /* The read-only "previous patch sheet" panel that used to sit under here is
+     gone as of v1.29.0. It existed because round 26 removed the typed sheet
+     outright and something had to keep old work visible. The sheet is a real
+     choice again now — IOPage switches between the two — so a ghost copy would
+     just be a worse version of the thing one click away. */
+
+  return (
+    <div className="stack">
+      <div className="pl-bar">
+        <div className="pl-lockwrap">
+          {isAdmin && !bare ? (
+            <button className={"pl-lock " + (unlocked ? "open" : "")} onClick={() => update((ev) => (ev[lockKey] = !unlocked))}>
+              {unlocked ? "🔓 Crew editing ON" : "🔒 Crew editing OFF"}
+            </button>
+          ) : !isAdmin && !bare ? (
+            /* Crew were told nothing here before. In Both mode this is the tab's
+               only lock indicator, so staying silent would leave someone unable
+               to tell locked from broken. */
+            editor ? <span className="pl-locknote open">🔓 Editor access — you can edit</span>
+            : unlocked ? <span className="pl-locknote open">🔓 Editing unlocked by admin</span>
+            : <span className="pl-locknote">🔒 {title} I/O locked — view only</span>
+          ) : null}
+          <span className="pl-locknote">{title} signal flow — lives in AV Studio</span>
+        </div>
+        <span className="tk-spacer" />
+        {src && <a className="pl-btn" href={src.replace(/[?&]embed=1/, "")} target="_blank" rel="noreferrer">↗ Open in AV Studio</a>}
+        {src && !editing && (
+          <button className="pl-quotecancelbtn" onClick={() => setAsking((a) => !a)}>
+            {asking ? "Cancel request" : "🔑 Request edit access"}
+          </button>
+        )}
+        {canEdit && saved && !editing && <button className="pl-quotecancelbtn" onClick={() => setEditing(true)}>Change link</button>}
+      </div>
+
+      {(!saved || editing) && (
+        canEdit ? (
+          <div className="pl-import">
+            <div className="pl-importbody">
+              <div className="pl-tplhdr" style={{ margin: "0 0 8px" }}>Link this show to its AV Studio drawing</div>
+              <p className="pl-tplnote" style={{ margin: "0 0 10px" }}>
+                In AV Studio: ☁ Projects → <b>Share</b> on the show&rsquo;s project → <b>View links</b> →
+                create one → press <b>📋 Callboard</b> and copy the <b>plain URL</b>. Paste it here.
+                One link covers both the Video and Audio tabs — each opens filtered to its own department.
+              </p>
+              <input
+                className="roster-inp" value={draft} spellCheck={false}
+                placeholder="https://avstudio…/?page=wiring#view=TOKEN"
+                onChange={(e) => setDraft(e.target.value)}
+              />
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="pl-btn" onClick={save} disabled={!draft.trim()}>Save link</button>
+                {saved && <button className="pl-quotecancelbtn" onClick={() => { setDraft(saved); setEditing(false); }}>Cancel</button>}
+                {saved && <button className="pl-quotecancelbtn" onClick={() => { setDraft(""); update((ev) => { if (ev.avStudio) ev.avStudio.url = ""; }); setEditing(false); }}>Remove</button>}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="pl-emptycase">No AV Studio drawing linked to this show yet.</div>
+        )
+      )}
+
+      {src && !editing && asking && (
+        <AvStudioAccessPanel eventId={event.id} onClose={() => setAsking(false)} />
+      )}
+
+      {src && !editing && (
+        <iframe
+          title={title + " signal flow"}
+          src={src}
+          loading="lazy"
+          style={{ width: "100%", height: compact ? "45vh" : "72vh", minHeight: compact ? 320 : 480, border: "1px solid var(--line)", borderRadius: 12, background: "#0F1E35" }}
+        />
+      )}
+
+    </div>
+  );
+}
+
+/* `bare` drops the lock bar. Set only by IOPage's Both mode, where the drawing
+   above already carries one for the same lock key. */
+function IOTab({ event, update, kind, isAdmin, editor, bare }) {
   const data = event[kind];
   const title = kind === "audio" ? "Audio" : "Video";
   const lockKey = kind === "audio" ? "audioUnlocked" : "videoUnlocked";
@@ -10303,6 +10721,7 @@ function IOTab({ event, update, kind, isAdmin, editor }) {
   return (
     <div className="stack">
       {/* lock bar */}
+      {!bare && (
       <div className="pl-bar">
         <div className="pl-lockwrap">
           {isAdmin ? (
@@ -10323,6 +10742,7 @@ function IOTab({ event, update, kind, isAdmin, editor }) {
           )}
         </div>
       </div>
+      )}
 
       <div className="tab-lead">
         <p>{title} in / out patch. Add a device for each console, switcher, or processor, then list its inputs and outputs.</p>
