@@ -4,9 +4,7 @@
 // POST           save a template (admin only)   body: { name, data }
 // DELETE ?id=    delete a template (admin only)
 //
-// SETUP: run setup-inventory-templates.sql. Coming from Airtable, run
-// POST /api/migrate first — it copies the Templates table across — and only
-// then deploy this file.
+// SETUP: run setup-inventory-templates.sql.
 //
 // Moved off Airtable. Routes, request bodies and response shapes are unchanged.
 //

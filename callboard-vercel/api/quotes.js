@@ -20,6 +20,7 @@
 // SETUP: run setup-catalog.sql, setup-quotes.sql, then setup-quotes-v4.sql for
 // presets. No new env vars.
 import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
+import { syncQuoteItems } from "./_items.js";
 
 const STATUSES = ["draft", "sent", "won", "lost"];
 const LIST_COLS = "id,family_id,version,status,name,client_id,contact_id,venue_id,start_date,end_date,total,sent_at,event_id,created_at,updated_at";
@@ -277,6 +278,20 @@ export default async function handler(req, res) {
         // Stamp the send date the first time it goes out; that is the lock.
         if (st === "sent" && !cur.sent_at) patch.sent_at = new Date().toISOString();
         await supabaseRest("PATCH", "/quotes?id=eq." + encodeURIComponent(q.id), patch);
+
+        /* Keep the reporting rows in step with the status.
+           Winning a quote flattens its lines into show_items; un-winning one
+           takes them out again. Doing it here rather than on a button means
+           the reports cannot quietly drift from the quotes — and it is
+           deliberately best-effort, because failing to update a derived table
+           must never stop you marking a quote won. Backfill rebuilds
+           everything from the quotes if this ever misses. */
+        try {
+          await syncQuoteItems({ ...cur, id: q.id, status: st });
+        } catch (e) {
+          console.log("[quotes] show_items sync failed for " + q.id + ": " + ((e && e.message) || e));
+        }
+
         return json(res, 200, { ok: true, status: st });
       }
 

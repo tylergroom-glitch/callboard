@@ -68,10 +68,9 @@ async function loadSettings() {
       telegramIds: Array.isArray(v && v.telegramIds) ? v.telegramIds : [],
       digest: !(v && v.digest === false),
       inboxAddress: (v && v.inboxAddress) || "",
-      smsNumber: (v && v.smsNumber) || "",
     };
   } catch (e) {
-    return { senders: [], telegramIds: [], digest: true, inboxAddress: "", smsNumber: "" };
+    return { senders: [], telegramIds: [], digest: true, inboxAddress: "" };
   }
 }
 
@@ -90,7 +89,6 @@ async function saveSettings(next) {
       .slice(0, 50),
     digest: next.digest !== false,
     inboxAddress: String(next.inboxAddress || "").trim().slice(0, 200),
-    smsNumber: String(next.smsNumber || "").trim().slice(0, 40),
   };
   await supabaseRest("POST", "/app_settings?on_conflict=key",
     { key: SETTINGS_KEY, value: clean, updated_at: new Date().toISOString() },

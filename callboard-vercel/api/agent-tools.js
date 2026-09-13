@@ -439,6 +439,10 @@ export const WRITE_TOOLS = {
      loading dock. Promoting a held item into the real list happens in the app,
      where the rest of the list is visible. */
   hold_for_show: {
+    /* Applies without a confirmation. See the `immediate` branch in agent.js
+       for why this one and nothing else: a hold changes nothing that matters,
+       and promoting it in the app is the gate that does. */
+    immediate: true,
     spec: {
       name: "hold_for_show",
       description:
@@ -496,7 +500,13 @@ export const WRITE_TOOLS = {
         source: "app",
         agent: { hold: { target, case_name: i.case_name || "", category: i.category || "Misc", items, note: i.note || "" } },
       }, "return=representation");
-      return `Holding ${items.length} item${items.length === 1 ? "" : "s"} for ${s.name}. Promote it in the app when you've decided.`;
+      /* This sentence is the read-back — it replaced a confirmation tap, so it
+         names the show, the case and the items rather than counting them. The
+         show name is the part worth scanning: gear in the wrong case is obvious
+         later, gear on the wrong show is not. */
+      return `Holding for ${s.name}` +
+             (i.case_name ? ` (${i.case_name})` : "") +
+             `: ${list}. Nothing is on the ${target === "quote" ? "quote" : "pull list"} yet — promote it in the app when you've decided.`;
     },
   },
 };

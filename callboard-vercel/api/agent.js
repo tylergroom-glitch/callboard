@@ -6,9 +6,10 @@
 //   POST /api/agent?reset=1    { threadId }             start again
 //   GET  /api/agent            ?threadId=               read a thread back
 //
-// Admin only, both here and over SMS — the SMS side reuses runTurn() with the
-// sender's number as the party, and that number has to be on the same
-// allowlist the inbox uses.
+// Admin only, both here and over Telegram — the Telegram side reuses runTurn()
+// with the sender's numeric Telegram id as the party, and that id has to be on
+// the allowlist in inbox settings. (An SMS side existed until v1.29.0 and is
+// gone; see api/inbox.js for why.)
 //
 // THE SAFETY MODEL, in one line: read tools run, write tools do not.
 //
@@ -154,6 +155,33 @@ export async function runTurn({ channel, party, message }) {
         }]);
         continue;
       }
+      /* A tool that declares itself `immediate` skips the confirmation and runs
+         now. Exactly one does — hold_for_show — and it earns it by being
+         consequence-free: a hold is a note against a show, amber and flagged
+         for review, not on the pull list and not on the quote. Promoting it in
+         the app is the real gate, and that one asks the question worth asking
+         ("does this gear belong on this job?") with the rest of the list in
+         front of you.
+
+         The read-back is not lost, only demoted from a gate to a message: apply
+         returns the items it filed and the show it filed them against, which is
+         what you scan for a mis-heard show name.
+
+         The flag lives on the tool rather than as a name test here, so a future
+         consequence-free write declares itself instead of this loop growing a
+         list of exceptions. Every other write still cannot run without a yes. */
+      if (tool.immediate) {
+        let said;
+        try {
+          said = await tool.apply(ctx, write.input || {});
+        } catch (e) {
+          said = "That didn't save: " + ((e && e.message) || "error");
+        }
+        const done = messages.slice(0, -1).concat([{ role: "assistant", content: said }]);
+        await saveThread(thread.id, { messages: done, pending: null });
+        return { threadId: thread.id, reply: said, pending: null, applied: true };
+      }
+
       const pending = { tool: write.name, input: write.input || {}, says, at: new Date().toISOString() };
       // The tool_use block is dropped from history deliberately: it was never
       // answered with a tool_result, and leaving it would break the next call.

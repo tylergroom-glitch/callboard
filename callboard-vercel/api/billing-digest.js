@@ -187,7 +187,22 @@ const SECTION_STYLE = {
   dueSoon:  { ink: "#4A5568", tint: "#F1F3F5" },  // slate — merely upcoming
 };
 
-function render(b, host) {
+/* Deliberately a different shape from the billing rows: a to-do has a title
+   and maybe a show and a date, not an amount and a due date and a number. */
+function taskRows(items) {
+  return items.map((i) =>
+    '<tr><td style="padding:5px 10px 5px 16px;">' + esc(i.title) +
+    (i.show ? ' <span style="color:#888">' + esc(i.show) + "</span>" : "") +
+    '</td><td style="padding:5px 0;color:#555;white-space:nowrap;text-align:right">' +
+    (i.priority === "high" ? '<span style="color:#B3261E;font-weight:700">high</span> ' : "") +
+    esc(i.due || "") + "</td></tr>"
+  ).join("");
+}
+
+const subjectFor = (tasks, suffix) =>
+  (tasks ? "What needs you today" : "Billing — what needs you today") + (suffix || "");
+
+function render(b, host, tasks) {
   const rows = (items, withDays) =>
     items.map((i) =>
       '<tr><td style="padding:5px 10px 5px 16px;">' + esc(i.show) +
@@ -216,7 +231,35 @@ function render(b, host) {
     );
   };
 
-  const nothing = !b.create.length && !b.approve.length && !b.send.length && !b.overdue.length && !b.dueSoon.length;
+  const taskSection = (key, title, items) => {
+    if (!items.length) return "";
+    const c = SECTION_STYLE[key] || SECTION_STYLE.dueSoon;
+    return (
+      '<table role="presentation" cellpadding="0" cellspacing="0" width="100%" ' +
+      'style="border-collapse:collapse;width:100%;margin:22px 0 8px">' +
+      '<tr><td bgcolor="' + c.tint + '" style="background:' + c.tint + ';border-left:4px solid ' + c.ink +
+      ';padding:8px 12px;font:700 14px/1.3 -apple-system,Segoe UI,sans-serif;color:' + c.ink + '">' +
+      esc(title) +
+      ' <span style="font-weight:400;color:' + c.ink + ';opacity:.65">(' + items.length + ")</span>" +
+      "</td></tr></table>" +
+      '<table role="presentation" cellpadding="0" cellspacing="0" ' +
+      'style="border-collapse:collapse;font:14px/1.4 -apple-system,Segoe UI,sans-serif;width:100%">' +
+      taskRows(items) + "</table>"
+    );
+  };
+
+  const taskBlock = (tasks && tasks.any)
+    ? '<h2 style="font:700 19px/1.3 -apple-system,Segoe UI,sans-serif;color:#00699F;margin:34px 0 2px;' +
+      'border-top:1px solid #e5e5e5;padding-top:22px">Your list</h2>' +
+      taskSection("overdue", "Overdue", tasks.overdue) +
+      taskSection("approve", "Waiting on your yes", tasks.review) +
+      taskSection("dueSoon", "Due today", tasks.dueToday)
+    : "";
+
+  /* "Nothing is waiting on you" has to mean nothing at all, billing AND list.
+     Saying it above a list of six overdue to-dos would be worse than useless. */
+  const nothing = !b.create.length && !b.approve.length && !b.send.length && !b.overdue.length &&
+                  !b.dueSoon.length && !(tasks && tasks.any);
 
   return '<div style="max-width:640px;margin:0 auto;padding:6px 4px 24px">' +
     '<h2 style="font:700 19px/1.3 -apple-system,Segoe UI,sans-serif;color:#00699F;margin:0 0 2px">Billing — what needs you today</h2>' +
@@ -228,11 +271,64 @@ function render(b, host) {
         section("approve", "Waiting for your approval", b.approve) +
         section("send", "Approved, not yet sent", b.send) +
         section("dueSoon", "Due in the next 7 days", b.dueSoon)) +
+    taskBlock +
     '<p style="font:13px/1.6 -apple-system,Segoe UI,sans-serif;color:#666;margin:24px 0 0;border-top:1px solid #e5e5e5;padding-top:12px">' +
     "Outstanding " + money(b.totals.outstanding) +
     (b.totals.overdue ? " · overdue " + money(b.totals.overdue) : "") +
     (host ? '<br><a href="https://' + esc(host) + '/" style="color:#00699F">Open Touchstone Command</a>' : "") +
     "</p></div>";
+}
+
+/* The to-do half of the digest.
+ *
+ * This is the piece that was missing: dated to-dos were being recorded and
+ * nothing ever pushed them back at you. It rides on the billing cron rather
+ * than getting its own, because the Hobby plan allows very few cron jobs and
+ * two emails a morning is one more than anybody reads.
+ *
+ * The switch is the "Include my tasks in the daily email" checkbox in Inbox
+ * settings, which until now saved a value nothing read. Default is ON: the box
+ * is ticked by default in the UI, and a digest that silently omits your list
+ * would be the same bug in a new place.
+ */
+const TASKS_KEY = "inbox_settings";
+
+async function gatherTasks() {
+  let on = true;
+  try {
+    const rows = await supabaseRest("GET", "/app_settings?key=eq." + TASKS_KEY + "&select=value", null);
+    const v = rows && rows[0] ? rows[0].value : null;
+    if (v && v.digest === false) on = false;
+  } catch (e) { /* unreadable settings are not a reason to drop the section */ }
+  if (!on) return null;
+
+  let rows = [];
+  try {
+    rows = await supabaseRest(
+      "GET", "/tasks?status=eq.open&select=id,title,due,priority,review,kind,event_id&limit=500", null);
+  } catch (e) { return null; }   // no tasks table yet, or a bad day — skip the section
+
+  let shows = [];
+  try { shows = await supabaseRest("GET", "/shows?select=id,name", null); } catch (e) { shows = []; }
+  const nameOf = (id) => (shows.find((x) => x.id === id) || {}).name || "";
+
+  const t = today();
+  const out = { review: [], overdue: [], dueToday: [] };
+  (rows || []).forEach((r) => {
+    const item = { title: r.title || "", show: nameOf(r.event_id), due: r.due || "", priority: r.priority || "" };
+    /* Review first and exclusively. Something waiting on a yes is waiting on a
+       yes whether or not it also has a date, and listing it twice would make
+       the digest look longer than the work actually is. */
+    if (r.review) { out.review.push(item); return; }
+    if (!r.due) return;
+    if (r.due < t) out.overdue.push(item);
+    else if (r.due === t) out.dueToday.push(item);
+  });
+  const byDue = (a, b) => String(a.due).localeCompare(String(b.due));
+  out.overdue.sort(byDue);
+  out.dueToday.sort(byDue);
+  out.any = out.review.length + out.overdue.length + out.dueToday.length > 0;
+  return out;
 }
 
 async function gather(prepDays) {
@@ -285,9 +381,13 @@ export default async function handler(req, res) {
     if (q.preview && req.method === "GET") {
       const s = await loadSettings();
       const b = await gather(s.prepDays);
-      return json(res, 200, { html: render(b, req.headers.host || ""), counts: {
+      const tk = await gatherTasks();
+      return json(res, 200, { html: render(b, req.headers.host || "", tk), counts: {
         create: b.create.length, approve: b.approve.length, send: b.send.length,
         overdue: b.overdue.length, dueSoon: b.dueSoon.length,
+        tasksReview: tk ? tk.review.length : 0,
+        tasksOverdue: tk ? tk.overdue.length : 0,
+        tasksDueToday: tk ? tk.dueToday.length : 0,
       } });
     }
     if (q.test && req.method === "POST") {
@@ -301,11 +401,12 @@ export default async function handler(req, res) {
       }
       if (!me) return json(res, 400, { error: "Your account has no email address on it, so there is nowhere to send the test." });
       const b = await gather((await loadSettings()).prepDays);
+      const tkTest = await gatherTasks();
       const okd = await sendBrevoEmail({
         to: me,
         toName: myName,
-        subject: "Billing — what needs you today (test)",
-        html: render(b, req.headers.host || ""),
+        subject: subjectFor(tkTest, " (test)"),
+        html: render(b, req.headers.host || "", tkTest),
       });
       if (!okd) return json(res, 502, { error: "Brevo would not send it. Check BREVO_API_KEY." });
       return json(res, 200, { ok: true, to: me });
@@ -335,7 +436,8 @@ export default async function handler(req, res) {
   if (s.lastSentOn === t) return json(res, 200, { ok: true, skipped: "already sent today" });
 
   const b = await gather(s.prepDays);
-  const result = await sendToAll(recipients, "Billing — what needs you today", render(b, req.headers.host || ""));
+  const tk = await gatherTasks();
+  const result = await sendToAll(recipients, subjectFor(tk), render(b, req.headers.host || "", tk));
   if (!result.sent) return json(res, 502, { error: "Brevo would not send to anybody.", failed: result.failed });
 
   // Marked sent if it reached anyone. One bad address should not cause the whole

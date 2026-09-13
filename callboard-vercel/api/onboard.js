@@ -131,6 +131,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .priv-body h4{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#94A3B8;margin:14px 0 5px}
 .priv-body ul{margin:0 0 0 17px}
 .priv-body li{margin:3px 0}
+/* Matches .priv summary rather than taking the browser's default #0000EE,
+   which fights the page's blue. Underline is left on — in a privacy notice a
+   link should look like one. */
+.priv-body a{color:#2563EB}
 @media(max-width:480px){.grid{grid-template-columns:1fr}}
 </style></head><body>
 <div class="card">${content}</div>
@@ -183,11 +187,12 @@ function privacyBlock() {
           <li>Our accountant and payroll provider, for paying you.</li>
         </ul>
 
-        <h4>Text messages</h4>
-        If you give us your mobile we may text you about jobs &mdash; call times, schedule
-        changes, gear questions. Message frequency varies. Message and data rates may
-        apply. Reply STOP to stop all texts or HELP for help. Stopping texts does not
-        affect your work with us. Your number is never shared with third parties.
+        <h4>Your phone number</h4>
+        We use it to reach you about work &mdash; call times, schedule changes, gear
+        questions &mdash; by call or text, from a person. We do not run an automated
+        texting service and will not sign you up to one. Your number is never shared with
+        third parties, and asking us to stop contacting you this way does not affect your
+        work with us.
 
         <h4>How long we keep it</h4>
         While you work with us, and as long afterwards as we might call you for another
@@ -195,8 +200,10 @@ function privacyBlock() {
         clear them sooner. Payment and tax records for as long as the law requires.
 
         <h4>Changing or deleting it</h4>
-        Email [YOUR SUPPORT EMAIL] and ask. You can see what we hold, correct it, delete
-        it, clear just the travel details, or stop the texts. No form, no reason needed,
+        Email <a href="mailto:support@touchstonecreativegroup.com">support@touchstonecreativegroup.com</a>
+        and ask. You can see what we hold, correct it, delete
+        it, clear just the travel details, or ask us to stop calling and texting. No form,
+        no reason needed,
         and we reply within 30 days.
 
         <h4>Security</h4>

@@ -1,7 +1,7 @@
 // /api/events — Supabase `shows` with per-account role enforcement.
 // TCG + producers: full edit. Department editors: edit only fields owned by tabs
 // tagged to their department(s) (enforced server-side). Crew + others: read only.
-import { json, readBody, auth, isAdmin, memberRole, memberShowIds, supabaseRest, hashPassword, scopedSave } from "./_lib.js";
+import { json, readBody, auth, isAdmin, memberRole, memberShowIds, supabaseRest, hashPassword, scopedSave, stripShowForRole, restoreHidden, canSeeCrewPay, hiddenShowFields } from "./_lib.js";
 
 const summary = (row) => ({
   id: row.id,
@@ -27,6 +27,18 @@ async function effective(p, id) {
   return { role: null, depts: [] };
 }
 
+/* Does this role have anything hidden from it? A TCG admin does not, so the
+   write paths skip the extra read entirely. */
+function needsRestore(role) {
+  return !canSeeCrewPay(role) || hiddenShowFields(role).length > 0;
+}
+
+async function storedShowData(id) {
+  const rows = await supabaseRest(
+    "GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=data", null);
+  return (rows && rows[0] && rows[0].data && typeof rows[0].data === "object") ? rows[0].data : {};
+}
+
 export default async function handler(req, res) {
   const p = auth(req);
   if (!p) return json(res, 401, { error: "Not signed in" });
@@ -49,7 +61,12 @@ export default async function handler(req, res) {
         data.category = row.category === "freelance" ? "freelance" : "tcg";
         data._role = role;
         if (role === "dept_editor") data._depts = depts;
-        return json(res, 200, data);
+        /* Everything this role may not see, removed in one pass: crew rates
+           (roster data that lives on the show because picking someone copies
+           it here) and the timesheet. restoreHidden() is the exact inverse and
+           runs on every write path, so a client that was never shown a field
+           can neither set it nor delete it by sending back what it was given. */
+        return json(res, 200, stripShowForRole(data, role));
       }
       if (isAdmin(p)) {
         const rows = await supabaseRest("GET", "/shows?select=id,name,client,start_date,end_date,pass_hash,category&order=start_date.asc.nullslast", null);
@@ -88,6 +105,16 @@ export default async function handler(req, res) {
         const b = await readBody(req);
         const patch = { updated_at: new Date().toISOString() };
         if (b.data !== undefined) patch.data = b.data;
+        /* A producer has fullEdit — this path writes `data` WHOLESALE and never
+           reaches scopedSave — but is not shown crew rates. Writing their
+           payload as-is would delete every rate on the show on their first
+           save. Anything they were not shown is put back from what is stored.
+           A TCG admin is shown everything, so hiddenShowFields is empty for
+           them and this costs one branch and no query. */
+        if (b.data !== undefined && needsRestore(role)) {
+          const storedData = await storedShowData(id);
+          patch.data = restoreHidden(storedData, b.data, role);
+        }
         if (b.name !== undefined) patch.name = b.name;
         if (b.client !== undefined) patch.client = b.client;
         if (b.startDate !== undefined) patch.start_date = b.startDate || null;
@@ -100,9 +127,13 @@ export default async function handler(req, res) {
       if (role === "dept_editor") {
         if (!depts.length) return json(res, 403, { error: "No department assigned to you for this show." });
         const b = await readBody(req);
-        const srows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=data", null);
-        const stored = (srows && srows[0] && srows[0].data && typeof srows[0].data === "object") ? srows[0].data : {};
-        const result = scopedSave(stored, b.data || {}, depts);
+        const stored = await storedShowData(id);
+        /* BEFORE the diff, not after. A department editor is not shown the
+           timesheet, so their payload has no `time` key — and scopedSave would
+           read that as an attempted change to a field they may not touch and
+           refuse the ENTIRE save. Putting it back first means they can save
+           their own areas normally and still cannot alter it. */
+        const result = scopedSave(stored, restoreHidden(stored, b.data || {}, role), depts);
         if (!result.ok) return json(res, 403, { error: "You can only edit your department's areas. Blocked changes to: " + result.bad.join(", ") });
         await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), { data: result.data, updated_at: new Date().toISOString() });
         return json(res, 200, { ok: true });

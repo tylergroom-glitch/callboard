@@ -2,9 +2,6 @@
 import crypto from "node:crypto";
 
 const {
-  AIRTABLE_TOKEN,
-  AIRTABLE_BASE_ID,
-  AIRTABLE_TABLE = "Events",
   ADMIN_PASSWORD,
   ADMIN_PASSWORD_2,
   APP_SECRET,
@@ -19,10 +16,9 @@ const {
 export const env = {
   ADMIN_PASSWORD,
   ADMIN_PASSWORD_2,
-  /* Airtable is no longer part of this check. Every feature that reads or
-     writes data is on Supabase now; the only things still touching Airtable
-     are /api/migrate and the airtable* helpers below, and neither should be
-     able to stop anyone signing in. */
+  /* Airtable is gone entirely as of v1.29.0 — no token, no base id, no
+     helpers, no migration endpoint. Nothing here reads or writes anything but
+     Supabase. */
   hasConfig: !!(APP_SECRET && ADMIN_PASSWORD),
 };
 export const TOKEN_TTL = 1000 * 60 * 60 * 12; // 12 hours
@@ -113,80 +109,13 @@ export async function memberShowIds(p) {
   } catch { return []; }
 }
 
-const AT_BASE = `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}`;
-export async function airtableRaw(table, method, path = "", body) {
-  const url = `${AT_BASE}/${encodeURIComponent(table)}` + path;
-  const res = await fetch(url, {
-    method,
-    headers: {
-      Authorization: `Bearer ${AIRTABLE_TOKEN}`,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const e = new Error(data?.error?.message || data?.error?.type || "Airtable error");
-    e.status = res.status;
-    throw e;
-  }
-  return data;
-}
-// Roster / Templates / Inventory now live in Supabase tables. This shim keeps the
-// old Airtable-shaped interface so roster.js / templates.js / inventory.js work unchanged.
-const SB_TABLE_MAP = { Roster: "roster", Templates: "templates", Inventory: "inventory" };
-function rowToRec(row) {
-  const fields = { Name: row.name || "" };
-  if (row.data !== undefined) fields.Data = typeof row.data === "string" ? row.data : JSON.stringify(row.data || {});
-  if (row.category !== undefined && row.category !== null) fields.Category = row.category;
-  return { id: row.id, fields };
-}
-function fieldsToRow(f) {
-  f = f || {};
-  const row = {};
-  if (f.Name !== undefined) row.name = f.Name;
-  if (f.Data !== undefined) { try { row.data = JSON.parse(f.Data); } catch { row.data = {}; } }
-  if (f.Category !== undefined) row.category = f.Category;
-  return row;
-}
-function colOf(field) { return field === "Name" ? "name" : field === "Category" ? "category" : String(field).toLowerCase(); }
-export async function airtableTable(table, method, path = "", body) {
-  const sb = SB_TABLE_MAP[table] || String(table).toLowerCase();
-  if (method === "GET" && path.startsWith("/")) {
-    const id = path.slice(1).split("?")[0];
-    const rows = await supabaseRest("GET", "/" + sb + "?id=eq." + encodeURIComponent(id) + "&select=*", null);
-    if (!rows || !rows[0]) { const e = new Error("Not found"); e.status = 404; throw e; }
-    return rowToRec(rows[0]);
-  }
-  if (method === "GET") {
-    let q = "/" + sb + "?select=*";
-    const m = path.match(/filterByFormula=([^&]+)/);
-    if (m) {
-      const formula = decodeURIComponent(m[1]);
-      const nm = formula.match(/\{(\w+)\}='([^']*)'/);
-      if (nm) q += "&" + colOf(nm[1]) + "=eq." + encodeURIComponent(nm[2]);
-    }
-    const rows = await supabaseRest("GET", q, null);
-    return { records: (rows || []).map(rowToRec) };
-  }
-  if (method === "POST") {
-    const rows = await supabaseRest("POST", "/" + sb, fieldsToRow(body && body.fields), "return=representation");
-    return rowToRec(rows[0]);
-  }
-  if (method === "PATCH") {
-    const id = path.slice(1).split("?")[0];
-    await supabaseRest("PATCH", "/" + sb + "?id=eq." + encodeURIComponent(id), fieldsToRow(body && body.fields));
-    return {};
-  }
-  if (method === "DELETE") {
-    const id = path.slice(1).split("?")[0];
-    await supabaseRest("DELETE", "/" + sb + "?id=eq." + encodeURIComponent(id), null);
-    return {};
-  }
-  return {};
-}
-// Events table calls now go to the Supabase `shows` table. This shim keeps the
-// old Airtable-shaped interface so every existing caller works unchanged.
+/* NOTE ON THE NAME. `airtable()` below talks to SUPABASE, not Airtable. It is
+   a shim: it presents the old Airtable-shaped {id, fields} interface over the
+   `shows` table, so calendar.js, password.js and survey.js did not have to be
+   rewritten during the migration. The name is now actively misleading and
+   should be changed to something like showsTable() — deliberately NOT done in
+   this round, because those three files have no test coverage and a rename
+   there would be an untested change riding along with a deletion. */
 function showToRecord(row) {
   return {
     id: row.id,
@@ -356,6 +285,118 @@ export function effectiveTabDept(perShow, tab) {
 
 // Which top-level show fields each tab owns. Anything not listed here is NOT
 // editable by a department editor (default-deny / fails closed).
+/* Fields on a crew row that are NOT the crew's business.
+ *
+ * A rate is roster data that happens to have been copied onto the show when
+ * somebody picked the person from the roster. Locking /api/roster without
+ * locking these would have been theatre: the same numbers, one endpoint over.
+ *
+ * Exported so events.js strips them on the way out and scopedSave puts them
+ * back on the way in — those two have to agree or the second wipes what the
+ * first hid. */
+export const CREW_PRIVATE_FIELDS = ["rate", "rateType"];
+
+/* Who may see them. Deliberately TCG only, matching the roster gate and the
+   rule BriefTravel already states about show-admin passwords. Widening this to
+   producers is one word, if you decide a producer needs per-person pay. */
+export const canSeeCrewPay = (role) => role === "tcg";
+
+/* The timesheet. Admins and producers — a producer has to verify what was
+   worked; a department editor does not need everyone else's in and out times. */
+export const canSeeHours = (role) => role === "tcg" || role === "producer";
+
+/* Top-level keys removed from the show for a role that may not see them.
+ *
+ * Kept as a LIST rather than another bespoke branch, because the two rules
+ * below (strip on read, restore on write) then cover any future field for
+ * free. Adding one here is the whole change. */
+export function hiddenShowFields(role) {
+  const out = [];
+  if (!canSeeHours(role)) out.push("time");
+  return out;
+}
+
+/* Strip the private fields from a copy. Never mutates the caller's object —
+   the same `data` gets written back in other code paths, and a mutation here
+   would be a very quiet way to delete every rate on the show. */
+export function stripCrewPay(data) {
+  if (!data || !Array.isArray(data.crew)) return data;
+  return { ...data, crew: data.crew.map((c) => {
+    if (!c || typeof c !== "object") return c;
+    const out = { ...c };
+    for (const f of CREW_PRIVATE_FIELDS) delete out[f];
+    return out;
+  }) };
+}
+
+/* Everything a role may not see, removed in one pass. This is what events.js
+   sends; `restoreHidden` below is its exact inverse and they have to stay a
+   pair. */
+export function stripShowForRole(data, role) {
+  if (!data || typeof data !== "object") return data;
+  /* ALWAYS a copy, for every role, including one that has nothing hidden.
+     Returning the caller's own object would mean a `delete` below silently
+     removing a field from the show that is about to be written back
+     elsewhere. Today that cannot happen — the only role holding the original
+     is a TCG admin, and nothing is hidden from them, so the loop never runs —
+     which is exactly the kind of safety that stops being true the first time
+     somebody adds a rule. Copying unconditionally makes it testable instead of
+     accidental. */
+  let out = { ...data };
+  if (!canSeeCrewPay(role)) out = stripCrewPay(out);
+  for (const f of hiddenShowFields(role)) delete out[f];
+  return out;
+}
+
+/* Put back everything the caller was not shown, from what is stored.
+ *
+ * THE RULE: whoever cannot SEE a field cannot WRITE it — and, just as
+ * importantly, cannot DELETE it by sending back the copy they were given.
+ *
+ * A hidden top-level field is restored wholesale. Crew pay is restored per row
+ * by id. Call this on EVERY write path before anything is compared or saved;
+ * events.js has two of them and both need it. */
+export function restoreHidden(storedData, incomingData, role) {
+  const stored = storedData && typeof storedData === "object" ? storedData : {};
+  const out = { ...(incomingData && typeof incomingData === "object" ? incomingData : {}) };
+  for (const f of hiddenShowFields(role)) {
+    if (stored[f] !== undefined) out[f] = stored[f];
+    else delete out[f];
+  }
+  if (!canSeeCrewPay(role) && Array.isArray(out.crew)) {
+    out.crew = preserveCrewPay(stored.crew, out.crew);
+  }
+  return out;
+}
+
+/* Carry the private fields over from what is stored, matched by row id.
+ *
+ * THE RULE: whoever cannot SEE these fields cannot WRITE them. That has to hold
+ * at every write path, not just the scoped one — a producer gets fullEdit in
+ * events.js, which writes `data` wholesale, and is sent a stripped payload.
+ * Without this their first save would delete every rate on the show, silently.
+ *
+ * A row they added has no match and keeps what it came with — there is nothing
+ * to preserve. A row they deleted goes, rate and all, because removing a person
+ * from a show is a thing they are allowed to do. */
+export function preserveCrewPay(storedCrew, incomingCrew) {
+  const prior = new Map();
+  for (const c of (Array.isArray(storedCrew) ? storedCrew : [])) {
+    if (c && c.id) prior.set(c.id, c);
+  }
+  return (Array.isArray(incomingCrew) ? incomingCrew : []).map((c) => {
+    if (!c || typeof c !== "object") return c;
+    const was = c.id ? prior.get(c.id) : null;
+    if (!was) return c;
+    const out = { ...c };
+    for (const f of CREW_PRIVATE_FIELDS) {
+      if (was[f] !== undefined) out[f] = was[f];
+      else delete out[f];
+    }
+    return out;
+  });
+}
+
 export const TAB_FIELDS = {
   briefUnlocked: ["venue", "contacts", "crew", "meals", "wardrobe", "notes", "links"],
   scheduleUnlocked: ["schedule", "callTimes"],
@@ -468,8 +509,54 @@ export function scopedSave(stored, incoming, depts) {
       }
       continue;
     }
+    if (k === "crew" && allowed.has(k)) {
+      // See preserveCrewPay: the other half of stripCrewPay.
+      merged.crew = preserveCrewPay(stored.crew, incoming.crew);
+      continue;
+    }
     if (allowed.has(k)) { merged[k] = incoming[k]; continue; }   // whole tab allowed
     return { ok: false, bad: [k] };                       // out of scope
   }
   return { ok: true, data: merged };
+}
+
+// --- Outbound Telegram -------------------------------------------------------
+// The webhook in telegram.js answers messages people send. This is the other
+// direction: an endpoint that needs to tell you something without being asked.
+//
+// It reuses the inbox's allowed-sender list as the notify list, which is the
+// right default — those ids are exactly the people already trusted to drive the
+// assistant, and keeping one list means there is no second place to forget.
+//
+// Best-effort by design. A notification that fails must never fail the thing it
+// was announcing, so every path here resolves rather than throws.
+export async function telegramNotify(text) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || !text) return { sent: 0 };
+  let ids = [];
+  try {
+    const rows = await supabaseRest("GET", "/app_settings?key=eq.inbox_settings&select=value", null);
+    const v = rows && rows[0] ? rows[0].value : null;
+    ids = Array.isArray(v && v.telegramIds) ? v.telegramIds : [];
+  } catch {
+    return { sent: 0 };
+  }
+  const body = String(text).length > 3900 ? String(text).slice(0, 3890) + "\n…" : String(text);
+  let sent = 0;
+  for (const raw of ids) {
+    const id = String(raw || "").trim();
+    if (!id) continue;
+    try {
+      const r = await fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: id, text: body }),
+      });
+      const j = await r.json().catch(() => null);
+      if (j && j.ok) sent++;
+    } catch (e) {
+      console.log("[notify] telegram send failed: " + ((e && e.message) || e));
+    }
+  }
+  return { sent };
 }

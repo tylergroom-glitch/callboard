@@ -1,16 +1,15 @@
 // /api/inbox — the way things get in without you typing them.
 //
 //   POST /api/inbox?k=<INBOX_SECRET>   Brevo inbound parsing  (forwarded email)
-//   POST /api/inbox                    Twilio SMS webhook     (text message)
 //
-// The two channels do deliberately different things, because you use them
-// differently:
+// EMAIL is capture. You forward a client's message and it becomes an item
+// waiting to be confirmed. One way, no reply, no conversation.
 //
-//   EMAIL is capture. You forward a client's message and it becomes an item
-//   waiting to be confirmed. One way, no reply, no conversation.
-//   TEXT is a conversation. It goes to the assistant, which can look things up
-//   and answer, and which asks before it changes anything — over SMS that
-//   question is just a text you reply "yes" to.
+// SMS was removed in v1.29.0. It never delivered a single outbound message —
+// the A2P campaign was rejected twice and Twilio blocked every reply at the
+// carrier boundary with error 30034 — and Telegram now does the conversational
+// half properly. If it ever comes back, it comes back as its own endpoint
+// rather than a second branch in here.
 //
 // The email half lands a row in `tasks` with review = true, waiting Nothing here ever creates a confirmed task, and
 // nothing here ever touches a quote, an invoice or a show. The worst a bad
@@ -23,10 +22,8 @@
 // failed would be far worse than filing it under the wrong show.
 //
 // SETUP: run setup-tasks.sql. Environment variables:
-//   INBOX_SECRET        required for email. Any long random string; it goes in
-//                       the Brevo webhook URL as ?k=...
-//   TWILIO_AUTH_TOKEN   required for SMS. Requests are rejected unless their
-//                       X-Twilio-Signature matches.
+//   INBOX_SECRET        required. Any long random string; it goes in the Brevo
+//                       webhook URL as ?k=...
 //   ANTHROPIC_API_KEY   optional. Without it, items still arrive, unparsed.
 //   INBOX_MODEL         optional, defaults to claude-haiku-4-5-20251001.
 import crypto from "node:crypto";
@@ -47,52 +44,6 @@ function sameSecret(a, b) {
   return crypto.timingSafeEqual(x, y);
 }
 
-/* Twilio signs every request: base64 HMAC-SHA1 over the full URL followed by
-   each POST parameter, sorted by name, key and value concatenated. Without
-   this the SMS endpoint is an open door for anyone who finds the URL. */
-/* Behind Vercel's proxy the host and path Twilio signed are not always the ones
-   this function sees, so every plausible spelling is tried rather than one.
-   A wrong guess costs a hash; a missed match costs a silently dropped text. */
-function twilioSignedUrls(req) {
-  const proto = (req.headers["x-forwarded-proto"] || "https").split(",")[0].trim();
-  const hosts = [];
-  const fwd = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim();
-  if (fwd) hosts.push(fwd);
-  if (req.headers.host && hosts.indexOf(req.headers.host) < 0) hosts.push(req.headers.host);
-  const url = req.url || "/api/inbox";
-  const paths = [url];
-  const bare = url.split("?")[0];
-  if (bare !== url) paths.push(bare);   // Twilio may have been given the plain URL
-  const out = [];
-  hosts.forEach((h) => paths.forEach((p) => out.push(proto + "://" + h + p)));
-  return out;
-}
-
-function twilioSignatureValid(req, params) {
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const given = String(req.headers["x-twilio-signature"] || "");
-  if (!token || !given) {
-    console.log("[inbox] twilio sig: token=" + (token ? "set/" + token.length + "ch" : "MISSING")
-      + " header=" + (given ? "present" : "MISSING"));
-    return false;
-  }
-  let tail = "";
-  Object.keys(params).sort().forEach((k) => { tail += k + params[k]; });
-  const urls = twilioSignedUrls(req);
-  for (let i = 0; i < urls.length; i++) {
-    const mine = crypto.createHmac("sha1", token)
-      .update(Buffer.from(urls[i] + tail, "utf8")).digest("base64");
-    try {
-      if (crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(given))) return true;
-    } catch (e) { /* length mismatch, so not this candidate */ }
-  }
-  /* Diagnostic only — no secret is printed. The token's LENGTH is the tell:
-     a Twilio auth token is 32 characters, so 34 means an SID was pasted. */
-  console.log("[inbox] twilio sig mismatch. token=" + token.length + "ch tried="
-    + JSON.stringify(urls) + " params=" + Object.keys(params).sort().join(","));
-  return false;
-}
-
 async function loadSettings() {
   try {
     const rows = await supabaseRest("GET", "/app_settings?key=eq." + SETTINGS_KEY + "&select=value", null);
@@ -101,19 +52,13 @@ async function loadSettings() {
   } catch (e) { return null; }   // null means "could not check" — fails closed below
 }
 
-/* An email is compared whole and lowercased; a phone number by its last ten
-   digits, so +15595551234, 15595551234 and (559) 555-1234 all match. */
+/* Compared whole and lowercased. The loose last-ten-digits phone matching that
+   used to live here went with SMS; a saved phone number simply never matches
+   now, which is the correct answer rather than a silent half-working one. */
 function senderAllowed(from, senders) {
   const raw = String(from || "").trim().toLowerCase();
   if (!raw) return false;
-  const digits = raw.replace(/[^0-9]/g, "");
-  return senders.some((s) => {
-    const t = String(s || "").trim().toLowerCase();
-    if (!t) return false;
-    if (t.indexOf("@") >= 0) return t === raw;
-    const td = t.replace(/[^0-9]/g, "");
-    return td.length >= 10 && digits.length >= 10 && td.slice(-10) === digits.slice(-10);
-  });
+  return senders.some((s) => String(s || "").trim().toLowerCase() === raw);
 }
 
 /* Forwarded mail arrives wrapped in headers and quoted text. Take the first
@@ -221,38 +166,6 @@ export default async function handler(req, res) {
       // ExtractedMarkdownMessage is Brevo's de-signatured, de-quoted version.
       body: String(it.ExtractedMarkdownMessage || it.RawTextBody || "").slice(0, 40000),
     };
-  } else if (body && (body.Body !== undefined || body.MessageSid)) {
-    /* Two ways to prove the caller is Twilio, and either is enough.
-       The signature is stronger and is preferred. The URL secret is the same
-       protection the email channel runs on, and exists because an auth token
-       that will not validate should not be able to take texting offline. */
-    const signed = twilioSignatureValid(req, body);
-    const urlSecret = !!process.env.INBOX_SECRET && sameSecret(q.k, process.env.INBOX_SECRET);
-    if (!signed && !urlSecret) { res.status(401).end(); return; }
-    const from = String(body.From || "");
-    const text = String(body.Body || "").slice(0, 4000);
-
-    const settingsSms = await loadSettings();
-    if (!settingsSms) { res.status(503).end(); return; }
-    if (!senderAllowed(from, settingsSms.senders)) return replyOk(res, "sms");
-
-    // A text is a turn in a conversation, not a filing. If something is waiting
-    // on a yes, a bare yes or no answers it rather than starting a new topic —
-    // which is how anyone actually replies to a question by text.
-    let out;
-    try {
-      const t = text.trim().toLowerCase();
-      if (/^(y|ye|yes|yep|yeah|ok|okay|do it|go|confirm|please do)[.!]?$/.test(t)) {
-        out = await confirmPending({ channel: "sms", party: from });
-      } else if (/^(n|no|nope|cancel|stop|don'?t|never mind|nevermind)[.!]?$/.test(t)) {
-        out = await cancelPending({ channel: "sms", party: from });
-      } else {
-        out = await runTurn({ channel: "sms", party: from, message: text });
-      }
-    } catch (e) {
-      out = { reply: "Something went wrong at my end — try again in a minute." };
-    }
-    return replySms(res, out.reply || "…");
   } else {
     res.status(400).end(); return;
   }
@@ -264,7 +177,7 @@ export default async function handler(req, res) {
   if (!senderAllowed(msg.from, settings.senders)) {
     // 200, deliberately. Telling an unknown sender that the address is real,
     // or that their message was rejected, is free reconnaissance.
-    return replyOk(res, msg.channel);
+    return replyOk(res);
   }
 
   // ---- capture, before anything clever ------------------------------------
@@ -272,7 +185,7 @@ export default async function handler(req, res) {
     (msg.subject && !/^(fwd?|re)\s*:/i.test(msg.subject) ? msg.subject : "") ||
     firstMeaningfulLine(msg.body) ||
     msg.subject ||
-    (msg.channel === "sms" ? "Text message" : "Forwarded email");
+    "Forwarded email";
 
   let row;
   try {
@@ -313,27 +226,10 @@ export default async function handler(req, res) {
        message, so this is deliberately swallowed. */
   }
 
-  return replyOk(res, msg.channel);
+  return replyOk(res);
 }
 
-/* Twilio expects TwiML and will show an error in its console for anything
-   else; Brevo just wants a 2xx. An empty <Response/> means "received, say
-   nothing back". */
-function replyOk(res, channel) {
-  if (channel === "sms") {
-    res.setHeader("Content-Type", "text/xml");
-    res.status(200).send("<Response></Response>");
-    return;
-  }
+/* Brevo just wants a 2xx. */
+function replyOk(res) {
   return json(res, 200, { ok: true });
-}
-
-/* TwiML, with the assistant's answer in it. A single segment is 160
-   characters, so the reply is capped to keep a chatty answer from costing four
-   messages. The full conversation is always readable in the app. */
-function replySms(res, text) {
-  const body = String(text || "").slice(0, 600)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  res.setHeader("Content-Type", "text/xml");
-  res.status(200).send("<Response><Message>" + body + "</Message></Response>");
 }

@@ -4,9 +4,7 @@
 //   or update    body: { id, name, category, data }
 // DELETE ?id=    delete a case (admin only)
 //
-// SETUP: run setup-inventory-templates.sql. Coming from Airtable, run
-// POST /api/migrate first — it copies the Inventory table across — and only
-// then deploy this file.
+// SETUP: run setup-inventory-templates.sql.
 //
 // Moved off Airtable. Routes, request bodies and response shapes are unchanged,
 // so nothing in the front end needed touching: the only difference is that `id`

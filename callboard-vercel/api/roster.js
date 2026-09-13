@@ -7,9 +7,7 @@
 // POST ?positions=1    save positions array (admin only)  body: { positions: [...] }
 // DELETE ?id=          delete crew member (admin only)
 //
-// SETUP: run setup-roster.sql. If you are coming from Airtable, run
-// POST /api/migrate first — it copies the Roster table across, including the
-// __positions__ row — and only then deploy this file.
+// SETUP: run setup-roster.sql.
 //
 // Moved off Airtable. The routes, the request bodies and the response shapes
 // are byte-for-byte what they were, so nothing in the front end changes: the
@@ -65,6 +63,23 @@ export default async function handler(req, res) {
         const stored = d && Array.isArray(d.positions) ? d.positions : null;
         return json(res, 200, { positions: stored && stored.length ? stored : DEFAULT_POSITIONS });
       }
+      /* THE CREW LIST IS TCG-ADMIN ONLY.
+       *
+       * It carries every crew member's rate, phone, email and emergency
+       * contact, and until v1.30.0 any signed-in account could read the lot —
+       * writes were gated, reads were not. Since almost everyone now has an
+       * account rather than a show password, that was most of the company able
+       * to read everyone else's pay.
+       *
+       * isAdmin() is a TCG admin or the master admin password. A show password
+       * with level=admin is NOT covered, deliberately, and that matches the
+       * rule BriefTravel already states in App.jsx: "a producer holding a show
+       * admin password should not get the crew's dates of birth and KTNs."
+       *
+       * The POSITIONS branch above stays open on purpose. It is a list of job
+       * titles, it is about no one, and the crew tab's dropdown needs it. */
+      if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+
       // List crew, excluding the special config row.
       const rows = await supabaseRest(
         "GET",
