@@ -13272,14 +13272,6 @@ function CostingTab({ event }) {
         </p>
       </div>
 
-      <div className="tab-lead">
-        <p>
-          Budget vs actual for this show. <b>Only admins can see this tab</b> — the figures live in a separate,
-          admin-only store and are never sent to crew.
-          <span className="pnl-save">{saving ? "Saving…" : "Saved"}</span>
-        </p>
-      </div>
-
       {/* import from quote PDF */}
       <div className="pl-import">
         <button className="pl-importtoggle" onClick={() => { setPnl({ open: !pnlImp.open }); if (pnlImp.open) resetPnlImp(); }}>
@@ -16393,7 +16385,13 @@ const CSS = `
 .pl-search { flex:1 1 200px; min-width:180px; border:1px solid var(--line); border-radius:10px; padding:8px 12px; font-size:13px; outline:none; background:var(--panel2); }
 
 .pl-import { border:1px dashed var(--line); border-radius:12px; background:var(--panel2); padding:8px 12px; }
-.pl-importtoggle { border:none; background:none; font-size:13px; font-weight:700; color:#334155; cursor:pointer; padding:2px 0; }
+/* Was a hardcoded #334155 — a dark slate that reads fine on white and is all
+   but invisible on this app's dark panels (1.44:1 against --panel2, where
+   4.5:1 is the readable minimum). SIX controls use this class, including the
+   P&L "Import from quote PDF" toggle, so several features were effectively
+   hidden. Use the theme variable so it can never drift from the background. */
+.pl-importtoggle { border:none; background:none; font-size:13px; font-weight:700; color:var(--dim); cursor:pointer; padding:2px 0; }
+.pl-importtoggle:hover { color:var(--ink); }
 .pl-importbody { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
 .pl-improw { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink); padding:4px 0; cursor:pointer; }
 .pl-improw input { width:16px; height:16px; }
