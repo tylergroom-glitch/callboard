@@ -108,6 +108,8 @@ import {
   lookupDistance,
   getTruckOrigin,
   setTruckOrigin,
+  getTruckRates,
+  setTruckRates,
 } from "./db.js";
 
 /* ============================================================
@@ -1341,6 +1343,8 @@ function Callboard({ auth, onLogout }) {
               <RosterScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
+            ) : admSection === "settings" ? (
+              <SettingsScreen onClose={() => goAdmin("shows")} />
             ) : (
               calendar
             )}
@@ -2416,7 +2420,7 @@ function TkHold({ t, showName, busy, onPromote, onBin }) {
    the whole of the security model on the inbound side — an address you have
    forwarded from is not a secret — so it is deliberately the first thing on
    this panel rather than buried. */
-function TkSettings({ onClose }) {
+function SetInbox() {
   const [s, setS] = useState(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -2444,11 +2448,10 @@ function TkSettings({ onClose }) {
   };
 
   return (
-    <div style={ctgOv} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div style={{ ...ctgCard, maxWidth: 560 }}>
-        <h3 style={{ margin: "0 0 4px" }}>Inbox settings</h3>
-        <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
-          What is allowed to put things on your list without you typing them.
+    <div className="set-panel">
+      <div>
+        <p className="set-lead">
+          What is allowed to put things on your To&nbsp;Do list without you typing them.
         </p>
         {err ? <div className="tk-err">{err}</div> : null}
         {!s ? <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div> : (
@@ -2486,9 +2489,17 @@ function TkSettings({ onClose }) {
               Include my tasks in the daily email
             </label>
 
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18, alignItems: "center" }}>
-              {saved && <span style={{ color: "var(--green, #6FD08A)", fontSize: 12.5 }}>Saved</span>}
-              <button className="btn ghost" onClick={onClose}>Close</button>
+            {/* Pointer, not a second editor. The money digest's own settings —
+                whether it sends at all, to whom, how far ahead — live with the
+                invoices they summarise, and having two screens that could both
+                change them is the thing this whole screen exists to stop. */}
+            <div className="tk-help" style={{ marginTop: 14 }}>
+              That daily email is the money digest. Whether it sends at all, and who else gets it,
+              is set under <b>Billing → Daily email</b>, where you can also send yourself a test copy.
+            </div>
+
+            <div className="set-actions">
+              {saved && <span className="set-saved">Saved</span>}
               <button className="btn" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
             </div>
           </>
@@ -2547,7 +2558,6 @@ function TasksScreen({ onClose, onOpenShow }) {
   const [newDue, setNewDue] = useState("");
   const [busy, setBusy] = useState("");
   const [openRaw, setOpenRaw] = useState(null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const load = async () => {
     setState("loading"); setErr("");
@@ -2733,7 +2743,6 @@ function TasksScreen({ onClose, onOpenShow }) {
           {lateCount > 0 && <span className="tk-h1late">{lateCount} late</span>}
         </h1>
         <div className="cal-top-actions">
-          <button className="btn ghost" onClick={() => setSettingsOpen(true)}>Inbox settings</button>
           <button className="btn ghost" onClick={load}>Refresh</button>
           <button className="btn ghost" onClick={onClose}>Back to shows</button>
         </div>
@@ -2845,7 +2854,6 @@ function TasksScreen({ onClose, onOpenShow }) {
         ))}
       </div>
 
-      {settingsOpen && <TkSettings onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
@@ -3982,7 +3990,6 @@ function CatalogScreen({ onClose }) {
     { key: "catalog", label: "Pricing catalog" },
     { key: "clients", label: "Clients" },
     { key: "venues", label: "Venues" },
-    { key: "terms", label: "Quote terms" },
   ];
   return (
     <div className="cal-wrap">
@@ -4000,7 +4007,9 @@ function CatalogScreen({ onClose }) {
       {tab === "catalog" ? <CatalogItems /> : null}
       {tab === "clients" ? <CatalogClients /> : null}
       {tab === "venues" ? <CatalogVenues /> : null}
-      {tab === "terms" ? <CatalogTerms /> : null}
+      {/* Quote terms moved to Settings -> Quote terms. Catalog is the things
+          you sell; the terms are a company document that happened to land
+          here first. */}
     </div>
   );
 }
@@ -4113,7 +4122,12 @@ function qtNormalize(data) {
     groups: Array.isArray(d.groups) ? d.groups : [],
     lines: Array.isArray(d.lines) ? d.lines : [],
     deposits: Array.isArray(d.deposits) ? d.deposits : [],
-    truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : { van: 0.75, box: 3, semi: 4 },
+    /* Deliberately NOT defaulted. Filling this in here would make every quote
+       look like it had rates chosen for it, and "never set" would become
+       indistinguishable from "set to the old hardcoded numbers" — at which
+       point the company defaults could never apply to anything. Null means
+       untouched; the Trucking modal resolves it. */
+    truckRates: d.truckRates && typeof d.truckRates === "object" ? d.truckRates : null,
     // How many days a new line bills for. Set once per quote instead of typed
     // on every row; each line can still be changed on its own afterwards.
     defaultDays: qtNum(d.defaultDays) > 0 ? qtNum(d.defaultDays) : 1,
@@ -4498,9 +4512,13 @@ function QtVenuePicker({ venues, venueId, snapshot, onPick, onCreate }) {
 }
 
 /* Enter the miles once; see what each vehicle would cost; pick one. */
-function QtTruckModal({ rates, venue, onAdd, onClose }) {
+function QtTruckModal({ rates, defaults, venue, onAdd, onClose }) {
   const [miles, setMiles] = useState("");
-  const [r, setR] = useState(rates || { van: 0.75, box: 3, semi: 4 });
+  /* Three places a rate can come from, most specific first: this quote's own
+     rates if it has ever had a trucking line, then the company defaults from
+     Settings, then the numbers that were hardcoded before Settings existed.
+     The last one only matters if the settings fetch failed. */
+  const [r, setR] = useState(rates || defaults || { van: 0.75, box: 3, semi: 4 });
   /* Typing the miles is still the primary path and always works. The lookup
      fills the same box — so a Maps outage, a missing key or an address Google
      cannot place costs nothing but a manual number, which is exactly what
@@ -5422,6 +5440,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [truck, setTruck] = useState(false);
   const [browse, setBrowse] = useState(null); // { groupId } while the picker is open
   const [terms, setTerms] = useState("");
+  const [truckDefaults, setTruckDefaults] = useState(null);
   const [revs, setRevs] = useState([]);
   const [bulk, setBulk] = useState({ qty: "", days: "", discount: "", seen: "" });
   const [exporting, setExporting] = useState(false);
@@ -5449,6 +5468,12 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       setErr("");
       try { setRevs(await listQuoteRevisions(full.familyId)); } catch (e) { setRevs([]); }
       try { const t = await getQuoteTerms(); setTerms((t && t.text) || ""); } catch (e) { setTerms(""); }
+      /* The company's default $/mile, for a quote that has never had a trucking
+         line. A failure here is deliberately silent and leaves null: the modal
+         falls back to the pre-Settings numbers, which is exactly what happened
+         before this existed. It must never block loading a quote. */
+      try { const tr = await getTruckRates(); setTruckDefaults((tr && tr.rates) || null); }
+      catch (e) { setTruckDefaults(null); }
     } catch (e) { setErr((e && e.message) || "Couldn't load that quote."); }
     setLoading(false);
   };
@@ -6445,7 +6470,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           onClose={() => setPushOpen(false)}
         />
       ) : null}
-      {truck ? <QtTruckModal rates={data.truckRates} venue={data.venue} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
+      {truck ? <QtTruckModal rates={data.truckRates} defaults={truckDefaults} venue={data.venue} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
       {browse ? (
         <QtCatalogBrowser
           catalog={catalog}
@@ -6597,7 +6622,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.30.0";
+const APP_VERSION = "1.31.0";
 
 const ADM_NAV = [
   { key: "todo", label: "To Do" },
@@ -6631,11 +6656,168 @@ function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
       <button className={"adm-navbtn" + (active === "roster" ? " on" : "")} onClick={() => go("roster")}>Crew Roster</button>
       <button className={"adm-navbtn" + (active === "staff" ? " on" : "")} onClick={() => go("staff")}>TCG Staff</button>
       <div className="adm-spacer" />
+      {/* Bottom of the rail, above Sign out — the two things you reach for when
+          you have finished rather than while you are working. This whole nav
+          only renders for a TCG admin, so the gear is admin-only by
+          construction; every endpoint behind it checks again anyway. */}
+      <button
+        className={"adm-navbtn adm-gear" + (active === "settings" ? " on" : "")}
+        onClick={() => go("settings")}
+        title="Settings"
+      >
+        <span className="adm-gear-ico" aria-hidden="true">⚙</span> Settings
+      </button>
       {onLogout ? <button className="adm-navbtn dim" onClick={onLogout}>Sign out</button> : null}
     </nav>
   );
 }
 
+
+/* ===========================================================================
+   SETTINGS
+
+   Everything that is true of the company rather than of one show or one quote.
+   It accumulated wherever happened to need it first: the quote terms under
+   Catalog, the inbox allowlist behind a button on To Do, the shop address
+   inside a modal that only appeared when it had nothing to go on.
+
+   Each has moved here OUTRIGHT rather than being mirrored. One value with two
+   editors is how you end up unsure which one you changed.
+
+   The money digest deliberately did NOT move. It already has a good home under
+   Billing -> Daily email, next to the invoices it summarises and beside its own
+   test-send button, and dragging it here would have bought a second home for
+   something that already had one. Settings points at it instead.
+
+   Admin only, twice over: AdminSidebar renders for isSuperAdmin alone, so the
+   gear does not exist for anyone else, and every endpoint behind these panels
+   checks isAdmin for itself. Neither is load-bearing on its own.
+   =========================================================================== */
+
+const SET_TABS = [
+  { key: "trucking", label: "Trucking" },
+  { key: "terms", label: "Quote terms" },
+  { key: "inbox", label: "Inbox & alerts" },
+];
+
+function SettingsScreen({ onClose }) {
+  const [tab, setTab] = useState("trucking");
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Settings</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0, maxWidth: 680 }}>
+        Company-wide settings — these apply everywhere, not to one show or one quote.
+      </p>
+      <div style={{ ...ctgRow, marginBottom: 18 }}>
+        {SET_TABS.map((t) => (
+          <button key={t.key} onClick={() => setTab(t.key)} style={ctgChip(tab === t.key, "#FFB020")}>{t.label}</button>
+        ))}
+      </div>
+      {tab === "trucking" ? <SetTrucking /> : null}
+      {tab === "terms" ? <CatalogTerms /> : null}
+      {tab === "inbox" ? <SetInbox /> : null}
+    </div>
+  );
+}
+
+/* Where the trucks leave from, and what they cost per mile.
+
+   The rates are a STARTING POINT, not a live price. A quote keeps whatever
+   rates it was built with, so changing these cannot reprice a quote already
+   sent — which is the only behaviour that makes them safe to edit at all. */
+function SetTrucking() {
+  const [origin, setOrigin] = useState("");
+  const [rates, setRates] = useState({ van: "", box: "", semi: "" });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [o, r] = await Promise.all([getTruckOrigin(), getTruckRates()]);
+        setOrigin((o && o.origin) || "");
+        const rr = (r && r.rates) || {};
+        setRates({ van: String(rr.van ?? ""), box: String(rr.box ?? ""), semi: String(rr.semi ?? "") });
+      } catch (e) { setErr((e && e.message) || "Couldn't load the trucking settings."); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const save = async () => {
+    setBusy(true); setErr(""); setSaved(false);
+    try {
+      /* Two writes, and the order matters: the address is the one whose absence
+         stops the lookup working at all, so it goes first and a rejected rate
+         cannot cost you the address you just typed. */
+      await setTruckOrigin(origin.trim());
+      const out = await setTruckRates({ van: rates.van, box: rates.box, semi: rates.semi });
+      if (out && out.rates) {
+        setRates({ van: String(out.rates.van), box: String(out.rates.box), semi: String(out.rates.semi) });
+      }
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2200);
+    } catch (e) { setErr((e && e.message) || "Couldn't save."); }
+    setBusy(false);
+  };
+
+  if (loading) return <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div>;
+
+  /* A grid rather than a flex row, so the three rates line up and the hint
+     wraps the same way on all three. Left to flex-wrap, "sprinter, cargo van"
+     dropped to its own line while "24-26 ft" stayed inline, and three rows
+     breaking differently reads as a rendering bug rather than as text. */
+  const rateRow = (k, label, hint) => (
+    <div className="set-rate" key={k}>
+      <span className="set-rate-k">{label}</span>
+      <span className="set-rate-d">$</span>
+      <input
+        className="tk-inp set-rate-i" inputMode="decimal"
+        value={rates[k]} onChange={(e) => setRates({ ...rates, [k]: e.target.value })}
+      />
+      <span className="set-rate-h">per mile · {hint}</span>
+    </div>
+  );
+
+  return (
+    <div className="set-panel">
+      <div>
+        {err ? <div className="tk-err">{err}</div> : null}
+
+        <label className="tk-lbl">Where the trucks leave from</label>
+        <div className="tk-help">
+          Your shop address — the start of every driving-miles lookup, saved once rather than typed
+          per quote. A full street address works better than a name; Google has to be able to place it.
+        </div>
+        <input
+          className="tk-inp" value={origin} placeholder="1234 Shop Way, Visalia CA"
+          onChange={(e) => setOrigin(e.target.value)}
+        />
+
+        <label className="tk-lbl" style={{ marginTop: 18 }}>Default rates</label>
+        <div className="tk-help">
+          What a <b>new</b> quote starts its trucking line at. Any quote can still be changed on its
+          own, and quotes you have already sent keep the rates they were built with — editing these
+          can never reprice something a client has already seen.
+        </div>
+        {rateRow("van", "Van", "sprinter, cargo van")}
+        {rateRow("box", "Box truck", "24–26 ft")}
+        {rateRow("semi", "Semi", "tractor-trailer")}
+
+        <div className="set-actions">
+          {saved && <span className="set-saved">Saved</span>}
+          <button className="btn" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* The crew roster is account-wide, not per-show — the same people turn up on
    every job — so it lives in the sidebar rather than inside one show. Nothing
@@ -15214,6 +15396,11 @@ const CSS = `
 .cb .adm-navbtn.dim{color:var(--faint); font-weight:500;}
 .cb .adm-div{height:1px; background:var(--line); margin:10px 12px;}
 .cb .adm-spacer{flex:1; min-height:20px;}
+/* The gear sits at the foot of the rail with Sign out — the things you reach
+   for when you have finished, not while you are working. */
+.cb .adm-gear{display:flex; align-items:center; gap:8px;}
+.cb .adm-gear-ico{font-size:15px; line-height:1; opacity:.85;}
+.cb .adm-gear.on .adm-gear-ico{opacity:1;}
 .cb .adm-main{flex:1; min-width:0;}
 /* The show view's own topbar is sticky at z-index 20. Keep the rail above it so
    the nav isn't overlapped when a show is scrolled. */
@@ -15364,13 +15551,13 @@ const CSS = `
 .cb .evt-picker select{
   width:100%; max-width:340px; background:var(--panel2); color:var(--ink);
   border:1px solid var(--line); border-radius:7px; padding:8px 10px;
-  font-family:'Inter'; font-size:14px; font-weight:600;
+  font-family:'Inter',system-ui,sans-serif; font-size:14px; font-weight:600;
 }
 .cb .top-actions{display:flex; gap:7px;}
 .cb .btn{
   background:var(--panel2); color:var(--ink); border:1px solid var(--line);
   border-radius:7px; padding:8px 13px; font-size:13px; font-weight:600; cursor:pointer;
-  font-family:'Inter'; transition:background .15s,border-color .15s;
+  font-family:'Inter',system-ui,sans-serif; transition:background .15s,border-color .15s;
 }
 .cb .btn:hover{background:#2B303C;}
 .cb .btn.ghost{background:transparent;}
@@ -15449,7 +15636,7 @@ const CSS = `
   position:relative; text-align:left; cursor:pointer; color:#1A130B;
   border:2px solid rgba(0,0,0,.5); border-radius:16px; padding:16px 16px 14px; min-height:150px;
   display:flex; flex-direction:column; gap:2px;
-  box-shadow:0 6px 16px rgba(0,0,0,.32); font-family:'Inter';
+  box-shadow:0 6px 16px rgba(0,0,0,.32); font-family:'Inter',system-ui,sans-serif;
   transition:transform .13s ease, box-shadow .13s ease;
 }
 .cb .tile:hover{transform:translateY(-4px); box-shadow:0 12px 26px rgba(0,0,0,.42);}
@@ -15462,7 +15649,7 @@ const CSS = `
 .cb .pnl-dash-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px;}
 .cb .pnl-dash-head h2{font-size:18px; font-weight:800;}
 .cb .pnl-dash-basis{display:inline-flex; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px; margin-bottom:16px;}
-.cb .pnl-basis-chip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 16px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .pnl-basis-chip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 16px; font-family:'Inter',system-ui,sans-serif; font-size:13px; font-weight:600; cursor:pointer;}
 .cb .pnl-basis-chip.on{background:var(--amber); color:#101218;}
 .cb .pnl-dash-x{background:transparent; border:0; color:var(--dim); font-size:18px; cursor:pointer;}
 .cb .pnl-dash-loading{padding:40px; text-align:center; color:var(--dim);}
@@ -15497,7 +15684,7 @@ const CSS = `
 .cb .backbtn{
   background:var(--panel2); color:var(--ink); border:1px solid var(--line);
   border-radius:8px; padding:8px 13px 8px 10px; font-size:13px; font-weight:600; cursor:pointer;
-  font-family:'Inter'; display:inline-flex; align-items:center; gap:5px;
+  font-family:'Inter',system-ui,sans-serif; display:inline-flex; align-items:center; gap:5px;
 }
 .cb .backbtn:hover{background:#2B303C; border-color:var(--amber);}
 .cb .backbtn .chev{font-size:18px; line-height:1; margin-top:-1px;}
@@ -15511,7 +15698,7 @@ const CSS = `
 .cb .pagebar-caret{font-size:12px; color:var(--dim);}
 .cb .pagebar-backdrop{position:fixed; inset:0; z-index:30;}
 .cb .pagebar-menu{position:absolute; top:calc(100% + 6px); left:0; z-index:31; min-width:250px; max-height:70vh; overflow-y:auto; background:var(--panel); border:1px solid var(--line); border-radius:12px; box-shadow:0 18px 50px rgba(0,0,0,.5); padding:6px;}
-.cb .pagebar-menu-item{display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:transparent; border:0; color:var(--ink); padding:10px 11px; border-radius:8px; font-family:'Inter'; font-size:14px; font-weight:500; cursor:pointer;}
+.cb .pagebar-menu-item{display:flex; align-items:center; gap:10px; width:100%; text-align:left; background:transparent; border:0; color:var(--ink); padding:10px 11px; border-radius:8px; font-family:'Inter',system-ui,sans-serif; font-size:14px; font-weight:500; cursor:pointer;}
 .cb .pagebar-menu-item:hover{background:var(--panel2);}
 .cb .pagebar-menu-item.on{background:var(--panel2); color:var(--amber); font-weight:700;}
 .cb .pagebar-menu-item.home{color:var(--dim); border-bottom:1px solid var(--line); border-radius:8px 8px 0 0; margin-bottom:4px; padding-bottom:12px;}
@@ -15626,7 +15813,7 @@ const CSS = `
 .cb .field span{font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--faint); font-weight:600;}
 .cb input, .cb textarea, .cb select{
   background:var(--panel2); border:1px solid var(--line); border-radius:7px;
-  color:var(--ink); font-family:'Inter'; font-size:13.5px; padding:8px 10px; width:100%;
+  color:var(--ink); font-family:'Inter',system-ui,sans-serif; font-size:13.5px; padding:8px 10px; width:100%;
 }
 .cb input:focus, .cb textarea:focus, .cb select:focus{outline:none; border-color:var(--amber); box-shadow:0 0 0 2px rgba(255,176,32,.15);}
 .cb input::placeholder, .cb textarea::placeholder{color:var(--faint);}
@@ -15674,7 +15861,7 @@ const CSS = `
 .cb .rd-progress-fill{height:100%; border-radius:6px; transition:width .4s linear, background .3s;}
 .cb .rd-clock-left{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
 .cb .rd-clock-right{display:flex; gap:22px; align-items:center; flex-wrap:wrap;}
-.cb .rd-start{border:0; border-radius:8px; padding:11px 20px; font-family:'Inter'; font-weight:700; font-size:14px; cursor:pointer; background:var(--green); color:#08120a;}
+.cb .rd-start{border:0; border-radius:8px; padding:11px 20px; font-family:'Inter',system-ui,sans-serif; font-weight:700; font-size:14px; cursor:pointer; background:var(--green); color:#08120a;}
 .cb .rd-start.live{background:#dc2626; color:#fff;}
 .cb .rd-start:disabled{opacity:.45; cursor:not-allowed;}
 .cb .rd-ctrl{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:9px 12px; font-size:13px; font-weight:600; cursor:pointer;}
@@ -15785,7 +15972,7 @@ const CSS = `
 .cb .rd-daylist{display:flex; flex-direction:column; gap:8px; margin:6px 0 14px; border-top:1px solid var(--line); padding-top:12px;}
 .cb .rd-dayrow{display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13px; color:var(--ink);}
 .cb .todo-filters{display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:12px;}
-.cb .todo-chip{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:7px 15px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .todo-chip{background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:7px 15px; font-family:'Inter',system-ui,sans-serif; font-size:13px; font-weight:600; cursor:pointer;}
 .cb .todo-chip.on{background:var(--amber); color:#101218; border-color:var(--amber);}
 .cb .todo-who{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:7px 10px; font-size:13px; margin-left:4px;}
 .cb .todo-scroll{overflow-x:auto; -webkit-overflow-scrolling:touch;}
@@ -15845,7 +16032,7 @@ const CSS = `
 .cb .add{
   align-self:flex-start; margin-top:10px; background:transparent; border:1px dashed var(--line);
   color:var(--amber); border-radius:7px; padding:7px 12px; font-size:12.5px; font-weight:600; cursor:pointer;
-  font-family:'Inter';
+  font-family:'Inter',system-ui,sans-serif;
 }
 .cb .add:hover{border-color:var(--amber); background:rgba(255,176,32,.06);}
 .cb .empty{color:var(--faint); font-size:13px; padding:14px 4px; font-style:italic;}
@@ -15885,7 +16072,7 @@ const CSS = `
 .cb .hrs{font-variant-numeric:tabular-nums; color:var(--faint); font-weight:600; min-width:38px;}
 .cb .hrs.on{color:var(--green);}
 .cb .ptotal{font-variant-numeric:tabular-nums; font-weight:700; color:var(--amber); background:#191C24; border-left:1px solid var(--line);}
-.cb .ts-batchbtn{display:inline-flex; align-items:center; gap:6px; background:var(--amber); color:#101218; border:0; border-radius:8px; padding:7px 13px; font-family:'Inter'; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;}
+.cb .ts-batchbtn{display:inline-flex; align-items:center; gap:6px; background:var(--amber); color:#101218; border:0; border-radius:8px; padding:7px 13px; font-family:'Inter',system-ui,sans-serif; font-size:13px; font-weight:700; cursor:pointer; white-space:nowrap;}
 .cb .ts-batchbtn:hover{filter:brightness(1.08);}
 .cb .ts-batch{background:#101218; border:1px solid var(--line); border-radius:12px; padding:16px; margin-bottom:14px;}
 .cb .ts-batch-title{font-family:'Oswald'; letter-spacing:.04em; text-transform:uppercase; font-size:12px; color:var(--amber); margin-bottom:12px;}
@@ -15928,7 +16115,7 @@ const CSS = `
 .cb .mc-call-lbl{color:rgba(255,255,255,.8); font-size:11px; text-transform:uppercase; letter-spacing:.1em; font-weight:700;}
 .cb .mc-call.muted .mc-call-lbl{color:var(--faint);}
 .cb .mc-call-time{font-family:'Oswald'; font-size:34px; letter-spacing:.01em; color:#fff; margin-top:2px;}
-.cb .mc-call-time.dim{font-size:16px; color:var(--dim); font-family:'Inter'; font-weight:500; margin-top:6px;}
+.cb .mc-call-time.dim{font-size:16px; color:var(--dim); font-family:'Inter',system-ui,sans-serif; font-weight:500; margin-top:6px;}
 
 .cb .mc-cards{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;}
 .cb .mc-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
@@ -15981,7 +16168,7 @@ const CSS = `
 .cb .sched-calls-grp b{color:var(--ink); font-variant-numeric:tabular-nums; margin-right:2px;}
 .cb .ts-batch-hint, .cb .ts-batch-none{color:var(--faint); font-size:11.5px; font-style:italic;}
 .cb .mc-daycall{display:inline-block; margin-bottom:8px; padding:3px 11px; background:linear-gradient(135deg,#0D4F8C,#00B4D8); color:#fff; border-radius:999px; font-size:12.5px; font-weight:700; font-variant-numeric:tabular-nums;}
-.cb .imp-text{width:100%; background:#191C24; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:11px 12px; font-family:'Inter'; font-size:13.5px; line-height:1.5; resize:vertical; margin-bottom:12px;}
+.cb .imp-text{width:100%; background:#191C24; border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:11px 12px; font-family:'Inter',system-ui,sans-serif; font-size:13.5px; line-height:1.5; resize:vertical; margin-bottom:12px;}
 .cb .imp-preview{margin-top:14px; border-top:1px solid var(--line); padding-top:14px;}
 .cb .imp-preview-h{font-size:12px; color:var(--dim); font-weight:700; text-transform:uppercase; letter-spacing:.05em; margin-bottom:12px;}
 .cb .imp-day{margin-bottom:14px;}
@@ -16080,7 +16267,7 @@ const CSS = `
 .cb .pnl-viewbar{display:flex; align-items:center; gap:12px; margin:2px 0 14px; flex-wrap:wrap;}
 .cb .pnl-viewlabel{font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--dim); font-weight:700;}
 .cb .pnl-viewchips{display:inline-flex; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:3px; gap:2px;}
-.cb .pnl-viewchip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 14px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .pnl-viewchip{background:transparent; border:0; color:var(--dim); border-radius:7px; padding:6px 14px; font-family:'Inter',system-ui,sans-serif; font-size:13px; font-weight:600; cursor:pointer;}
 .cb .pnl-viewchip:hover{color:var(--ink);}
 .cb .pnl-viewchip.on{background:var(--amber); color:#101218;}
 .cb .pnl-delta{font-variant-numeric:tabular-nums; font-size:12.5px; text-align:right; color:var(--dim);}
@@ -16258,7 +16445,7 @@ const CSS = `
 .cb .login-card{background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:26px 24px; width:100%; max-width:360px; box-shadow:0 18px 50px rgba(0,0,0,.45);}
 .cb .login-brand{justify-content:flex-start; font-size:22px; margin-bottom:18px;}
 .cb .login-tabs{display:flex; gap:6px; margin-bottom:14px;}
-.cb .login-tab{flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:9px; font-weight:600; font-size:13px; cursor:pointer; font-family:'Inter';}
+.cb .login-tab{flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:9px; font-weight:600; font-size:13px; cursor:pointer; font-family:'Inter',system-ui,sans-serif;}
 .cb .login-tab.on{background:var(--amber); color:#101218; border-color:var(--amber);}
 .cb .login-hint{color:var(--faint); font-size:12.5px; margin:0 0 14px;}
 .cb .login-input{margin-bottom:12px;}
@@ -16274,7 +16461,7 @@ const CSS = `
 .cb .sa-label{font-weight:600; font-size:13.5px;}
 .cb .sa-state{font-size:11px; color:var(--faint); text-transform:uppercase; letter-spacing:.08em;}
 .cb .sa-state.on{color:var(--green);}
-.cb .sa-input{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 10px; font-family:'Inter'; font-size:13.5px;}
+.cb .sa-input{width:100%; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:9px 10px; font-family:'Inter',system-ui,sans-serif; font-size:13.5px;}
 .cb .sa-input:disabled{opacity:.45;}
 .cb .sa-clear{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); margin-top:6px; cursor:pointer;}
 .cb .sa-err{color:var(--danger); font-size:12.5px; margin:4px 0 12px;}
@@ -16284,17 +16471,17 @@ const CSS = `
 .cb .wd-bar{display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; background:#101218; border:1px solid var(--line); border-radius:10px;}
 .cb .wd-brand{font-family:'Oswald'; letter-spacing:.08em; font-size:12.5px; color:var(--dim); text-transform:uppercase;}
 .cb .wd-brand::first-letter{color:var(--amber);}
-.cb .wd-barhint{margin-left:auto; font-family:'Inter'; font-size:12px; color:var(--faint); font-style:italic;}
-.cb .wd-btn{display:inline-flex; align-items:center; gap:6px; background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:7px 11px; font-family:'Inter'; font-size:13px; font-weight:600; cursor:pointer;}
+.cb .wd-barhint{margin-left:auto; font-family:'Inter',system-ui,sans-serif; font-size:12px; color:var(--faint); font-style:italic;}
+.cb .wd-btn{display:inline-flex; align-items:center; gap:6px; background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:8px; padding:7px 11px; font-family:'Inter',system-ui,sans-serif; font-size:13px; font-weight:600; cursor:pointer;}
 .cb .wd-btn:hover{border-color:#3b4353;}
 .cb .wd-btn:disabled{opacity:.4; cursor:not-allowed;}
 .cb .wd-btn.amber{background:var(--amber); color:#101218; border-color:var(--amber);}
 .cb .wd-btn.on{background:#38bdf8; color:#06121c; border-color:#38bdf8;}
 .cb .wd-modes{display:flex; gap:6px;}
-.cb .wd-legend{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-left:auto; font-family:'Inter'; font-size:11px; color:var(--faint);}
+.cb .wd-legend{display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-left:auto; font-family:'Inter',system-ui,sans-serif; font-size:11px; color:var(--faint);}
 .cb .wd-legenditem{display:inline-flex; align-items:center; gap:5px;}
 .cb .wd-legendline{width:14px; height:3px; border-radius:2px; display:inline-block;}
-.cb .wd-connhint{padding:6px 12px; background:rgba(255,176,32,.1); border:1px solid rgba(255,176,32,.3); border-radius:8px; color:#f4c76b; font-family:'Inter'; font-size:12px;}
+.cb .wd-connhint{padding:6px 12px; background:rgba(255,176,32,.1); border:1px solid rgba(255,176,32,.3); border-radius:8px; color:#f4c76b; font-family:'Inter',system-ui,sans-serif; font-size:12px;}
 
 .cb .wd-body{display:flex; gap:10px; align-items:stretch;}
 .cb .wd-canvas{position:relative; flex:1; min-width:0; height:540px; overflow:auto; border:1px solid var(--line); border-radius:10px; background-color:#0f172a; background-image:radial-gradient(circle, #1e293b 1px, transparent 1px); background-size:24px 24px; touch-action:none;}
@@ -16310,7 +16497,7 @@ const CSS = `
 
 .cb .wd-aside{width:300px; flex:0 0 auto; background:#101218; border:1px solid var(--line); border-radius:10px; overflow:hidden; align-self:flex-start; max-height:540px; overflow-y:auto;}
 .cb .wd-section + .wd-section{border-top:1px solid var(--line);}
-.cb .wd-sectionhead{display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); position:sticky; top:0;}
+.cb .wd-sectionhead{display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); font-family:'Inter',system-ui,sans-serif; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); position:sticky; top:0;}
 .cb .wd-count{color:var(--faint); font-weight:600;}
 .cb .wd-listrow{display:flex; align-items:center; gap:8px; padding:7px 12px; border-bottom:1px solid #20242e; font-family:'JetBrains Mono','Menlo',monospace; font-size:12.5px; color:#cbd5e1;}
 .cb .wd-listname{color:#e2e8f0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
@@ -16322,8 +16509,8 @@ const CSS = `
 .cb .wd-swatch{width:12px; height:12px; border-radius:3px; flex:0 0 auto; display:inline-block;}
 
 .cb .wd-connedit{margin:10px; padding:10px; background:var(--panel2); border:1px solid var(--line); border-radius:8px;}
-.cb .wd-connedit-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
-.cb .wd-connedit-lbl{display:block; font-family:'Inter'; font-size:11px; color:var(--faint); margin:6px 0 3px;}
+.cb .wd-connedit-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-family:'Inter',system-ui,sans-serif; font-size:11px; font-weight:700; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
+.cb .wd-connedit-lbl{display:block; font-family:'Inter',system-ui,sans-serif; font-size:11px; color:var(--faint); margin:6px 0 3px;}
 .cb .wd-connedit-input{width:100%; background:#0f172a; border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink);}
 
 .cb .wd-iconbtn{display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; padding:0; background:transparent; border:0; border-radius:6px; color:var(--faint); cursor:pointer;}
@@ -16337,15 +16524,15 @@ const CSS = `
 .cb .wd-setup-head{display:flex; align-items:center; gap:8px; margin-bottom:12px;}
 .cb .wd-setup-name{flex:1; background:var(--panel2); border:1px solid var(--line); border-radius:7px; padding:8px 10px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink); outline:none;}
 .cb .wd-setup-cols{display:grid; grid-template-columns:1fr 1fr; gap:16px;}
-.cb .wd-porthdr{font-family:'Inter'; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px;}
+.cb .wd-porthdr{font-family:'Inter',system-ui,sans-serif; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px;}
 .cb .wd-porthdr.in{color:#38bdf8;}
 .cb .wd-porthdr.out{color:#34d399;}
 .cb .wd-setup-port{display:flex; align-items:center; gap:6px; margin-bottom:6px;}
 .cb .wd-portnum{width:16px; text-align:right; font-family:'JetBrains Mono','Menlo',monospace; font-size:10px; color:var(--faint);}
 .cb .wd-setup-portinput{flex:1; background:#0f172a; border:1px solid var(--line); border-radius:6px; padding:6px 8px; font-family:'JetBrains Mono','Menlo',monospace; font-size:13px; color:var(--ink); outline:none;}
-.cb .wd-addport{display:inline-flex; align-items:center; gap:5px; margin-left:22px; margin-top:2px; background:transparent; border:0; color:var(--dim); font-family:'Inter'; font-size:12px; cursor:pointer;}
+.cb .wd-addport{display:inline-flex; align-items:center; gap:5px; margin-left:22px; margin-top:2px; background:transparent; border:0; color:var(--dim); font-family:'Inter',system-ui,sans-serif; font-size:12px; cursor:pointer;}
 .cb .wd-addport:hover{color:var(--ink);}
-.cb .wd-adddevice{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; max-width:720px; padding:12px; border:1px dashed var(--line); border-radius:10px; background:transparent; color:var(--dim); font-family:'Inter'; font-size:13px; cursor:pointer;}
+.cb .wd-adddevice{display:flex; align-items:center; justify-content:center; gap:8px; width:100%; max-width:720px; padding:12px; border:1px dashed var(--line); border-radius:10px; background:transparent; color:var(--dim); font-family:'Inter',system-ui,sans-serif; font-size:13px; cursor:pointer;}
 .cb .wd-adddevice:hover{border-color:#3b4353; color:var(--ink);}
 
 @media (max-width:860px){
@@ -16828,6 +17015,27 @@ const CSS = `
 .tk-due.late { color:var(--danger); font-weight:700; }
 .tk-due.none { color:var(--faint); }
 
+/* Settings panels. A readable measure matters more here than filling the
+   window: these are forms you read once and change rarely, and a 1,100px-wide
+   line of help text is a line nobody finishes. */
+.set-panel { max-width:620px; }
+.set-lead { color:var(--dim); font-size:13px; margin:0 0 4px; line-height:1.55; }
+.set-actions { display:flex; gap:10px; align-items:center; justify-content:flex-end; margin-top:22px; padding-top:16px; border-top:1px solid var(--line); }
+.set-saved { color:#6FD08A; font-size:12.5px; font-weight:600; }
+.set-rate { display:grid; grid-template-columns:auto auto 96px 1fr; align-items:center; gap:4px 10px; margin-bottom:8px; }
+.set-rate-k { font-size:13.5px; font-weight:600; min-width:96px; }
+.set-rate-d { color:var(--dim); }
+.set-rate-i { width:96px !important; text-align:right; }
+.set-rate-h { color:var(--dim); font-size:12.5px; }
+/* Narrow: the hint moves under the row rather than squeezing the input, and it
+   does so for all three at once because the column count changes, not the text. */
+@media (max-width:520px){
+  /* 1fr on the LABEL, not on the gap before the input — otherwise the slack
+     lands between the dollar sign and the box it belongs to. */
+  .set-rate { grid-template-columns:1fr auto 96px; }
+  .set-rate-h { grid-column:1 / -1; }
+}
+
 .tk-lbl { display:block; font-size:11px; font-weight:700; letter-spacing:.5px; text-transform:uppercase; color:var(--dim); margin:14px 0 4px; }
 .tk-help { font-size:11.5px; color:var(--faint); line-height:1.5; margin-bottom:6px; }
 .tk-ta { width:100%; box-sizing:border-box; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px !important; }
@@ -16975,7 +17183,7 @@ const CSS = `
 .cb .roster-form-col { display:flex; flex-direction:column; gap:4px; }
 .cb .roster-form-col.full { grid-column:1 / -1; }
 .cb .roster-lbl { font-size:11px; font-weight:700; color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
-.cb .roster-inp { background:var(--panel2); border:1px solid var(--line); border-radius:7px; color:var(--ink); font-family:'Inter'; font-size:13px; padding:7px 9px; width:100%; }
+.cb .roster-inp { background:var(--panel2); border:1px solid var(--line); border-radius:7px; color:var(--ink); font-family:'Inter',system-ui,sans-serif; font-size:13px; padding:7px 9px; width:100%; }
 .cb .roster-inp:focus { outline:none; border-color:var(--amber); }
 .cb .roster-form-actions { display:flex; gap:8px; align-items:center; }
 @media (max-width:700px){ .cb .roster-row{ grid-template-columns:1fr auto; grid-auto-flow:row; } .cb .roster-form-grid{ grid-template-columns:1fr 1fr; } }

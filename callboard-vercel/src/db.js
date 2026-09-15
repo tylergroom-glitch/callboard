@@ -302,3 +302,10 @@ export const lookupDistance = (to, opts = {}) =>
   api("GET", "/api/distance?to=" + encodeURIComponent(to) + (opts.fresh ? "&fresh=1" : ""));
 export const getTruckOrigin = () => api("GET", "/api/distance?origin=1");
 export const setTruckOrigin = (origin) => api("POST", "/api/distance?origin=1", { origin });
+
+/* Company-wide starting rates for a new quote's trucking line. A quote that
+   already carries its own rates keeps them, so changing these never reprices
+   anything already sent. */
+export const getTruckRates = () => api("GET", "/api/distance?rates=1");
+export const setTruckRates = (rates) => api("POST", "/api/distance?rates=1", { rates });
+
