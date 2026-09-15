@@ -7088,11 +7088,64 @@ function MyCallTab({ event, showId, update }) {
   const [meId, setMeId] = useState(() => {
     try { return localStorage.getItem(key) || ""; } catch (e) { return ""; }
   });
-  const me = event.crew.find((c) => c.id === meId);
+
+  /* WHO YOU ARE IS NOW KNOWN, NOT ASKED.
+   *
+   * "Which one are you?" is a leftover from the show-password era, when every
+   * crew member arrived as the same anonymous token and the app genuinely
+   * could not tell them apart. Everyone holds an account now, so the signed-in
+   * address is matched against the email on the crew row — which the roster
+   * autocomplete copies across when a name is picked.
+   *
+   * The account match WINS over the saved pick. A value in localStorage is a
+   * guess this device made once; the session is who is actually here. Letting
+   * a stale pick outrank it is how someone ends up ticking off another
+   * person's tasks — the picker below is a real write surface, not just a
+   * view.
+   *
+   * Producers and TCG admins keep the picker, because reading another crew
+   * member's sheet is part of running the show.
+   *
+   * Falls back to the picker whenever there is no match at all: a show-password
+   * user, or a crew row typed in by hand with no email on it. */
+  const [ident, setIdent] = useState({ ready: false, email: "" });
+  useEffect(() => {
+    let off = false;
+    // Every path must set ready, or a missing client leaves this spinning.
+    if (!supabase) { setIdent({ ready: true, email: "" }); return; }
+    supabase.auth.getSession()
+      .then(({ data }) => {
+        const e = (data && data.session && data.session.user && data.session.user.email) || "";
+        if (!off) setIdent({ ready: true, email: e });
+      })
+      .catch(() => { if (!off) setIdent({ ready: true, email: "" }); });
+    return () => { off = true; };
+  }, []);
+
+  const emailKey = (v) => String(v || "").trim().toLowerCase();
+  const mayBrowse = event._role === "tcg" || event._role === "producer";
+  const byAccount = emailKey(ident.email)
+    // Two guards against "blank matches blank" — which would otherwise hand
+    // the first crew row with no email to anyone who is not signed in. The
+    // outer one already makes the inner unreachable (mutation testing
+    // confirmed removing it changes no result today); it is kept deliberately
+    // so that loosening either check on its own cannot reintroduce that bug.
+    ? event.crew.find((c) => emailKey(c.email) && emailKey(c.email) === emailKey(ident.email))
+    : null;
+  const picked = event.crew.find((c) => c.id === meId);
+  const me = (byAccount && !(mayBrowse && picked)) ? byAccount : picked;
+  const autoMatched = !!byAccount && me === byAccount;
+
   const pick = (id) => { try { localStorage.setItem(key, id); } catch (e) {} setMeId(id); };
   const switchMe = () => { try { localStorage.removeItem(key); } catch (e) {} setMeId(""); };
 
   const named = event.crew.filter((c) => (c.name || "").trim());
+
+  /* Hold the picker back until the session has been read, or a crew member
+     sees "Which one are you?" flash before their own sheet resolves. */
+  if (!ident.ready && !me) {
+    return <div className="mc-wrap"><div className="mc-empty">Loading…</div></div>;
+  }
 
   const openTasksFor = (name) => (event.todos || []).filter((t) => t.assignee === name && !t.done).length;
   const overdueFor = (name) => (event.todos || []).filter((t) => t.assignee === name && todoOverdue(t)).length;
@@ -7148,7 +7201,14 @@ function MyCallTab({ event, showId, update }) {
           <div className="mc-name">{me.name}</div>
           {me.position && <div className="mc-pos">{me.position}</div>}
         </div>
-        <button className="mc-switch" onClick={switchMe}>Not you?</button>
+        {/* An auto-matched crew member gets no "Not you?" — switching would be
+            undone by the account match on the next render, which reads as a
+            broken button. Showing the address instead explains the identity and
+            points at the real fix: the email on their crew row. Producers and
+            admins, who reached this sheet by choosing it, keep the switch. */}
+        {autoMatched && !mayBrowse
+          ? <div className="mc-signedin" title="Matched from the email on your crew row">{ident.email}</div>
+          : <button className="mc-switch" onClick={switchMe}>Not you?</button>}
       </div>
 
       {myCall ? (
@@ -15676,6 +15736,7 @@ const CSS = `
 .cb .mc-pos{color:var(--amber); font-size:13px; text-transform:uppercase; letter-spacing:.06em; margin-top:2px;}
 .cb .mc-switch{background:transparent; border:1px solid var(--line); color:var(--dim); border-radius:8px; padding:6px 12px; font-size:12px; cursor:pointer; white-space:nowrap;}
 .cb .mc-switch:hover{color:var(--ink); border-color:var(--dim);}
+.cb .mc-signedin{color:var(--dim); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:46vw;}
 
 .cb .mc-call{background:linear-gradient(135deg,#0D4F8C,#00B4D8); border-radius:14px; padding:18px 20px; margin-bottom:16px;}
 .cb .mc-call.muted{background:var(--panel2); border:1px solid var(--line);}
