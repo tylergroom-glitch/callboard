@@ -349,7 +349,11 @@ export default async function handler(req, res) {
       if (str(b && b.contentType, 100) !== "application/pdf") {
         return json(res, 400, { error: "The blank document has to be a PDF." });
       }
-      return json(res, 200, await signUpload(BUCKET, templatePath(docType)));
+      /* upsert: the blank form lives at one fixed name, so uploading a revised
+         one is a second write to the same path. Without this Supabase answers
+         409 and the screen reports the same "upload did not finish" as a
+         genuinely broken upload. */
+      return json(res, 200, await signUpload(BUCKET, templatePath(docType), { upsert: true }));
     }
 
     if (req.method === "GET" && q.template) {
@@ -634,7 +638,10 @@ function pageScript(token, docType) {
     ".then(function(r){return r.json();}).then(function(d){" +
     "if(!d||!d.url)throw new Error(d&&d.error||'Could not start the upload.');" +
     "return fetch(d.url,{method:'PUT',headers:{'Content-Type':file.type},body:file})" +
-    ".then(function(u){if(!u.ok)throw new Error('The upload did not finish.');" +
+    /* The status is worth saying out loud even here. A crew member cannot debug
+       it, but they will read it down the phone, and "did not finish (404)" is
+       the difference between an afternoon and a minute. */
+    ".then(function(u){if(!u.ok)throw new Error('The upload did not finish ('+u.status+'). Tell your production manager.');" +
     "return{path:d.path,name:file.name,size:file.size};});});}"
   );
 }

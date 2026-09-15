@@ -292,7 +292,7 @@ export async function inviteUser(email, redirectTo) {
    "when the W-9 work needs it too". That is now: crew documents are the second
    consumer, and two copies of a helper that mints signed URLs is two places to
    fix the day one of them is wrong. */
-export async function storageReq(method, path, body) {
+export async function storageReq(method, path, body, extraHeaders) {
   if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Supabase not configured");
   const r = await fetch(SUPABASE_URL + "/storage/v1" + path, {
     method,
@@ -300,6 +300,7 @@ export async function storageReq(method, path, body) {
       apikey: SUPABASE_SECRET_KEY,
       Authorization: "Bearer " + SUPABASE_SECRET_KEY,
       "Content-Type": "application/json",
+      ...(extraHeaders || {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -316,10 +317,33 @@ export async function storageReq(method, path, body) {
 
 /* Mint a one-time upload URL. The browser PUTs straight to Supabase with this,
    so the file never passes through a serverless function — no body-size limit
-   and no timeout on a 10 MB phone scan — and the service key never leaves here. */
-export async function signUpload(bucket, name) {
-  const out = await storageReq("POST", "/object/upload/sign/" + bucket + "/" + name, {});
-  return { path: name, token: out && out.token, url: out && out.url };
+   and no timeout on a 10 MB phone scan — and the service key never leaves here.
+
+   THE PREFIX IS NOT OPTIONAL. Supabase answers with a RELATIVE url —
+   "/object/upload/sign/<bucket>/<path>?token=…" — with no origin and no
+   /storage/v1 on the front. Supabase's own client does
+   `new URL(this.url + data.url)` for exactly this reason. Handed over raw, the
+   browser resolves it against the page it is on, so the upload goes to
+   crewcall.touchstonecreativegroup.com, Vercel returns its 404 page, and the
+   uploader is told "The upload did not finish." signView below has always
+   prepended; this did not.
+
+   `upsert` is for a path that is written more than once — the blank NDA and W-9
+   live at a fixed name, so replacing one is a second write to the same path and
+   Supabase answers 409 without it. A crew member's signed copy carries a uuid
+   and never collides, so it does not ask for it. */
+export async function signUpload(bucket, name, { upsert = false } = {}) {
+  const out = await storageReq(
+    "POST", "/object/upload/sign/" + bucket + "/" + name, {},
+    upsert ? { "x-upsert": "true" } : undefined
+  );
+  const rel = out && out.url;
+  return {
+    path: name,
+    token: out && out.token,
+    url: rel ? (/^https?:\/\//i.test(rel) ? rel : SUPABASE_URL + "/storage/v1" + rel) : null,
+    upsert: !!upsert,
+  };
 }
 
 /* Short-lived read URL. The buckets are private; nothing is ever served from a
