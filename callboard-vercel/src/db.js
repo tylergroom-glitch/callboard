@@ -295,3 +295,10 @@ export const resetAgent = () => api("POST", "/api/agent?reset=1", {});
    files a request that has to be approved inside AV Studio. */
 export const requestAvStudioAccess = (payload) =>
   api("POST", "/api/avstudio-access", payload);
+
+/* Trucking distance. Every lookup costs money and is cached server-side, so
+   the browser never sees the Maps key and never decides whether to pay. */
+export const lookupDistance = (to, opts = {}) =>
+  api("GET", "/api/distance?to=" + encodeURIComponent(to) + (opts.fresh ? "&fresh=1" : ""));
+export const getTruckOrigin = () => api("GET", "/api/distance?origin=1");
+export const setTruckOrigin = (origin) => api("POST", "/api/distance?origin=1", { origin });

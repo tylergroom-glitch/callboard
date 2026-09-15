@@ -105,6 +105,9 @@ import {
   deleteQuoteTermsPdf,
   saveQuoteTerms,
   requestAvStudioAccess,
+  lookupDistance,
+  getTruckOrigin,
+  setTruckOrigin,
 } from "./db.js";
 
 /* ============================================================
@@ -4495,16 +4498,93 @@ function QtVenuePicker({ venues, venueId, snapshot, onPick, onCreate }) {
 }
 
 /* Enter the miles once; see what each vehicle would cost; pick one. */
-function QtTruckModal({ rates, onAdd, onClose }) {
+function QtTruckModal({ rates, venue, onAdd, onClose }) {
   const [miles, setMiles] = useState("");
   const [r, setR] = useState(rates || { van: 0.75, box: 3, semi: 4 });
+  /* Typing the miles is still the primary path and always works. The lookup
+     fills the same box — so a Maps outage, a missing key or an address Google
+     cannot place costs nothing but a manual number, which is exactly what
+     happened before this existed. */
+  const [look, setLook] = useState({ state: "idle", result: null, error: "", origin: "" });
+  const venueAddr = (venue && (venue.address || venue.name)) || "";
+
+  const doLookup = async () => {
+    setLook((x) => ({ ...x, state: "busy", error: "" }));
+    try {
+      const d = await lookupDistance(venueAddr);
+      if (d && d.needsOrigin) {
+        let cur = "";
+        try { cur = (await getTruckOrigin()).origin || ""; } catch (e) {}
+        setLook({ state: "needsOrigin", result: null, error: "", origin: cur });
+        return;
+      }
+      if (!d || d.failed || d.needsKey) {
+        setLook({ state: "error", result: null,
+          error: (d && d.error) || "Could not work that out.", origin: "" });
+        return;
+      }
+      setLook({ state: "done", result: d, error: "", origin: "" });
+      /* Round trip, because that is what Tyler has always typed into this box.
+         Both numbers stay on screen so it can never be ambiguous again. */
+      setMiles(String(d.roundTrip));
+    } catch (e) {
+      setLook({ state: "error", result: null, error: e.message || "Lookup failed.", origin: "" });
+    }
+  };
+
+  const saveOrigin = async () => {
+    try {
+      await setTruckOrigin(look.origin);
+      setLook({ state: "idle", result: null, error: "", origin: "" });
+      doLookup();
+    } catch (e) {
+      setLook((x) => ({ ...x, error: e.message || "Could not save that." }));
+    }
+  };
+
   const m = qtNum(miles);
   return (
     <CtgModal title="Trucking" onClose={onClose}>
       <p style={qtHint}>Enter the miles once. Pick whichever vehicle you are actually sending and it becomes a line item.</p>
+
+      {venueAddr ? (
+        <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--panel2)", border: "1px solid var(--line)", borderRadius: 10 }}>
+          <div style={{ fontSize: 12, color: "var(--dim)", marginBottom: 6 }}>{venueAddr}</div>
+          {look.state === "needsOrigin" ? (
+            <>
+              <div style={{ fontSize: 12.5, marginBottom: 6 }}>Where do the trucks leave from?</div>
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                <input value={look.origin} placeholder="Your shop address"
+                  onChange={(e) => setLook((x) => ({ ...x, origin: e.target.value }))}
+                  style={{ flex: 1, minWidth: 180 }} />
+                <button className="btn" onClick={saveOrigin} disabled={!look.origin.trim()}>Save &amp; look up</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: "var(--dim)", marginTop: 6 }}>Saved once and reused for every quote.</div>
+            </>
+          ) : (
+            <button className="btn ghost" onClick={doLookup} disabled={look.state === "busy"}>
+              {look.state === "busy" ? "Looking up…" : "📍 Get driving miles"}
+            </button>
+          )}
+          {look.state === "done" && look.result ? (
+            <div style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 8 }}>
+              <b style={{ color: "var(--ink)" }}>{look.result.miles} mi</b> each way ·{" "}
+              <b style={{ color: "var(--ink)" }}>{look.result.roundTrip} mi</b> round trip (used)
+              {look.result.minutes ? " · about " + Math.round(look.result.minutes / 60 * 10) / 10 + "h each way" : ""}
+              {look.result.cached ? " · from a previous lookup" : ""}
+            </div>
+          ) : null}
+          {look.state === "error" ? (
+            <div style={{ fontSize: 12.5, color: "var(--amber)", marginTop: 8 }}>
+              {look.error} — type the miles below instead.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       <div style={{ marginTop: 12, marginBottom: 14 }}>
-        <label style={qtLabel}>Total miles</label>
-        <input value={miles} onChange={(e) => setMiles(e.target.value)} inputMode="decimal" placeholder="e.g. 450" style={{ width: 160 }} autoFocus />
+        <label style={qtLabel}>Total miles{look.state === "done" ? " (round trip)" : ""}</label>
+        <input value={miles} onChange={(e) => { setMiles(e.target.value); if (look.state === "done") setLook((x) => ({ ...x, state: "idle" })); }} inputMode="decimal" placeholder="e.g. 450" style={{ width: 160 }} autoFocus />
       </div>
       {QT_TRUCKS.map((t) => {
         const rate = qtNum(r[t.key]);
@@ -6260,7 +6340,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           onClose={() => setPushOpen(false)}
         />
       ) : null}
-      {truck ? <QtTruckModal rates={data.truckRates} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
+      {truck ? <QtTruckModal rates={data.truckRates} venue={data.venue} onAdd={addTruck} onClose={() => setTruck(false)} /> : null}
       {browse ? (
         <QtCatalogBrowser
           catalog={catalog}
