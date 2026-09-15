@@ -23,7 +23,14 @@ import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 
 const KEY = process.env.GOOGLE_MAPS_API_KEY;
 const SETTINGS_KEY = "trucking_origin";
+const RATES_KEY = "trucking_rates";
 const METERS_PER_MILE = 1609.344;
+
+/* What a new quote starts its trucking lines at, until Tyler sets his own.
+   These are the numbers that were hardcoded in the quote editor before there
+   was anywhere to change them. */
+const RATE_FALLBACK = { van: 0.75, box: 3, semi: 4 };
+const VEHICLES = ["van", "box", "semi"];
 
 /* Address in, cache key out. Collapses the differences that are not
    differences — case, punctuation, runs of whitespace — so "600 Stockton St."
@@ -50,10 +57,73 @@ async function loadOrigin() {
   } catch { return ""; }
 }
 
+/* `?on_conflict=key` is not optional, and its absence would not show up until
+   the SECOND save — i.e. the first time the shop address is changed rather than
+   set. Without it PostgREST infers the conflict target from the primary key; if
+   that is `id` rather than `key`, an upsert with no id looks like a fresh
+   insert and dies on the unique constraint over `key`. Naming the target makes
+   it correct under either table shape, and matches what every other writer to
+   this table does. `updated_at` likewise — three other call sites send it. */
 async function saveOrigin(origin) {
   await supabaseRest(
-    "POST", "/app_settings",
-    { key: SETTINGS_KEY, value: { origin } },
+    "POST", "/app_settings?on_conflict=key",
+    { key: SETTINGS_KEY, value: { origin }, updated_at: new Date().toISOString() },
+    "resolution=merge-duplicates");
+}
+
+/* ---- default $/mile per vehicle ------------------------------------------
+   Company-wide, and only a STARTING point: a quote that already carries its
+   own rates keeps them, so changing these can never reprice a quote already
+   sent. That is the whole reason they are defaults rather than a live lookup. */
+async function loadRates() {
+  try {
+    const rows = await supabaseRest(
+      "GET", "/app_settings?key=eq." + RATES_KEY + "&select=value", null);
+    const v = (rows && rows[0] && rows[0].value) || null;
+    const out = {};
+    for (const k of VEHICLES) {
+      /* A stored zero is a real answer — "we don't charge for the van" — so it
+         must survive, and a missing one must not become one. That rules out
+         Number() on its own: Number(null) and Number("") are both 0, so an
+         unset row would read back as "every vehicle is free" and quietly price
+         every future truck line at nothing. Absence is checked first, by hand,
+         and only then is the value converted. */
+      const raw = v ? v[k] : undefined;
+      if (raw === undefined || raw === null || raw === "") { out[k] = RATE_FALLBACK[k]; continue; }
+      const n = Number(raw);
+      out[k] = isFinite(n) && n >= 0 ? n : RATE_FALLBACK[k];
+    }
+    return out;
+  } catch { return { ...RATE_FALLBACK }; }
+}
+
+function cleanRates(b) {
+  // Same Number(null) === 0 trap as loadRates, in the other direction: with no
+  // body at all, `Number(b && b[k])` is 0 three times over and this would
+  // cheerfully save "everything is free".
+  if (!b || typeof b !== "object") return { error: "No rates were sent." };
+  const out = {};
+  for (const k of VEHICLES) {
+    const raw = b[k];
+    if (raw === undefined || raw === null || raw === "") {
+      return { error: "The " + k + " rate is missing." };
+    }
+    const n = Number(raw);
+    if (!isFinite(n) || n < 0) {
+      // Refused, never silently zeroed — a rate quietly set to 0 prices every
+      // future truck line at nothing, and nothing on screen would say so.
+      return { error: "That " + k + " rate is not a number I can use." };
+    }
+    if (n > 100) return { error: "That " + k + " rate looks wrong — over $100 a mile." };
+    out[k] = Math.round(n * 100) / 100;
+  }
+  return { rates: out };
+}
+
+async function saveRates(rates) {
+  await supabaseRest(
+    "POST", "/app_settings?on_conflict=key",
+    { key: RATES_KEY, value: rates, updated_at: new Date().toISOString() },
     "resolution=merge-duplicates");
 }
 
@@ -108,19 +178,49 @@ export default async function handler(req, res) {
 
   const q = req.query || {};
 
-  try {
-    // ---- the shop address -------------------------------------------------
-    if (q.origin) {
-      if (req.method === "GET") return json(res, 200, { origin: await loadOrigin() });
-      if (req.method === "POST") {
-        const b = await readBody(req);
-        const origin = String((b && b.origin) || "").trim().slice(0, 300);
-        await saveOrigin(origin);
-        return json(res, 200, { ok: true, origin });
-      }
-      return json(res, 405, { error: "Method not allowed" });
+  /* ---- the shop address, OUTSIDE the never-throw guard --------------------
+     The lookup below deliberately turns every failure into a 200 so a Maps
+     outage can never block a quote. That bargain is wrong for a settings
+     write: "saved" when nothing was saved is the worst answer available,
+     because the screen closes, the address looks set, and the next lookup asks
+     for it again with no explanation. A save that fails says so. */
+  if (q.origin) {
+    if (req.method === "GET") {
+      // Reading is different again: an unreadable setting reads as unset, which
+      // is what loadOrigin already does, and the caller then prompts for it.
+      return json(res, 200, { origin: await loadOrigin() });
     }
+    if (req.method === "POST") {
+      const b = await readBody(req);
+      const origin = String((b && b.origin) || "").trim().slice(0, 300);
+      try {
+        await saveOrigin(origin);
+      } catch (e) {
+        return json(res, 500, { error: "Could not save that address: " + (e.message || "unknown error") });
+      }
+      return json(res, 200, { ok: true, origin });
+    }
+    return json(res, 405, { error: "Method not allowed" });
+  }
 
+  // ---- default truck rates, same honesty rules as the address --------------
+  if (q.rates) {
+    if (req.method === "GET") return json(res, 200, { rates: await loadRates() });
+    if (req.method === "POST") {
+      const b = await readBody(req);
+      const { rates, error } = cleanRates((b && b.rates) || b);
+      if (error) return json(res, 400, { error });
+      try {
+        await saveRates(rates);
+      } catch (e) {
+        return json(res, 500, { error: "Could not save those rates: " + (e.message || "unknown error") });
+      }
+      return json(res, 200, { ok: true, rates });
+    }
+    return json(res, 405, { error: "Method not allowed" });
+  }
+
+  try {
     if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
 
     const to = String(q.to || "").trim();
