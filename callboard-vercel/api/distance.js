@@ -57,17 +57,24 @@ async function saveOrigin(origin) {
     "resolution=merge-duplicates");
 }
 
-/* One paid call. Routes API rather than Distance Matrix: for a single pair it
-   is the cheaper SKU, and the field mask keeps the response to the two numbers
-   actually wanted — Google charges more for responses carrying more. */
+/* One paid call, and deliberately the cheapest kind Google sells.
+
+   The SKU is decided by what the REQUEST asks for, not by the size of the
+   response. Three things would move this off "Compute Routes Essentials" and
+   none of them are here: a routingPreference of TRAFFIC_AWARE or
+   TRAFFIC_AWARE_OPTIMAL (omitted, so it defaults to traffic-unaware — we want
+   a stable cacheable mileage, not a live-traffic estimate), more than ten
+   waypoints (there are two), and waypoint optimisation (not asked for).
+
+   The field mask is therefore about keeping the payload small and the parsing
+   honest, not about the bill: only the two numbers actually used. */
 async function askGoogle(from, to) {
   const r = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": KEY,
-      "X-Goog-FieldMask":
-        "routes.distanceMeters,routes.duration,routes.legs.startLocation,routes.legs.endLocation",
+      "X-Goog-FieldMask": "routes.distanceMeters,routes.duration",
     },
     body: JSON.stringify({
       origin: { address: from },
