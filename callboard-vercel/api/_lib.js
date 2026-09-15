@@ -50,7 +50,22 @@ export function signToken(payload) {
 }
 export function verifyToken(token) {
   if (!token) return null;
-  const [body, sig] = token.split(".");
+  /* EXACTLY two segments.
+
+     `const [body, sig] = token.split(".")` silently discards everything after
+     the second dot, and the HMAC is computed over `body` alone — so
+     "<valid token>.<anything at all>" verified, and every caller that echoed
+     the token back got the attacker's suffix along with it. On /api/onboard
+     that suffix landed inside a <script> block: a crew member handed a
+     doctored version of their own link saw the real form on the real domain
+     while everything they typed — date of birth, passport expiry, Known
+     Traveler number, emergency contacts — could be read by the injected code.
+
+     Fixed here rather than at the sinks, because every signed-link route in
+     the app shares this function and the next one written would inherit it. */
+  const parts = String(token).split(".");
+  if (parts.length !== 2) return null;
+  const [body, sig] = parts;
   if (!body || !sig) return null;
   const expect = crypto.createHmac("sha256", APP_SECRET || "").update(body).digest("base64url");
   const a = Buffer.from(sig);
@@ -64,6 +79,23 @@ export function verifyToken(token) {
   }
   if (p.exp && Date.now() > p.exp) return null;
   return p;
+}
+
+/* Constant-time comparison for shared secrets.
+
+   `a === b` on a secret returns as soon as two bytes differ, so how long it
+   takes leaks how much of the guess was right. verifyToken has always done
+   this properly with timingSafeEqual; the admin password and the cron secret
+   were compared with ===. Realistically neither is remotely exploitable over
+   the internet against a serverless function — the noise dwarfs the signal —
+   but there is no reason for two ways of doing the same thing, and the safe
+   one is not harder. */
+export function sameSecret(a, b) {
+  const x = Buffer.from(String(a == null ? "" : a));
+  const y = Buffer.from(String(b == null ? "" : b));
+  // Lengths differ -> not equal, and timingSafeEqual would throw on them.
+  if (x.length !== y.length) return false;
+  return crypto.timingSafeEqual(x, y);
 }
 
 export function bearer(req) {
@@ -253,6 +285,57 @@ export async function inviteUser(email, redirectTo) {
 }
 
 // Send a transactional email via Brevo (used to notify people added to a show).
+/* ---- Supabase Storage ------------------------------------------------------
+   Storage lives at /storage/v1, not /rest/v1, so supabaseRest cannot reach it.
+
+   This started life local to api/expenses.js with a note saying to extract it
+   "when the W-9 work needs it too". That is now: crew documents are the second
+   consumer, and two copies of a helper that mints signed URLs is two places to
+   fix the day one of them is wrong. */
+export async function storageReq(method, path, body) {
+  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Supabase not configured");
+  const r = await fetch(SUPABASE_URL + "/storage/v1" + path, {
+    method,
+    headers: {
+      apikey: SUPABASE_SECRET_KEY,
+      Authorization: "Bearer " + SUPABASE_SECRET_KEY,
+      "Content-Type": "application/json",
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const txt = await r.text();
+  let data = null;
+  try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
+  if (!r.ok) {
+    const e = new Error((data && data.message) || "Storage error");
+    e.status = r.status;
+    throw e;
+  }
+  return data;
+}
+
+/* Mint a one-time upload URL. The browser PUTs straight to Supabase with this,
+   so the file never passes through a serverless function — no body-size limit
+   and no timeout on a 10 MB phone scan — and the service key never leaves here. */
+export async function signUpload(bucket, name) {
+  const out = await storageReq("POST", "/object/upload/sign/" + bucket + "/" + name, {});
+  return { path: name, token: out && out.token, url: out && out.url };
+}
+
+/* Short-lived read URL. The buckets are private; nothing is ever served from a
+   public URL. Five minutes is long enough to open a document and short enough
+   that a URL copied out of a browser history is useless by the time anyone
+   tries it. */
+export async function signView(bucket, path, expiresIn = 300) {
+  const out = await storageReq("POST", "/object/sign/" + bucket + "/" + path, { expiresIn });
+  return out && out.signedURL ? SUPABASE_URL + "/storage/v1" + out.signedURL : null;
+}
+
+/* What we accept as an uploaded document. Kept here so both consumers agree —
+   and deliberately a allowlist of three, because "whatever the browser says it
+   is" is not a file type check. */
+export const UPLOAD_EXT = { "image/jpeg": "jpg", "image/png": "png", "application/pdf": "pdf" };
+
 export async function sendBrevoEmail({ to, toName, subject, html, text }) {
   if (!BREVO_API_KEY || !to) return false;
   const senderEmail = BREVO_SENDER_EMAIL || "crewcall@touchstonecreativegroup.com";
@@ -271,6 +354,54 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
     });
     return r.ok;
   } catch (e) { return false; }
+}
+
+/* Many emails, ONE request.
+
+   Brevo's messageVersions carries up to 1,000 individually addressed messages
+   in a single call. That matters twice over here: thirty-five sequential
+   sends inside a serverless function is seven to fourteen seconds of HTTP and
+   a real chance of hitting the timeout half way through — leaving some people
+   emailed and some not, with no record of which — and every recipient gets
+   their own message, so nobody's address is ever visible to anyone else.
+
+   Returns the count, because "did this reach everyone" is the only question
+   worth asking afterwards. */
+export async function sendBrevoBatch(messages) {
+  const list = (messages || []).filter((m) => m && m.to);
+  if (!BREVO_API_KEY || !list.length) return { sent: 0, failed: list.map((m) => m.to) };
+  const senderEmail = BREVO_SENDER_EMAIL || "crewcall@touchstonecreativegroup.com";
+  const senderName = BREVO_SENDER_NAME || "Touchstone Crew Call";
+
+  let sent = 0;
+  const failed = [];
+  /* Chunked at 1,000 because that is the documented ceiling per call. Nobody
+     has a roster that long, but a loop that silently drops the 1,001st is the
+     kind of thing discovered years later. */
+  for (let i = 0; i < list.length; i += 1000) {
+    const chunk = list.slice(i, i + 1000);
+    try {
+      const r = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
+        body: JSON.stringify({
+          sender: { email: senderEmail, name: senderName },
+          // A version per person: own recipient, own subject, own body.
+          messageVersions: chunk.map((m) => ({
+            to: [{ email: m.to, ...(m.toName ? { name: m.toName } : {}) }],
+            subject: m.subject,
+            htmlContent: m.html,
+            ...(m.text ? { textContent: m.text } : {}),
+          })),
+        }),
+      });
+      if (r.ok) sent += chunk.length;
+      else chunk.forEach((m) => failed.push(m.to));
+    } catch {
+      chunk.forEach((m) => failed.push(m.to));
+    }
+  }
+  return { sent, failed };
 }
 
 // ---- Department-scoped editing (dept_editor role) ----

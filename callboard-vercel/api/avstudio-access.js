@@ -117,7 +117,10 @@ async function fileInAvStudio(token, email, note, who) {
     if (!r.ok) {
       // A 404 here almost always means the SQL has not been run yet. Say which
       // it is in the log; the caller only ever learns "not filed".
-      console.log("[avstudio-access] rpc " + r.status + " " + JSON.stringify(data).slice(0, 300));
+      /* Status only. The body echoes the requester's email address, and a log line
+     is a copy of personal data that outlives the request and is readable by
+     anyone with Vercel access. The status is what is diagnostically useful. */
+    console.log("[avstudio-access] rpc " + r.status);
       return { filed: false, reason: r.status === 404 ? "no-rpc" : "rpc-error" };
     }
     const out = data && typeof data === "object" ? data : {};

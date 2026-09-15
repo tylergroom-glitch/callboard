@@ -27,7 +27,7 @@
 // send twice on the same day. A missed day is simply skipped — the digest is a
 // statement of what is true this morning, not a log, so yesterday's is of no
 // use today.
-import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, sendBrevoEmail } from "./_lib.js";
+import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, sendBrevoEmail, sameSecret } from "./_lib.js";
 
 const BUSINESS_TZ = "America/Los_Angeles";
 const SETTINGS_KEY = "billing_digest";
@@ -41,8 +41,16 @@ const money = (n) => {
   const v = Math.round((Number(n) || 0) * 100) / 100;
   return "$" + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
+/* Quotes included. This escaper is used in an href attribute at the foot of
+   the digest, and one that stops at & < > cannot safely go in an attribute —
+   a value containing a quote closes it and starts a new one. Nothing
+   attacker-controlled reaches it today (every caller is admin or the cron, and
+   Vercel routes by Host), but this was the one esc() in the codebase that
+   would fail the moment a client or crew name moved into an attribute. */
 const esc = (s) =>
-  String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 const shiftDate = (iso, days) => {
   if (!iso) return null;
@@ -420,7 +428,7 @@ export default async function handler(req, res) {
   // receivables position to whoever asks.
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = req.headers.authorization || "";
-  if (!cronSecret || authHeader !== "Bearer " + cronSecret) {
+  if (!cronSecret || !sameSecret(authHeader, "Bearer " + cronSecret)) {
     return json(res, 401, { error: "Unauthorized" });
   }
   if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });

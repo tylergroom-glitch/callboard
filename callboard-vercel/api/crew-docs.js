@@ -208,7 +208,15 @@ async function issueRequest(req, rosterId, docType, who) {
   const url = linkFor(req, token);
   const mail = requestEmail({ name: person.name, docType, url });
   const sent = await sendBrevoEmail({ to: person.email, toName: person.name, ...mail });
-  return { ok: true, sent, email: person.email, name: person.name, url };
+  /* The URL is NOT returned.
+
+     It carries a live single-use token that opens this person's signing page
+     and mints an upload URL into their folder — a bearer credential. Handing
+     it back in a JSON body puts it in the browser's memory, in devtools, in a
+     screenshot, in a support ticket. It also contradicted the rule stated at
+     the top of this file, which is how it got written: the rule was in a
+     comment and not in the code. The screen never read it. */
+  return { ok: true, sent, email: person.email, name: person.name };
 }
 
 /* ------------------------------------------------------------------ route */
@@ -532,7 +540,12 @@ function pageScript(token, docType) {
   return (
     "var TOKEN=" + JSON.stringify(token) + ",DOC=" + JSON.stringify(docType) + ";" +
     "var mode=DOC==='w9'?'upload':'drawn',drawn=false;" +
-    "function err(m){document.getElementById('err').innerHTML=m?'<div class=err>'+m+'</div>':'';" +
+    /* textContent, not innerHTML. Every message that reaches here today is a
+   constant, but the outer catch can surface a database error, and "no
+   attacker-controlled string currently reaches this sink" is a property that
+   holds until someone adds an error message. */
+    "function err(m){var e=document.getElementById('err');e.textContent='';" +
+    "if(m){var d=document.createElement('div');d.className='err';d.textContent=m;e.appendChild(d);}" +
     "if(m)window.scrollTo(0,0);}" +
     // --- the blank document, fetched through the app so the bucket stays private
     "document.getElementById('blank').onclick=function(e){e.preventDefault();" +
