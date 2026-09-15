@@ -3,8 +3,11 @@
 //
 // GET                  list crew (excludes the config row)
 // GET ?positions=1     return only the positions array
+// GET ?new=1           crew who joined via the onboarding form and have not
+//                      been reviewed yet (admin only) — powers the home screen
 // POST                 create/update crew member (admin only)
 // POST ?positions=1    save positions array (admin only)  body: { positions: [...] }
+// POST ?reviewed=<id>  clear one person off the New crew list (admin only)
 // DELETE ?id=          delete crew member (admin only)
 //
 // SETUP: run setup-roster.sql.
@@ -42,6 +45,29 @@ function asData(v) {
 
 const rosterRecord = (r) => ({ id: r.id, name: r.name || "", data: asData(r.data) });
 
+/* The home screen's view of a new arrival — deliberately NOT the full record.
+   `rosterRecord` carries date of birth, passport expiry, TSA PreCheck number,
+   phone, emergency contact and the agreed rate. The Today screen is the one
+   view that sits open all day, on whatever machine is to hand, and it needs
+   none of that to answer "who turned up and do I need to do something".
+   So this is the short list: who, what they can do, what they want, how to
+   reply. Anything more is one click away on the crew tab, behind the same
+   admin check. */
+const newCrewRecord = (r) => {
+  const d = asData(r.data);
+  const list = Array.isArray(d.positions) ? d.positions : (d.position ? [d.position] : []);
+  return {
+    id: r.id,
+    name: r.name || "",
+    positions: list.filter(Boolean).map(String),
+    positionSuggest: d.positionSuggest || "",
+    rateAsk: d.rateAsk || "",
+    rateAskType: d.rateAskType === "hourly" ? "hourly" : "day",
+    email: d.email || "",
+    joinedAt: d.joinedAt || "",
+  };
+};
+
 async function getPositionsRow() {
   const rows = await supabaseRest(
     "GET", `/roster?name=eq.${encodeURIComponent(POS_KEY)}&select=${COLS}&limit=1`, null);
@@ -53,6 +79,8 @@ export default async function handler(req, res) {
   if (!p) return json(res, 401, { error: "Not signed in" });
   const id = req.query?.id;
   const posMode = !!(req.query?.positions);
+  const newMode = !!(req.query?.new);
+  const reviewedId = req.query?.reviewed;
 
   try {
     /* ---- GET ---- */
@@ -80,6 +108,31 @@ export default async function handler(req, res) {
        * titles, it is about no one, and the crew tab's dropdown needs it. */
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
 
+      /* ---- the home screen's New crew list ----
+         Two conditions, and both matter:
+
+         joinedAt NOT NULL    — the row was created by a public onboarding
+                                submission. Crew Tyler types in himself have
+                                no joinedAt and never appear here, because
+                                telling him about someone he just added is
+                                noise, not a notification.
+         reviewedAt IS NULL   — he has not cleared them yet. There is no time
+                                window on purpose: a person who joined three
+                                weeks ago and was never looked at is still
+                                someone who was never looked at, and quietly
+                                ageing them off the screen would be the app
+                                deciding that on his behalf. */
+      if (newMode) {
+        const rows = await supabaseRest(
+          "GET",
+          "/roster?data->>joinedAt=not.is.null&data->>reviewedAt=is.null" +
+            `&name=neq.${encodeURIComponent(POS_KEY)}` +
+            `&select=${COLS}&order=data->>joinedAt.desc&limit=50`,
+          null
+        );
+        return json(res, 200, { crew: (rows || []).map(newCrewRecord) });
+      }
+
       // List crew, excluding the special config row.
       const rows = await supabaseRest(
         "GET",
@@ -92,6 +145,24 @@ export default async function handler(req, res) {
     /* ---- POST ---- */
     if (req.method === "POST") {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+
+      /* Clear one person off the New crew list.
+         Handled BEFORE readBody, because this carries no body — and a merge,
+         never a replace. The plain create/update branch below overwrites
+         `data` wholesale with what the caller sent; doing that here would
+         blank the rate, the notes and every field the onboarding form does
+         not collect, in exchange for one timestamp. */
+      if (reviewedId) {
+        const enc = encodeURIComponent(reviewedId);
+        const rows = await supabaseRest(
+          "GET", `/roster?id=eq.${enc}&name=neq.${encodeURIComponent(POS_KEY)}&select=id,data&limit=1`, null);
+        if (!rows || !rows[0]) return json(res, 404, { error: "Not found" });
+        const merged = { ...asData(rows[0].data), reviewedAt: new Date().toISOString() };
+        await supabaseRest("PATCH", `/roster?id=eq.${enc}`,
+          { data: merged, updated_at: new Date().toISOString() });
+        return json(res, 200, { ok: true, id: reviewedId });
+      }
+
       const b = await readBody(req);
 
       if (posMode) {

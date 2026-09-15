@@ -1,5 +1,10 @@
 // /api/onboard
 // GET  ?generate=1  — generate a shareable crew link (admin only)
+//
+// A submission that CREATES a roster row (rather than updating one) stamps
+// `joinedAt` and pushes a Telegram alert. The same stamp is what puts the
+// person in the "New crew" list on the home screen, where they stay until
+// reviewed — see /api/roster?new=1.
 // GET  ?token=xxx   — serve the crew onboarding form (anyone with the link)
 // POST ?token=xxx   — save/update crew submission
 //
@@ -13,7 +18,7 @@
 // list. A crew member can SUGGEST a position; only an admin, through
 // /api/roster, can add one. That boundary is the whole reason the suggestion
 // is stored on the person rather than appended to the list.
-import { auth, isAdmin, supabaseRest, signToken, verifyToken } from "./_lib.js";
+import { auth, isAdmin, supabaseRest, signToken, verifyToken, telegramNotify } from "./_lib.js";
 import { DEFAULT_POSITIONS } from "./roster.js";
 
 const POS_KEY = "__positions__";
@@ -74,8 +79,76 @@ async function upsert(name, data) {
     const merged = { ...asData(rows[0].data), ...data };
     await supabaseRest("PATCH", `/roster?id=eq.${encodeURIComponent(rows[0].id)}`,
       { name, data: merged, updated_at: now });
-  } else {
-    await supabaseRest("POST", "/roster", { name, data, updated_at: now }, "return=minimal");
+    return { created: false };
+  }
+  /* `joinedAt` is stamped HERE, on the branch that actually creates the row,
+     and nowhere else.
+
+     `onboardedAt` looks like it would do the same job and does not: it is
+     rewritten by every submission, so a crew member correcting their phone
+     number in March would read as a brand-new arrival, alert Tyler's phone and
+     reappear on the home screen. The distinction between "filled the form" and
+     "is new" is exactly this one branch. */
+  await supabaseRest("POST", "/roster",
+    { name, data: { ...data, joinedAt: now }, updated_at: now }, "return=minimal");
+  return { created: true };
+}
+
+/* ---- telling Tyler someone turned up --------------------------------------
+
+   This endpoint is public. Anyone holding the 60-day link can create a roster
+   row, and every creation pushes a message to a phone. One person submitting
+   the form twice cannot do it — the second submission takes the update branch
+   above — but a hundred invented names could.
+
+   Past the cap the rows are still written and still appear on the home screen.
+   Only the push is dropped, so a flood costs a notification rather than a
+   record. */
+const FLOOD_CAP = 10;
+
+async function joinsInLastHour() {
+  const since = new Date(Date.now() - 3600000).toISOString();
+  const rows = await supabaseRest(
+    "GET",
+    "/roster?data->>joinedAt=gte." + encodeURIComponent(since) +
+      "&select=id&limit=" + (FLOOD_CAP + 1),
+    null
+  );
+  return (rows || []).length;
+}
+
+/* What goes in the message is a deliberately short list.
+
+   The form collects date of birth, gender, passport expiry, TSA PreCheck,
+   dietary needs and an emergency contact. None of that helps Tyler decide
+   anything at the moment somebody joins, and a Telegram message sits
+   unencrypted-at-rest on a phone for ever. So: the name, what they say they
+   can do, what they want to be paid, and an address to reply to.
+
+   The rate is in because it is the one field that decides whether he needs to
+   act today, and because Telegram ids are admin-set in Settings → Inbox &
+   alerts — the same bar the roster screen itself applies to crew pay. */
+async function notifyNewCrew(name, info) {
+  try {
+    if ((await joinsInLastHour()) > FLOOD_CAP) return;
+    const rate = info.rateAsk
+      ? "Asking $" + info.rateAsk + (info.rateAskType === "hourly" ? "/hr" : "/day")
+      : "No rate given";
+    await telegramNotify(
+      "👋 New crew on the roster\n\n" +
+      name + "\n" +
+      (info.positions.length ? info.positions.join(", ") : "No position ticked") +
+      (info.suggest ? "\nSuggested: " + info.suggest : "") + "\n" +
+      rate +
+      (info.email ? "\n" + info.email : "") +
+      "\n\nOn your home screen under New crew."
+    );
+  } catch (e) {
+    /* Never rethrow. The crew member has already been written to the roster;
+       failing their submission because a notification did not go out would
+       lose the record and tell them to try again, which would then read as a
+       re-submission rather than a join. */
+    console.log("[onboard] new-crew notify failed: " + ((e && e.message) || e));
   }
 }
 
@@ -442,7 +515,7 @@ export default async function handler(req, res) {
       if (!emName) { bad("An emergency contact name is required."); return; }
       if (emPhone.length < 10) { bad("An emergency contact phone with at least 10 digits is required."); return; }
 
-      await upsert(name, {
+      const result = await upsert(name, {
         positions: chosen,
         // Kept so anything still reading the old single field keeps working.
         position: chosen[0] || "",
@@ -468,6 +541,16 @@ export default async function handler(req, res) {
         emergencyPhone: body.emergencyPhone || "",
         onboardedAt: new Date().toISOString(),
       });
+
+      /* Only on a genuine arrival, and only after the row is safely written. */
+      if (result && result.created) {
+        await notifyNewCrew(name, {
+          positions: chosen, suggest, rateAsk,
+          rateAskType: body.rateAskType === "hourly" ? "hourly" : "day",
+          email,
+        });
+      }
+
       res.status(200).setHeader("Content-Type","application/json").end(JSON.stringify({ok:true}));
     } catch (e) {
       /* This route is reachable by anyone holding a link, and Supabase's error
