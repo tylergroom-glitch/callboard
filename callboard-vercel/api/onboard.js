@@ -282,6 +282,18 @@ function formPage(token, positions) {
   ${privacyBlock()}
 </div>`,
   `<script>
+/* The token as DATA, never as code. JSON.stringify quotes and escapes it, and
+   the \u003c pass stops a "</script>" inside the value from closing this block
+   early — JSON.stringify alone does not do that.
+
+   The token is HMAC-verified before this page renders, so in principle nothing
+   hostile reaches here. It did once: verifyToken accepted "<valid>.<anything>"
+   because it destructured the first two segments and discarded the rest, and
+   the suffix was interpolated raw into this very fetch call. Fixed at the root
+   in _lib.js. This is the second lock, so the next bug in the first one is a
+   bug and not a breach. */
+var TOKEN=${JSON.stringify(token).replace(/</g, "\\u003c")};
+
 document.getElementById('sub').onclick=async()=>{
   const name=document.getElementById('name').value.trim();
   const show=function(m,id){var e=document.getElementById('err');e.textContent=m;e.style.display='block';
@@ -302,7 +314,7 @@ document.getElementById('sub').onclick=async()=>{
   const positions=Array.prototype.slice.call(document.querySelectorAll('.posbox'))
     .filter(function(b){return b.checked}).map(function(b){return b.value});
   try{
-    const r=await fetch('/api/onboard?token=${token}',{method:'POST',headers:{'Content-Type':'application/json'},
+    const r=await fetch('/api/onboard?token='+encodeURIComponent(TOKEN),{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({name,positions:positions,positionOther:get('positionOther'),
         travelIntl:document.getElementById('travelIntl').checked,
         phone:get('phone'),email:get('email'),
@@ -458,7 +470,14 @@ export default async function handler(req, res) {
       });
       res.status(200).setHeader("Content-Type","application/json").end(JSON.stringify({ok:true}));
     } catch (e) {
-      res.status(500).setHeader("Content-Type","application/json").end(JSON.stringify({error:e.message||"Server error"}));
+      /* This route is reachable by anyone holding a link, and Supabase's error
+         messages name tables, columns and constraints. Handing those to an
+         unauthenticated caller turns a failed submission into a way to map the
+         schema. The real message goes to the Vercel log, where it is useful;
+         the caller gets a sentence they can act on. */
+      console.log("[onboard] " + ((e && e.message) || e));
+      res.status(500).setHeader("Content-Type","application/json")
+        .end(JSON.stringify({error:"Something went wrong saving that. Try again, or tell your production manager."}));
     }
     return;
   }
