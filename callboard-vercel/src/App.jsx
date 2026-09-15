@@ -4525,11 +4525,18 @@ function QtTruckModal({ rates, defaults, venue, onAdd, onClose }) {
      happened before this existed. */
   const [look, setLook] = useState({ state: "idle", result: null, error: "", origin: "" });
   const venueAddr = (venue && (venue.address || venue.name)) || "";
+  /* The typed box is the source of truth for what gets billed, so the auto
+     lookup must never overwrite something already in it (see doLookup). */
+  const milesRef = useRef("");
+  milesRef.current = miles;
 
-  const doLookup = async () => {
+  /* opts.fresh    — deliberately pay again, ignoring the cache
+     opts.autoOnly — this run was not asked for, so it may only FILL an empty
+                     box, never replace what is in one */
+  const doLookup = async (opts = {}) => {
     setLook((x) => ({ ...x, state: "busy", error: "" }));
     try {
-      const d = await lookupDistance(venueAddr);
+      const d = await lookupDistance(venueAddr, opts.fresh ? { fresh: true } : {});
       if (d && d.needsOrigin) {
         let cur = "";
         try { cur = (await getTruckOrigin()).origin || ""; } catch (e) {}
@@ -4543,12 +4550,38 @@ function QtTruckModal({ rates, defaults, venue, onAdd, onClose }) {
       }
       setLook({ state: "done", result: d, error: "", origin: "" });
       /* Round trip, because that is what Tyler has always typed into this box.
-         Both numbers stay on screen so it can never be ambiguous again. */
-      setMiles(String(d.roundTrip));
+         Both numbers stay on screen so it can never be ambiguous again.
+
+         The autoOnly guard matters now that this can run on its own: the modal
+         is usable while the request is in flight, so a number typed in the
+         two seconds it takes would otherwise be silently replaced by one
+         nobody asked for. A lookup you CLICKED always wins; one that just
+         happened only fills a box you left empty. */
+      if (!opts.autoOnly || !String(milesRef.current || "").trim()) {
+        setMiles(String(d.roundTrip));
+      }
     } catch (e) {
       setLook({ state: "error", result: null, error: e.message || "Lookup failed.", origin: "" });
     }
   };
+
+  /* Run it on open rather than making Tyler click every time. Two guards:
+
+     - the ref, because React runs an effect twice under StrictMode and each
+       run of this one can spend money;
+     - the address, because with nothing to drive to there is nothing to ask.
+
+     The cost of doing this automatically is bounded and small: the answer is
+     cached forever per shop -> venue pair, so this is at most ONE paid call
+     per venue for the life of the business, and it is the same call clicking
+     the button would have made. Reopening the modal is free. */
+  const autoFired = useRef(false);
+  useEffect(() => {
+    if (autoFired.current || !venueAddr) return;
+    autoFired.current = true;
+    doLookup({ autoOnly: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const saveOrigin = async () => {
     try {
@@ -4579,9 +4612,16 @@ function QtTruckModal({ rates, defaults, venue, onAdd, onClose }) {
               </div>
               <div style={{ fontSize: 11.5, color: "var(--dim)", marginTop: 6 }}>Saved once and reused for every quote.</div>
             </>
+          ) : look.state === "done" ? (
+            /* It already ran on open, so the only job left for a button here is
+               "that number looks wrong" — which means deliberately paying for a
+               fresh answer rather than being handed the cached one again. */
+            <button className="btn ghost" onClick={() => doLookup({ fresh: true })} style={{ padding: "4px 10px", fontSize: 12 }}>
+              Check again
+            </button>
           ) : (
-            <button className="btn ghost" onClick={doLookup} disabled={look.state === "busy"}>
-              {look.state === "busy" ? "Looking up…" : "📍 Get driving miles"}
+            <button className="btn ghost" onClick={() => doLookup()} disabled={look.state === "busy"}>
+              {look.state === "busy" ? "Looking up…" : look.state === "error" ? "Try again" : "📍 Get driving miles"}
             </button>
           )}
           {look.state === "done" && look.result ? (
