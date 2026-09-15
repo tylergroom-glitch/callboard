@@ -933,7 +933,9 @@ function Callboard({ auth, onLogout }) {
      below, and the landing guard. Adding To Do and Crew Roster without touching
      all three is exactly what broke them — the sidebar lit up and nothing
      happened. One value cannot fall out of step with itself. */
-  const [admSec, setAdmSec] = useState("shows");
+  // Land on Today rather than the calendar: the first question of the day is
+  // "what needs me", not "what month is it".
+  const [admSec, setAdmSec] = useState("today");
   const [events, setEvents] = useState([]); // summaries
   const [currentId, setCurrentId] = useState(null);
   const [event, setEvent] = useState(null);
@@ -1332,7 +1334,9 @@ function Callboard({ auth, onLogout }) {
             <AdminSidebar active={admSection} go={goAdmin} onPeople={() => setPeopleOpen(true)} onLogout={onLogout} taskCount={taskCount} />
           ) : null}
           <div className="adm-main">
-            {admSection === "todo" ? (
+            {admSection === "today" ? (
+              <TodayScreen go={goAdmin} onOpenShow={openLandingShow} />
+            ) : admSection === "todo" ? (
               <TasksScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "pipeline" ? (
               <PipelineBoard onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
@@ -6669,9 +6673,10 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.31.0";
+const APP_VERSION = "1.32.0";
 
 const ADM_NAV = [
+  { key: "today", label: "Today" },
   { key: "todo", label: "To Do" },
   { key: "shows", label: "Shows" },
   { key: "pipeline", label: "Pipeline" },
@@ -6719,6 +6724,270 @@ function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
   );
 }
 
+
+/* ===========================================================================
+   TODAY — the landing screen.
+
+   Assembled from four endpoints that already exist; it stores nothing and adds
+   no route of its own. The job is one question answered in one screen: what
+   needs me before this day gets away.
+
+   EVERY SECTION FAILS ON ITS OWN. A screen that goes blank because the billing
+   query timed out is worse than one missing a panel — and deriving "loading"
+   from "the data is null" is what made the crew documents screen spin for ever
+   on a failure it had already caught. Each block below carries its own state
+   and says what went wrong in its own corner.
+   =========================================================================== */
+
+/* Wall clock in the business timezone, not the browser's. A show in Sausalito
+   is due on Pacific dates whatever the laptop thinks. */
+const tdToday = () => new Date().toLocaleDateString("en-CA", { timeZone: BUSINESS_TZ });
+const tdMoney0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
+const tdShift = (iso, days) => {
+  const d = new Date(iso + "T12:00:00");
+  if (isNaN(d)) return iso;
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+const tdDayName = (iso) => {
+  const d = new Date(iso + "T12:00:00");
+  return isNaN(d) ? "" : d.toLocaleDateString("en-US", { weekday: "short" }).toUpperCase();
+};
+const tdDayNum = (iso) => {
+  const d = new Date(iso + "T12:00:00");
+  return isNaN(d) ? "" : String(d.getDate());
+};
+/* "in 3 days" beats a date you have to subtract from today in your head. */
+const tdWhen = (iso, today) => {
+  if (!iso) return "";
+  if (iso === today) return "today";
+  if (iso === tdShift(today, 1)) return "tomorrow";
+  const a = new Date(today + "T12:00:00"), b = new Date(iso + "T12:00:00");
+  const days = Math.round((b - a) / 86400000);
+  if (days < 0) return Math.abs(days) + (Math.abs(days) === 1 ? " day ago" : " days ago");
+  return "in " + days + " days";
+};
+
+function TdTile({ tone, label, value, sub, icon }) {
+  const colour = tone === "bad" ? "var(--danger)" : tone === "warn" ? "var(--amber)" : "var(--dim)";
+  return (
+    <div className="panel td-tile">
+      {/* Status is carried by the icon and the word as well as the colour —
+          the colour alone is not an accessible signal. */}
+      <div className="td-tile-h" style={{ color: colour }}>{icon}<span>{label}</span></div>
+      <div className="td-tile-v">{value}</div>
+      <div className="td-tile-s">{sub}</div>
+    </div>
+  );
+}
+
+const TdIconLate = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+);
+const TdIconCheck = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>
+);
+const TdIconCal = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18" /></svg>
+);
+
+function TodayScreen({ go, onOpenShow }) {
+  const today = tdToday();
+  const [tasks, setTasks] = useState({ st: "load", rows: [], err: "" });
+  const [bills, setBills] = useState({ st: "load", rows: [], err: "" });
+  const [shows, setShows] = useState({ st: "load", rows: [], err: "" });
+  const [docs, setDocs] = useState({ st: "load", nda: 0, w9: 0, err: "" });
+
+  useEffect(() => {
+    let alive = true;
+    const fail = (set) => (e) => alive && set({ st: "err", rows: [], err: (e && e.message) || "Couldn't load." });
+
+    listTasks().then((r) => alive && setTasks({ st: "ok", rows: Array.isArray(r) ? r : (r && r.tasks) || [], err: "" })).catch(fail(setTasks));
+    listBilling().then((r) => alive && setBills({ st: "ok", rows: Array.isArray(r) ? r : (r && r.rows) || [], err: "" })).catch(fail(setBills));
+    listEvents().then((r) => alive && setShows({ st: "ok", rows: Array.isArray(r) ? r : (r && r.events) || [], err: "" })).catch(fail(setShows));
+    getCrewDocStatus()
+      .then((r) => {
+        if (!alive) return;
+        const crew = (r && r.crew) || [];
+        const owing = (k) => crew.filter((c) => !(c.docs && c.docs[k] && c.docs[k].status === "signed")).length;
+        setDocs({ st: "ok", nda: owing("nda"), w9: owing("w9"), err: "" });
+      })
+      .catch((e) => alive && setDocs({ st: "err", nda: 0, w9: 0, err: (e && e.message) || "Couldn't load." }));
+
+    return () => { alive = false; };
+  }, []);
+
+  /* ---- what the numbers mean --------------------------------------------
+     Overdue is the endpoint's own word for it: sent, unpaid, past its due
+     date. Recomputing that here would be a second opinion that drifts. */
+  const overdue = bills.rows.filter((b) => b.overdue);
+  const overdueSum = overdue.reduce((t, b) => t + (Number(b.balance) || 0), 0);
+  const oldestDays = overdue.reduce((n, b) => {
+    const d = b.due || b.scheduledDueDate;
+    if (!d) return n;
+    const days = Math.round((new Date(today + "T12:00:00") - new Date(d + "T12:00:00")) / 86400000);
+    return Math.max(n, days);
+  }, 0);
+
+  const open = tasks.rows.filter((t) => (t.status || "open") === "open");
+  const dueToday = open.filter((t) => t.due && t.due <= today);
+  const timed = dueToday.filter((t) => t.due_time);
+  const undated = open.filter((t) => !t.due);
+
+  const horizon = tdShift(today, 14);
+  const soon = shows.rows
+    .filter((s) => s.startDate && s.startDate >= today && s.startDate <= horizon)
+    .sort((a, b) => (a.startDate < b.startDate ? -1 : 1));
+  const nextUp = soon[0];
+
+  /* The needs-you list is tasks and money interleaved, most urgent first:
+     overdue money, then dated tasks, then the undated pile behind a count. */
+  const needs = [
+    ...overdue.map((b) => ({
+      key: "b" + b.id, tone: "bad",
+      text: (b.label || "Invoice") + (b.qbNumber ? " · " + b.qbNumber : ""),
+      right: tdMoney0(b.balance), go: () => go("billing"),
+    })),
+    ...dueToday
+      .slice()
+      .sort((a, b) => (a.due_time || "99") < (b.due_time || "99") ? -1 : 1)
+      .map((t) => ({
+        key: "t" + t.id, tone: t.due < today ? "bad" : "warn",
+        text: t.title || "Untitled task",
+        right: t.due_time ? t.due_time.slice(0, 5) : tdWhen(t.due, today),
+        go: () => go("todo"),
+      })),
+  ].slice(0, 7);
+
+  const anyLoading = tasks.st === "load" || bills.st === "load" || shows.st === "load";
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">
+          {new Date(today + "T12:00:00").toLocaleDateString("en-US",
+            { weekday: "long", day: "numeric", month: "long" })}
+        </h1>
+        <div className="cal-top-actions">
+          {nextUp ? (
+            <span className="td-next">{nextUp.name} starts {tdWhen(nextUp.startDate, today)}</span>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="td-tiles">
+        <TdTile
+          tone={overdue.length ? "bad" : "flat"} icon={<TdIconLate />} label="Overdue"
+          value={bills.st === "err" ? "—" : bills.st === "load" ? "·" : tdMoney0(overdueSum)}
+          sub={bills.st === "err" ? bills.err
+            : overdue.length
+            ? overdue.length + (overdue.length === 1 ? " invoice" : " invoices")
+              + (oldestDays > 0 ? ", oldest " + oldestDays + " days" : "")
+            : "nothing outstanding"}
+        />
+        <TdTile
+          tone={dueToday.length ? "warn" : "flat"} icon={<TdIconCheck />} label="Due today"
+          value={tasks.st === "err" ? "—" : tasks.st === "load" ? "·" : dueToday.length + (dueToday.length === 1 ? " task" : " tasks")}
+          sub={tasks.st === "err" ? tasks.err
+            : timed.length ? timed.length + " with a time on " + (timed.length === 1 ? "it" : "them")
+            : undated.length ? undated.length + " more with no date"
+            : "nothing due"}
+        />
+        <TdTile
+          tone="flat" icon={<TdIconCal />} label="Next 14 days"
+          value={shows.st === "err" ? "—" : shows.st === "load" ? "·" : soon.length + (soon.length === 1 ? " show" : " shows")}
+          sub={shows.st === "err" ? shows.err
+            : nextUp ? "next is " + tdWhen(nextUp.startDate, today) : "nothing booked"}
+        />
+      </div>
+
+      <div className="td-cols">
+        <div className="td-col">
+          <div className="td-head">
+            <span className="td-sect">Needs you today</span>
+            <button className="btn ghost" onClick={() => go("todo")} style={{ padding: "5px 11px", fontSize: 12 }}>Open To&nbsp;Do</button>
+          </div>
+
+          {anyLoading && !needs.length ? <p style={qtHint}>Loading…</p> : null}
+          {!anyLoading && !needs.length ? (
+            <p style={qtHint}>Nothing due and nothing overdue. Genuinely clear.</p>
+          ) : null}
+
+          {needs.map((n) => (
+            <div key={n.key} className="td-row" onClick={n.go} role="button" tabIndex={0}
+              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); n.go(); } }}>
+              <span className="td-dot" style={{ background: n.tone === "bad" ? "var(--danger)" : "var(--amber)" }} />
+              <span className="td-row-t">{n.text}</span>
+              <span className="td-row-r">{n.right}</span>
+            </div>
+          ))}
+          {undated.length ? (
+            <div className="td-more">…and {undated.length} with no date at all</div>
+          ) : null}
+        </div>
+
+        <div className="td-col">
+          <div className="td-head">
+            <span className="td-sect">Coming up</span>
+            <button className="btn ghost" onClick={() => go("shows")} style={{ padding: "5px 11px", fontSize: 12 }}>All shows</button>
+          </div>
+          <div className="panel td-list">
+            {shows.st === "err" ? <div className="tk-err">{shows.err}</div> : null}
+            {shows.st === "load" ? <p style={{ ...qtHint, margin: 0 }}>Loading…</p> : null}
+            {shows.st === "ok" && !soon.length ? (
+              <p style={{ ...qtHint, margin: 0 }}>Nothing in the next two weeks.</p>
+            ) : null}
+            {soon.slice(0, 4).map((s, i) => (
+              <div key={s.id}>
+                {i ? <div className="td-hr" /> : null}
+                <div className="td-show" onClick={() => onOpenShow && onOpenShow(s.id)} role="button" tabIndex={0}
+                  onKeyDown={(e) => { if (e.key === "Enter") onOpenShow && onOpenShow(s.id); }}>
+                  <div className="td-date">
+                    <div className="td-date-d">{tdDayName(s.startDate)}</div>
+                    <div className="td-date-n">{tdDayNum(s.startDate)}</div>
+                  </div>
+                  <div className="td-show-b">
+                    <div className="td-show-n">{s.name || "Untitled show"}</div>
+                    <div className="td-show-s">
+                      {[s.client, tdWhen(s.startDate, today)].filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="td-head" style={{ marginTop: 6 }}>
+            <span className="td-sect">Paperwork</span>
+          </div>
+          <div className="panel td-list">
+            {docs.st === "err" ? (
+              <div style={{ ...qtHint, margin: 0 }}>Crew documents aren’t set up yet.</div>
+            ) : (
+              <>
+                <div className="td-paper">
+                  <span className="td-paper-t">NDAs outstanding</span>
+                  <span className="td-paper-n" style={{ color: docs.nda ? "var(--amber)" : "var(--dim)" }}>
+                    {docs.st === "load" ? "·" : docs.nda}
+                  </span>
+                  <button className="btn ghost" onClick={() => go("settings")} style={{ padding: "4px 10px", fontSize: 12 }}>Ask</button>
+                </div>
+                <div className="td-hr" />
+                <div className="td-paper">
+                  <span className="td-paper-t">W-9s outstanding</span>
+                  <span className="td-paper-n" style={{ color: docs.w9 ? "var(--amber)" : "var(--dim)" }}>
+                    {docs.st === "load" ? "·" : docs.w9}
+                  </span>
+                  <button className="btn ghost" onClick={() => go("settings")} style={{ padding: "4px 10px", fontSize: 12 }}>Ask</button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /* ===========================================================================
    SETTINGS
@@ -17284,6 +17553,45 @@ const CSS = `
 /* Settings panels. A readable measure matters more here than filling the
    window: these are forms you read once and change rarely, and a 1,100px-wide
    line of help text is a line nobody finishes. */
+/* ---- Today ------------------------------------------------------------- */
+.td-next{font-size:13px; color:var(--dim);}
+.td-tiles{display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; margin-bottom:22px;}
+.td-tile{display:flex; flex-direction:column; gap:9px; border-radius:16px;}
+.td-tile-h{display:flex; align-items:center; gap:7px; font-size:11px; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase;}
+.td-tile-v{font-size:32px; font-weight:700; letter-spacing:-.01em; font-variant-numeric:tabular-nums;}
+.td-tile-s{font-size:12px; color:var(--dim);}
+.td-cols{display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:20px; align-items:start;}
+.td-col{display:flex; flex-direction:column; gap:11px;}
+.td-head{display:flex; align-items:center; justify-content:space-between; min-height:30px;}
+.td-sect{font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--dim);}
+.td-row{display:flex; align-items:center; gap:11px; padding:12px 13px; min-height:48px;
+  border-radius:10px; background:var(--panel); border:1px solid var(--line); cursor:pointer;}
+.td-row:hover{background:var(--panel2);}
+.td-dot{width:8px; height:8px; border-radius:50%; flex:0 0 auto;}
+.td-row-t{flex:1 1 auto; min-width:0; font-size:13px;}
+.td-row-r{font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums; white-space:nowrap;}
+.td-more{font-size:12px; color:var(--dim); padding-left:3px;}
+.td-list{display:flex; flex-direction:column; gap:12px; border-radius:16px; padding:14px;}
+.td-hr{height:1px; background:var(--line);}
+.td-show{display:flex; gap:12px; align-items:center; cursor:pointer; min-height:44px;}
+.td-date{flex:0 0 44px; text-align:center;}
+.td-date-d{font-size:11px; color:var(--faint); font-weight:700; letter-spacing:.06em;}
+.td-date-n{font-size:19px; font-weight:700; line-height:1.15; font-variant-numeric:tabular-nums;}
+.td-show-b{flex:1 1 auto; min-width:0;}
+.td-show-n{font-size:13px; font-weight:600;}
+.td-show-s{font-size:12px; color:var(--dim); margin-top:2px;}
+.td-paper{display:flex; align-items:center; gap:10px; min-height:32px;}
+.td-paper-t{flex:1 1 auto; font-size:13px;}
+.td-paper-n{font-size:13px; font-weight:700; font-variant-numeric:tabular-nums;}
+@media (max-width:820px){
+  .td-tiles{grid-template-columns:repeat(2, minmax(0,1fr));}
+  /* Three tiles at 390px squeezes all of them under a readable size; the
+     third drops below rather than shrinking the other two. */
+  .td-tiles > :nth-child(3){grid-column:1 / -1;}
+  .td-cols{grid-template-columns:minmax(0,1fr);}
+}
+
 .set-panel { max-width:620px; }
 .set-lead { color:var(--dim); font-size:13px; margin:0 0 4px; line-height:1.55; }
 .set-actions { display:flex; gap:10px; align-items:center; justify-content:flex-end; margin-top:22px; padding-top:16px; border-top:1px solid var(--line); }
