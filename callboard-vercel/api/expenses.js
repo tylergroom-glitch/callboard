@@ -28,9 +28,10 @@
 //   quietly does nothing. Overhead therefore gates on isAdmin(p) explicitly,
 //   and showGate() below refuses to run at all without a show id.
 import crypto from "node:crypto";
-import { json, readBody, auth, isAdmin, canManageShow, supabaseRest } from "./_lib.js";
+import { json, readBody, auth, isAdmin, canManageShow, supabaseRest,
+         signUpload, signView, UPLOAD_EXT } from "./_lib.js";
 
-const { SUPABASE_URL, SUPABASE_SECRET_KEY } = process.env;
+// Storage credentials now live in _lib.js with the helpers that use them.
 
 /* Validated here rather than by a CHECK constraint, because Tyler's accountant
    will hand him a different list and that must be a deploy, not a migration.
@@ -112,33 +113,9 @@ function cleanRow(b, { showId, overhead }) {
   };
 }
 
-/* Storage lives at /storage/v1, not /rest/v1, so supabaseRest cannot reach it.
-   Kept local rather than added to _lib.js: _lib has the widest blast radius in
-   the codebase and only this route needs storage today. When the W-9 work
-   needs it too, extract it then. */
-async function storage(method, path, body) {
-  if (!SUPABASE_URL || !SUPABASE_SECRET_KEY) throw new Error("Supabase not configured");
-  const r = await fetch(SUPABASE_URL + "/storage/v1" + path, {
-    method,
-    headers: {
-      apikey: SUPABASE_SECRET_KEY,
-      Authorization: "Bearer " + SUPABASE_SECRET_KEY,
-      "Content-Type": "application/json",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const txt = await r.text();
-  let data = null;
-  try { data = txt ? JSON.parse(txt) : null; } catch { data = txt; }
-  if (!r.ok) {
-    const e = new Error((data && data.message) || "Storage error");
-    e.status = r.status;
-    throw e;
-  }
-  return data;
-}
 
-const EXT_OK = { "image/jpeg": "jpg", "image/png": "png", "application/pdf": "pdf" };
+// Moved to _lib.js when crew documents became the second consumer.
+const EXT_OK = UPLOAD_EXT;
 
 /* A show row is permitted by the show. An overhead row has no show to ask, so
    it is admin-only — stated once, here, rather than inferred at four call
@@ -173,8 +150,7 @@ export default async function handler(req, res) {
         ? "s/" + target
         : "overhead/" + new Date().getUTCFullYear();
       const name = folder + "/" + crypto.randomUUID() + "." + ext;
-      const out = await storage("POST", "/object/upload/sign/receipts/" + name, {});
-      return json(res, 200, { path: name, token: out && out.token, url: out && out.url });
+      return json(res, 200, await signUpload("receipts", name));
     }
 
     // ---- mint a view URL --------------------------------------------------
@@ -190,9 +166,7 @@ export default async function handler(req, res) {
       }
       /* Short-lived and signed. The bucket is private; nothing is ever served
          from a public URL, and the service key never leaves the server. */
-      const out = await storage("POST", "/object/sign/receipts/" + row.receipt_path,
-        { expiresIn: 300 });
-      return json(res, 200, { url: out && out.signedURL ? SUPABASE_URL + "/storage/v1" + out.signedURL : null });
+      return json(res, 200, { url: await signView("receipts", row.receipt_path) });
     }
 
     // ---- read -------------------------------------------------------------
