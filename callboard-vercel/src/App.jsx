@@ -6789,6 +6789,12 @@ const DOC_KINDS = [
 function SetCrewDocs() {
   const [crew, setCrew] = useState(null);
   const [tpl, setTpl] = useState({ nda: null, w9: null });
+  /* Tracked separately from `crew`. Deriving "still loading" from "crew is
+     null" made the failure indistinguishable from the wait: a load that threw
+     set the error and left crew null, and the screen said "Loading…" for ever
+     because the error was only rendered further down, inside the branch that
+     needed crew to exist. */
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState("");
@@ -6799,7 +6805,22 @@ function SetCrewDocs() {
     try {
       const s = await getCrewDocStatus();
       setCrew(s.crew || []);
-    } catch (e) { setErr((e && e.message) || "Couldn't load the crew list."); }
+      setErr("");
+    } catch (e) {
+      /* Two setup steps stand between uploading this screen and it working,
+         and both fail here with a message nobody could act on. Name them. */
+      const m = (e && e.message) || "";
+      const missing = e && e.status === 404;
+      const noTable = /crew_documents|does not exist|relation/i.test(m);
+      setErr(
+        missing
+          ? "The crew documents endpoint isn't deployed yet — upload api/crew-docs.js and redeploy."
+          : noTable
+          ? "The crew_documents table isn't there yet — run sql/setup-crew-docs.sql in Supabase."
+          : m || "Couldn't load the crew list."
+      );
+    }
+    setLoading(false);
     for (const k of ["nda", "w9"]) {
       try { const t = await getDocTemplate(k); setTpl((x) => ({ ...x, [k]: t && t.url ? true : false })); }
       catch { setTpl((x) => ({ ...x, [k]: false })); }
@@ -6867,7 +6888,15 @@ function SetCrewDocs() {
     try { await voidCrewDoc(id); await load(); } catch (e2) { setErr((e2 && e2.message) || "Couldn't do that."); }
   };
 
-  if (!crew) return <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div>;
+  if (loading) return <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div>;
+  if (!crew) return (
+    <div className="set-panel">
+      <div className="tk-err">{err || "Couldn't load the crew list."}</div>
+      <div className="set-actions">
+        <button className="btn" onClick={() => { setLoading(true); load(); }}>Try again</button>
+      </div>
+    </div>
+  );
 
   const missing = (k) => crew.filter((c) => !(c.docs[k] && c.docs[k].status === "signed")).length;
   const cell = (c, k) => {
