@@ -76,8 +76,15 @@ export const listTemplates = () => api("GET", "/api/templates");
 export const createTemplate = (name, data) => api("POST", "/api/templates", { name, data });
 export const deleteTemplate = (id) => api("DELETE", "/api/templates?id=" + encodeURIComponent(id));
 
-// Global crew roster (admin manages, any signed-in user can read for autocomplete).
+// Global crew roster. TCG-admin only to read since v1.30.0 — it carries every
+// crew member's pay, phone and emergency contact. The positions list is the one
+// open route, because it is a list of job titles and is about nobody.
 export const listRoster = () => api("GET", "/api/roster");
+// Who arrived through the public onboarding link and has not been reviewed.
+// A short record — no DOB, passport or phone. See api/roster.js.
+export const listNewCrew = () => api("GET", "/api/roster?new=1");
+export const markCrewReviewed = (id) =>
+  api("POST", "/api/roster?reviewed=" + encodeURIComponent(id));
 export const saveRosterMember = (name, data, id) =>
   api("POST", "/api/roster", { name, data, ...(id ? { id } : {}) });
 export const deleteRosterMember = (id) =>

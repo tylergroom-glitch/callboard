@@ -111,6 +111,8 @@ import {
   getTruckRates,
   setTruckRates,
   getCrewDocStatus,
+  listNewCrew,
+  markCrewReviewed,
   requestCrewDoc,
   requestCrewDocAll,
   viewCrewDoc,
@@ -6673,7 +6675,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.32.0";
+const APP_VERSION = "1.33.0";
 
 const ADM_NAV = [
   { key: "today", label: "Today" },
@@ -6740,7 +6742,15 @@ function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
    =========================================================================== */
 
 /* Wall clock in the business timezone, not the browser's. A show in Sausalito
-   is due on Pacific dates whatever the laptop thinks. */
+   is due on Pacific dates whatever the laptop thinks.
+
+   The constant was USED here and defined nowhere — not in App.jsx, not in
+   db.js, not imported. `tdToday()` runs on the first line of TodayScreen, so
+   the whole landing screen threw ReferenceError the moment it rendered. A vite
+   build does not catch an undefined global and neither did the helper tests,
+   which never called this one. Same string the six API files use; if it ever
+   changes it changes in all seven. */
+const BUSINESS_TZ = "America/Los_Angeles";
 const tdToday = () => new Date().toLocaleDateString("en-CA", { timeZone: BUSINESS_TZ });
 const tdMoney0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
 const tdShift = (iso, days) => {
@@ -6767,6 +6777,22 @@ const tdWhen = (iso, today) => {
   if (days < 0) return Math.abs(days) + (Math.abs(days) === 1 ? " day ago" : " days ago");
   return "in " + days + " days";
 };
+/* joinedAt is a full UTC timestamp, not a date. Everything else on this screen
+   is a business-timezone YYYY-MM-DD, so convert once here rather than teaching
+   tdWhen a second input shape: someone who signed up at 6pm Pacific must read
+   as "today", not as tomorrow because UTC had already rolled over. */
+const tdDayOf = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return isNaN(d) ? "" : d.toLocaleDateString("en-CA", { timeZone: BUSINESS_TZ });
+};
+/* What they ASKED for, never what they are paid — the two are different fields
+   for a reason and this screen only ever sees the first. */
+const tdAsk = (c) => {
+  const n = Number(c && c.rateAsk);
+  if (!Number.isFinite(n) || n <= 0) return "no rate given";
+  return "asks $" + n.toLocaleString() + (c.rateAskType === "hourly" ? "/hr" : "/day");
+};
 
 function TdTile({ tone, label, value, sub, icon }) {
   const colour = tone === "bad" ? "var(--danger)" : tone === "warn" ? "var(--amber)" : "var(--dim)";
@@ -6790,6 +6816,9 @@ const TdIconCheck = () => (
 const TdIconCal = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="16" rx="2" /><path d="M16 3v4M8 3v4M3 11h18" /></svg>
 );
+const TdIconPerson = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M19 8v6M22 11h-6" /></svg>
+);
 
 function TodayScreen({ go, onOpenShow }) {
   const today = tdToday();
@@ -6797,12 +6826,19 @@ function TodayScreen({ go, onOpenShow }) {
   const [bills, setBills] = useState({ st: "load", rows: [], err: "" });
   const [shows, setShows] = useState({ st: "load", rows: [], err: "" });
   const [docs, setDocs] = useState({ st: "load", nda: 0, w9: 0, err: "" });
+  /* New arrivals off the public onboarding link. Its own state and its own
+     catch like the other four: this is the newest loader on the screen and the
+     one most likely to be the thing that breaks, and it must not be able to
+     take the invoices down with it. */
+  const [fresh, setFresh] = useState({ st: "load", rows: [], err: "" });
+  const [clearing, setClearing] = useState("");
 
   useEffect(() => {
     let alive = true;
     const fail = (set) => (e) => alive && set({ st: "err", rows: [], err: (e && e.message) || "Couldn't load." });
 
     listTasks().then((r) => alive && setTasks({ st: "ok", rows: Array.isArray(r) ? r : (r && r.tasks) || [], err: "" })).catch(fail(setTasks));
+    listNewCrew().then((r) => alive && setFresh({ st: "ok", rows: (r && r.crew) || [], err: "" })).catch(fail(setFresh));
     listBilling().then((r) => alive && setBills({ st: "ok", rows: Array.isArray(r) ? r : (r && r.rows) || [], err: "" })).catch(fail(setBills));
     listEvents().then((r) => alive && setShows({ st: "ok", rows: Array.isArray(r) ? r : (r && r.events) || [], err: "" })).catch(fail(setShows));
     getCrewDocStatus()
@@ -6859,6 +6895,26 @@ function TodayScreen({ go, onOpenShow }) {
       })),
   ].slice(0, 7);
 
+  /* Clearing someone off the list.
+
+     Optimistic, because the click MEANS "I have looked at this" and watching a
+     spinner to be told so is worse than nothing. But if the write fails the row
+     comes straight back with the reason — a notification that clears itself on
+     screen and is still there after a reload is how you stop believing the
+     screen at all. */
+  const review = async (id) => {
+    if (clearing) return;
+    setClearing(id);
+    const before = fresh.rows;
+    setFresh((f) => ({ ...f, rows: f.rows.filter((c) => c.id !== id), err: "" }));
+    try {
+      await markCrewReviewed(id);
+    } catch (e) {
+      setFresh({ st: "ok", rows: before, err: (e && e.message) || "Couldn't clear that one." });
+    }
+    setClearing("");
+  };
+
   const anyLoading = tasks.st === "load" || bills.st === "load" || shows.st === "load";
 
   return (
@@ -6899,6 +6955,15 @@ function TodayScreen({ go, onOpenShow }) {
           sub={shows.st === "err" ? shows.err
             : nextUp ? "next is " + tdWhen(nextUp.startDate, today) : "nothing booked"}
         />
+        {/* Only when there is someone. A tile permanently reading zero is
+            furniture; one that appears is a notification. */}
+        {fresh.rows.length ? (
+          <TdTile
+            tone="warn" icon={<TdIconPerson />} label="New crew"
+            value={fresh.rows.length + (fresh.rows.length === 1 ? " person" : " people")}
+            sub={"newest joined " + (tdWhen(tdDayOf(fresh.rows[0].joinedAt), today) || "recently")}
+          />
+        ) : null}
       </div>
 
       <div className="td-cols">
@@ -6927,6 +6992,51 @@ function TodayScreen({ go, onOpenShow }) {
         </div>
 
         <div className="td-col">
+          {/* Sits above Coming up rather than in the left column: it is not
+              time-critical the way an overdue invoice is, but it does need
+              clearing, and burying it under four shows is how somebody waits a
+              fortnight for a reply. Absent entirely when there is nobody. */}
+          {fresh.st === "err" || fresh.rows.length ? (
+            <>
+              <div className="td-head">
+                <span className="td-sect">New crew</span>
+                <button className="btn ghost" onClick={() => go("roster")} style={{ padding: "5px 11px", fontSize: 12 }}>Crew roster</button>
+              </div>
+              <div className="panel td-list">
+                {/* One place for both reasons a message appears here: the list
+                    would not load at all, or a Reviewed click bounced. */}
+                {fresh.err ? <div className="tk-err">{fresh.err}</div> : null}
+                {fresh.rows.slice(0, 6).map((c, i) => (
+                  <div key={c.id}>
+                    {i ? <div className="td-hr" /> : null}
+                    <div className="td-new">
+                      <div className="td-new-b">
+                        <div className="td-new-n">{c.name || "Unnamed"}</div>
+                        <div className="td-new-s">
+                          {[
+                            c.positions.length ? c.positions.join(", ") : (c.positionSuggest ? "suggested: " + c.positionSuggest : "no position"),
+                            tdAsk(c),
+                            tdWhen(tdDayOf(c.joinedAt), today),
+                          ].filter(Boolean).join(" · ")}
+                        </div>
+                      </div>
+                      <button
+                        className="btn ghost" disabled={clearing === c.id}
+                        onClick={() => review(c.id)}
+                        style={{ padding: "4px 10px", fontSize: 12, flex: "0 0 auto" }}
+                      >
+                        {clearing === c.id ? "…" : "Reviewed"}
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {fresh.rows.length > 6 ? (
+                  <div className="td-more">…and {fresh.rows.length - 6} more on the crew roster</div>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+
           <div className="td-head">
             <span className="td-sect">Coming up</span>
             <button className="btn ghost" onClick={() => go("shows")} style={{ padding: "5px 11px", fontSize: 12 }}>All shows</button>
@@ -17555,7 +17665,15 @@ const CSS = `
    line of help text is a line nobody finishes. */
 /* ---- Today ------------------------------------------------------------- */
 .td-next{font-size:13px; color:var(--dim);}
-.td-tiles{display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:16px; margin-bottom:22px;}
+/* auto-fit, not a fixed repeat(3).
+
+   The New crew tile appears and disappears, so the row has to be right at three
+   tiles AND at four. Pinned to three columns, a fourth tile dropped onto a
+   second row on its own at a third of the width — which looked less like a
+   notification than like something had broken. auto-fit lays out as many equal
+   tracks as fit and collapses the empty ones, so three tiles span three and
+   four span four, with no rule that has to know the count. */
+.td-tiles{display:grid; grid-template-columns:repeat(auto-fit, minmax(176px,1fr)); gap:16px; margin-bottom:22px;}
 .td-tile{display:flex; flex-direction:column; gap:9px; border-radius:16px;}
 .td-tile-h{display:flex; align-items:center; gap:7px; font-size:11px; font-weight:700;
   letter-spacing:.1em; text-transform:uppercase;}
@@ -17584,11 +17702,24 @@ const CSS = `
 .td-paper{display:flex; align-items:center; gap:10px; min-height:32px;}
 .td-paper-t{flex:1 1 auto; font-size:13px;}
 .td-paper-n{font-size:13px; font-weight:700; font-variant-numeric:tabular-nums;}
+.td-new{display:flex; align-items:center; gap:10px; min-height:44px;}
+.td-new-b{flex:1 1 auto; min-width:0;}
+.td-new-n{font-size:13px; font-weight:600;}
+/* Positions, rate asked and how long ago, on one line. It wraps rather than
+   truncating: "Audio Engineer (A1), Monitor Engineer (A2)" cut at the comma
+   reads as one position, and the whole point of the row is what they can do. */
+.td-new-s{font-size:12px; color:var(--dim); margin-top:2px; overflow-wrap:anywhere;}
 @media (max-width:820px){
   .td-tiles{grid-template-columns:repeat(2, minmax(0,1fr));}
-  /* Three tiles at 390px squeezes all of them under a readable size; the
-     third drops below rather than shrinking the other two. */
-  .td-tiles > :nth-child(3){grid-column:1 / -1;}
+  /* Three tiles at 390px squeezes all of them under a readable size, so the
+     odd one out drops below rather than shrinking the others.
+
+     :last-child:nth-child(odd) rather than :nth-child(3), because the New crew
+     tile appears and disappears: with three tiles the third spans, with four
+     they sit two-by-two, and neither case needs its own rule. Pinning it to
+     the third child was correct right up until there was a fourth, which is
+     the kind of thing that ships looking fine on the day nobody has joined. */
+  .td-tiles > :last-child:nth-child(odd){grid-column:1 / -1;}
   .td-cols{grid-template-columns:minmax(0,1fr);}
 }
 
