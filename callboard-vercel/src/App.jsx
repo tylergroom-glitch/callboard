@@ -7219,8 +7219,26 @@ function SetCrewDocs() {
     setBusy("tpl"); setErr(""); setNote("");
     try {
       const sign = await signDocTemplateUpload(kind);
-      const put = await fetch(sign.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-      if (!put.ok) throw new Error("The upload did not finish.");
+      if (!sign || !sign.url) throw new Error("Couldn't start the upload — redeploy api/crew-docs.js and api/_lib.js.");
+      /* x-upsert as well as the flag baked into the token: this is a fixed path
+         and Tyler will replace the blank form more than once. Supabase's own
+         client sends it on both halves too. */
+      const put = await fetch(sign.url, {
+        method: "PUT",
+        headers: { "Content-Type": file.type, "x-upsert": "true" },
+        body: file,
+      });
+      /* Say WHY. "The upload did not finish" sent Tyler looking at the file and
+         at Supabase for an hour when the request had gone to the wrong host
+         entirely. */
+      if (!put.ok) {
+        const detail = await put.text().catch(() => "");
+        let msg = "";
+        try { msg = (JSON.parse(detail) || {}).message || ""; } catch { msg = ""; }
+        throw new Error(
+          "The upload did not finish (" + put.status + ")" + (msg ? " — " + msg : "") + "."
+        );
+      }
       setTpl((x) => ({ ...x, [kind]: true }));
       setNote("Blank " + (kind === "w9" ? "W-9" : "NDA") + " uploaded.");
     } catch (e2) { setErr((e2 && e2.message) || "Couldn't upload that."); }
