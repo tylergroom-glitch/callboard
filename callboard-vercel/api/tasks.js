@@ -27,7 +27,13 @@ const PRIORITIES = ["high", "med", "low", ""];
 /* Only these columns can be written from a request. Anything else a caller
    sends is dropped rather than trusted — id, created_at and the source_*
    fields are set here or by the inbox, never by a client. */
-const WRITABLE = ["title", "notes", "status", "review", "event_id", "due", "priority", "kind"];
+const WRITABLE = ["title", "notes", "status", "review", "event_id", "due", "due_time", "priority", "kind"];
+
+/* A wall-clock time in the business timezone, "HH:MM" or "HH:MM:SS". NOT an
+   instant — a task due at 3pm is due at 3pm whichever side of a clock change
+   it falls on. Anything unparseable is refused rather than coerced, because a
+   deadline silently becoming midnight is worse than a rejected save. */
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 
 function clean(input, { creating }) {
   const o = {};
@@ -42,6 +48,31 @@ function clean(input, { creating }) {
   // Empty string is not a null uuid or a null date; PostgREST will reject it.
   if (o.event_id !== undefined && !String(o.event_id || "").trim()) o.event_id = null;
   if (o.due !== undefined && !String(o.due || "").trim()) o.due = null;
+  if (o.due_time !== undefined) {
+    const t = String(o.due_time || "").trim();
+    if (!t) o.due_time = null;
+    else if (!TIME_RE.test(t)) return { error: "A due time must look like 14:30." };
+    else o.due_time = t.length === 5 ? t + ":00" : t;
+  }
+  /* On CREATE, a missing date IS no date — the column defaults to null. Without
+     this, omitting `due` entirely leaves o.due undefined, the check below is
+     skipped, and the row reaches Postgres to be refused by the constraint with
+     a message no human wants to read. A test enumerating the cases found this;
+     reading the code did not. */
+  if (creating && o.due === undefined) o.due = null;
+
+  /* A time with no date is a deadline with no day — it can never come due, and
+     it would sit in the list looking scheduled. Caught here on create and
+     whenever the same request clears the date; a PATCH that sets ONLY a time
+     cannot be judged without the stored row, so the caller checks that case
+     and a database constraint backs up all three. */
+  if (o.due_time && o.due === null) {
+    return { error: "A due time needs a due date as well." };
+  }
+  /* Rescheduling makes any nudge already sent stale. Clearing it here means a
+     moved deadline becomes eligible to warn again, without a separate step
+     somewhere else that someone will forget to call. */
+  if (o.due !== undefined || o.due_time !== undefined) o.nudged_for = null;
 
   if (creating && !o.title) return { error: "A task needs a title." };
   // done_at is derived, never sent: it is the moment the status became done,
@@ -140,6 +171,18 @@ export default async function handler(req, res) {
     const r = clean((body && body.patch) || {}, { creating: false });
     if (r.error) return json(res, 400, { error: r.error });
     if (Object.keys(r.value).length <= 1) return json(res, 400, { error: "Nothing to change." });
+    /* Setting a time WITHOUT touching the date is the one case clean() cannot
+       judge: o.due is undefined, not null, so it cannot tell a task that has a
+       date from one that does not. Only this path pays for the extra read —
+       ticking a checkbox, which is most PATCHes, does not. A database
+       constraint refuses it either way; this exists so the message is a
+       sentence rather than a Postgres error. */
+    if (r.value.due_time && r.value.due === undefined) {
+      const prev = await supabaseRest(
+        "GET", "/tasks?id=eq." + encodeURIComponent(q.id) + "&select=due&limit=1", null);
+      const had = prev && prev[0] && prev[0].due;
+      if (!had) return json(res, 400, { error: "A due time needs a due date as well." });
+    }
     const out = await supabaseRest(
       "PATCH", "/tasks?id=eq." + encodeURIComponent(q.id), r.value, "return=representation");
     const row = Array.isArray(out) ? out[0] : out;
