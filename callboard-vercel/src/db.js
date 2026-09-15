@@ -309,3 +309,21 @@ export const setTruckOrigin = (origin) => api("POST", "/api/distance?origin=1", 
 export const getTruckRates = () => api("GET", "/api/distance?rates=1");
 export const setTruckRates = (rates) => api("POST", "/api/distance?rates=1", { rates });
 
+
+/* Crew documents — NDAs and W-9s, once per person.
+
+   There is deliberately no client function that fetches a request token: the
+   link only ever leaves the server inside an email. */
+export const getCrewDocStatus = () => api("GET", "/api/crew-docs?status=1");
+export const requestCrewDoc = (rosterId, docType) =>
+  api("POST", "/api/crew-docs?request=1", { rosterId, docType });
+export const requestCrewDocAll = (docType) =>
+  api("POST", "/api/crew-docs?requestAll=1", { docType });
+export const viewCrewDoc = (id) =>
+  api("GET", "/api/crew-docs?view=" + encodeURIComponent(id));
+export const voidCrewDoc = (id) =>
+  api("POST", "/api/crew-docs?void=" + encodeURIComponent(id));
+export const getDocTemplate = (docType) =>
+  api("GET", "/api/crew-docs?template=" + encodeURIComponent(docType));
+export const signDocTemplateUpload = (docType) =>
+  api("POST", "/api/crew-docs?template=1", { docType, contentType: "application/pdf" });

@@ -110,6 +110,13 @@ import {
   setTruckOrigin,
   getTruckRates,
   setTruckRates,
+  getCrewDocStatus,
+  requestCrewDoc,
+  requestCrewDocAll,
+  viewCrewDoc,
+  voidCrewDoc,
+  getDocTemplate,
+  signDocTemplateUpload,
 } from "./db.js";
 
 /* ============================================================
@@ -6738,6 +6745,7 @@ const SET_TABS = [
   { key: "trucking", label: "Trucking" },
   { key: "terms", label: "Quote terms" },
   { key: "inbox", label: "Inbox & alerts" },
+  { key: "docs", label: "Crew documents" },
 ];
 
 function SettingsScreen({ onClose }) {
@@ -6761,6 +6769,195 @@ function SettingsScreen({ onClose }) {
       {tab === "trucking" ? <SetTrucking /> : null}
       {tab === "terms" ? <CatalogTerms /> : null}
       {tab === "inbox" ? <SetInbox /> : null}
+      {tab === "docs" ? <SetCrewDocs /> : null}
+    </div>
+  );
+}
+
+/* NDAs and W-9s. The whole feature on one screen: the blank forms you upload
+   once, and who still owes you one.
+
+   Deliberately not split between Settings and the Roster. "Upload the blank"
+   and "chase the eight people who have not signed" are the same job done on
+   the same afternoon, and splitting them across two screens means doing half
+   of it and forgetting the rest. */
+const DOC_KINDS = [
+  { key: "nda", label: "NDA", blurb: "Signed on screen or uploaded." },
+  { key: "w9", label: "W-9", blurb: "Uploaded only — a blank W-9 has to be filled in, not just signed." },
+];
+
+function SetCrewDocs() {
+  const [crew, setCrew] = useState(null);
+  const [tpl, setTpl] = useState({ nda: null, w9: null });
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState("");
+  const fileRef = useRef(null);
+  const pendingKind = useRef("nda");
+
+  const load = async () => {
+    try {
+      const s = await getCrewDocStatus();
+      setCrew(s.crew || []);
+    } catch (e) { setErr((e && e.message) || "Couldn't load the crew list."); }
+    for (const k of ["nda", "w9"]) {
+      try { const t = await getDocTemplate(k); setTpl((x) => ({ ...x, [k]: t && t.url ? true : false })); }
+      catch { setTpl((x) => ({ ...x, [k]: false })); }
+    }
+  };
+  useEffect(() => { load(); }, []);
+
+  /* The blank goes browser -> Supabase directly on a one-time signed URL, the
+     same path the crew's signed copy takes. It never passes through a
+     function, so a 12 MB scanned NDA is not a problem. */
+  const onPickTemplate = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    const kind = pendingKind.current;
+    if (file.type !== "application/pdf") { setErr("The blank " + kind.toUpperCase() + " has to be a PDF."); return; }
+    setBusy("tpl"); setErr(""); setNote("");
+    try {
+      const sign = await signDocTemplateUpload(kind);
+      const put = await fetch(sign.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+      if (!put.ok) throw new Error("The upload did not finish.");
+      setTpl((x) => ({ ...x, [kind]: true }));
+      setNote("Blank " + (kind === "w9" ? "W-9" : "NDA") + " uploaded.");
+    } catch (e2) { setErr((e2 && e2.message) || "Couldn't upload that."); }
+    setBusy("");
+  };
+
+  const ask = async (rosterId, docType, who) => {
+    setBusy(rosterId + docType); setErr(""); setNote("");
+    try {
+      const out = await requestCrewDoc(rosterId, docType);
+      setNote(out.sent
+        ? "Sent to " + out.email + "."
+        : "Saved, but the email to " + out.email + " did not send — check BREVO_API_KEY.");
+      await load();
+    } catch (e2) { setErr((e2 && e2.message) || "Couldn't send that."); }
+    setBusy("");
+  };
+
+  const askEveryone = async (docType) => {
+    const outstanding = (crew || []).filter((c) => c.email && !(c.docs[docType] && c.docs[docType].status === "signed"));
+    if (!outstanding.length) { setNote("Everyone with an email address has already signed."); return; }
+    if (!window.confirm("Email " + outstanding.length + " " + (outstanding.length === 1 ? "person" : "people")
+      + " asking for their " + (docType === "w9" ? "W-9" : "NDA") + "?")) return;
+    setBusy("all" + docType); setErr(""); setNote("");
+    try {
+      const out = await requestCrewDocAll(docType);
+      setNote("Sent to " + out.sent.length + "."
+        + (out.failed && out.failed.length ? " Could not reach: " + out.failed.map((f) => f.name).join(", ") + "." : ""));
+      await load();
+    } catch (e2) { setErr((e2 && e2.message) || "Couldn't send those."); }
+    setBusy("");
+  };
+
+  const open = async (id) => {
+    try {
+      const out = await viewCrewDoc(id);
+      if (out && out.url) window.open(out.url, "_blank");
+      else setErr("That document could not be opened.");
+    } catch (e2) { setErr((e2 && e2.message) || "Couldn't open that."); }
+  };
+
+  const retire = async (id, name, what) => {
+    if (!window.confirm("Retire " + name + "'s " + what + "?\n\nThe file and the record of when they signed are kept — it just stops counting as current, so you can ask for a new one.")) return;
+    try { await voidCrewDoc(id); await load(); } catch (e2) { setErr((e2 && e2.message) || "Couldn't do that."); }
+  };
+
+  if (!crew) return <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div>;
+
+  const missing = (k) => crew.filter((c) => !(c.docs[k] && c.docs[k].status === "signed")).length;
+  const cell = (c, k) => {
+    const d = c.docs[k];
+    const what = k === "w9" ? "W-9" : "NDA";
+    if (d && d.status === "signed") {
+      return (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn ghost" onClick={() => open(d.id)} style={{ padding: "3px 9px", fontSize: 12 }}
+            title={"Signed " + (d.signedAt ? new Date(d.signedAt).toLocaleDateString() : "") + (d.method === "drawn" ? " on screen" : " and uploaded")}>
+            ✓ {d.signedAt ? new Date(d.signedAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "2-digit" }) : "signed"}
+          </button>
+          <button className="btn ghost" onClick={() => retire(d.id, c.name, what)}
+            style={{ padding: "3px 7px", fontSize: 11, color: "var(--faint)" }} title="Retire it and ask again">↺</button>
+        </span>
+      );
+    }
+    const waiting = d && d.requested;
+    return (
+      <button className="btn ghost" disabled={!c.email || busy === c.id + k}
+        onClick={() => ask(c.id, k, c.name)}
+        style={{ padding: "3px 10px", fontSize: 12, color: waiting ? "#FFB020" : undefined }}
+        title={!c.email ? "No email address on the roster" : waiting ? "Asked already — send it again" : "Email them a link"}>
+        {busy === c.id + k ? "Sending…" : waiting ? "Asked · resend" : "Ask"}
+      </button>
+    );
+  };
+
+  return (
+    <div className="set-panel" style={{ maxWidth: 780 }}>
+      <div>
+        <p className="set-lead">
+          Signed once per person, not per show. Everything here is stored privately and only you can open it.
+        </p>
+        {err ? <div className="tk-err">{err}</div> : null}
+        {note ? <div style={{ ...qtHint, color: "#6FD08A", marginBottom: 10 }}>{note}</div> : null}
+
+        <input ref={fileRef} type="file" accept="application/pdf" onChange={onPickTemplate} style={{ display: "none" }} />
+
+        <label className="tk-lbl">The blank forms</label>
+        <div className="tk-help">
+          Uploaded once. This is what crew read and sign — until one is here, their link has nothing to show them.
+        </div>
+        {DOC_KINDS.map((k) => (
+          <div key={k.key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+            <span style={{ width: 54, fontSize: 13.5, fontWeight: 700 }}>{k.label}</span>
+            <span style={{ fontSize: 12.5, color: tpl[k.key] ? "#6FD08A" : "#FFB020", width: 92 }}>
+              {tpl[k.key] === null ? "…" : tpl[k.key] ? "✓ uploaded" : "not uploaded"}
+            </span>
+            <button className="btn ghost" disabled={busy === "tpl"}
+              onClick={() => { pendingKind.current = k.key; fileRef.current && fileRef.current.click(); }}
+              style={{ padding: "4px 11px", fontSize: 12.5 }}>
+              {tpl[k.key] ? "Replace" : "Upload"} PDF
+            </button>
+            <span style={{ fontSize: 12, color: "var(--dim)" }}>{k.blurb}</span>
+          </div>
+        ))}
+
+        <label className="tk-lbl" style={{ marginTop: 20 }}>Who has signed</label>
+        <div className="tk-help">
+          A link is good for 30 days and stops working the moment it is used, so it is safe if someone forwards it by accident.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+          {DOC_KINDS.map((k) => (
+            <button key={k.key} className="btn ghost" disabled={busy === "all" + k.key || !tpl[k.key]}
+              onClick={() => askEveryone(k.key)} style={{ padding: "5px 12px", fontSize: 12.5 }}
+              title={!tpl[k.key] ? "Upload the blank " + k.label + " first" : ""}>
+              {busy === "all" + k.key ? "Sending…" : "Ask everyone missing an " + k.label + " (" + missing(k.key) + ")"}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ ...qtListRow, background: "transparent", border: 0, padding: "0 10px", marginBottom: 2,
+          color: "var(--dim)", fontSize: 11, textTransform: "uppercase", letterSpacing: ".04em", fontWeight: 700 }}>
+          <span style={{ flex: "1 1 160px", minWidth: 120 }}>Name</span>
+          <span style={{ width: 150 }}>NDA</span>
+          <span style={{ width: 150 }}>W-9</span>
+        </div>
+        {crew.map((c) => (
+          <div key={c.id} style={{ ...qtListRow, marginBottom: 4 }}>
+            <span style={{ flex: "1 1 160px", minWidth: 120, fontSize: 13.5 }}>
+              {c.name}
+              {!c.email ? <span style={{ color: "#FFB020", fontSize: 11.5, marginLeft: 8 }}>no email on file</span> : null}
+            </span>
+            <span style={{ width: 150 }}>{cell(c, "nda")}</span>
+            <span style={{ width: 150 }}>{cell(c, "w9")}</span>
+          </div>
+        ))}
+        {!crew.length ? <p style={qtHint}>Nobody on the roster yet.</p> : null}
+      </div>
     </div>
   );
 }
