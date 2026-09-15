@@ -4694,12 +4694,28 @@ function qtQuoteHtml(opts) {
   // The branded PDF supersedes the typed text: appending both would print the
   // terms twice.
   const terms = opts.termsPdfB64 ? "" : (opts.terms || "");
-  const lines = Array.isArray(data.lines) ? data.lines : [];
+  // Blanks dropped once, here. Every loop below reads l.groupId without asking
+  // first, so one null in the array used to take the whole document down.
+  const lines = (Array.isArray(data.lines) ? data.lines : []).filter(Boolean);
   const groups = Array.isArray(data.groups) ? data.groups : [];
   const mode = data.displayMode === "groups" ? "groups" : data.displayMode === "summary" ? "summary" : "itemized";
   const itemized = mode === "itemized";
+  /* ---- what the client is allowed to see, line by line --------------------
+     Two flags set per row in the editor:
+       l.hide      — the row is left off the client's copy entirely
+       l.hidePrice — the row is listed by name, with "Included" where the money
+                     would be
+
+     BOTH still count towards every subtotal and towards the grand total. That
+     is the point: the work is being paid for, it is just not itemised. The
+     consequence — deliberate, and warned about in the editor — is that the rows
+     a client can see will NOT add up to the subtotal printed beneath them
+     whenever something on that group is hidden. */
+  const visible = (list) => list.filter((l) => l && !l.hide);
   // A column of em dashes tells the client nothing; only show it if it is used.
-  const anyDisc = (Array.isArray(data.lines) ? data.lines : []).some((l) => qtNum(l.discount) > 0);
+  // Judged on what actually prints: a discount that exists only on a hidden or
+  // priced-out row must not conjure an empty column onto the page.
+  const anyDisc = lines.some((l) => l && !l.hide && !l.hidePrice && qtNum(l.discount) > 0);
   const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
   // Same palette the app uses on screen, so paperwork and pull list agree.
   const DEPT_HEX = { Audio: "#2563EB", Video: "#7C3AED", Lighting: "#D97706", Power: "#DC2626", Scenic: "#059669", Misc: "#64748B" };
@@ -4730,22 +4746,30 @@ function qtQuoteHtml(opts) {
   const dates = q.startDate ? day(q.startDate) + (q.endDate && q.endDate !== q.startDate ? " – " + day(q.endDate) : "") : "";
 
   const rowsFor = (list) =>
-    list
-      .map(
-        (l) =>
-          "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
-          "<td class='n'>" + qtEsc(l.qty) + "</td>" +
-          "<td class='n'>" + qtEsc(l.days) + "</td>" +
-          "<td class='n'>" + money(l.rate) + "</td>" +
-          (anyDisc ? "<td class='n'>" + (qtNum(l.discount) ? qtNum(l.discount) + "%" : "—") + "</td>" : "") +
-          "<td class='n b'>" + money(qtLineTotal(l)) + "</td></tr>"
+    visible(list)
+      .map((l) =>
+        l.hidePrice
+          ? /* Named, counted, and priced as one word. The money columns are
+               merged rather than filled with dashes so there is no blank left
+               inviting the client to ask what belongs in it. */
+            "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
+            "<td class='n'>" + qtEsc(l.qty) + "</td>" +
+            "<td class='n'>" + qtEsc(l.days) + "</td>" +
+            "<td class='n inc' colspan='" + (anyDisc ? 3 : 2) + "'>Included</td></tr>"
+          : "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
+            "<td class='n'>" + qtEsc(l.qty) + "</td>" +
+            "<td class='n'>" + qtEsc(l.days) + "</td>" +
+            "<td class='n'>" + money(l.rate) + "</td>" +
+            (anyDisc ? "<td class='n'>" + (qtNum(l.discount) ? qtNum(l.discount) + "%" : "—") + "</td>" : "") +
+            "<td class='n b'>" + money(qtLineTotal(l)) + "</td></tr>"
       )
       .join("");
 
   // Item names and counts, no rates or line totals — the client sees exactly
   // what is included without being able to unpick the pricing line by line.
+  // (hidePrice has nothing left to hide here; hide still removes the row.)
   const namesFor = (list) =>
-    list
+    visible(list)
       .map(
         (l) =>
           "<tr><td>" + dot(l) + qtEsc(l.name) + "</td>" +
@@ -4758,9 +4782,14 @@ function qtQuoteHtml(opts) {
   if (mode === "summary") {
     const head = "<thead><tr><th>Item</th><th class='n'>Qty</th><th class='n'>Days</th></tr></thead>";
     const block = (label, list) => {
+      const vis = visible(list);
+      // A card with a heading, an empty table and a subtotal is worse than no
+      // card: it announces that something was taken out.
+      if (!vis.length) return "";
+      // Subtotal from the WHOLE list — hidden rows are paid for, so they are in.
       const t = list.reduce((acc, l) => acc + qtLineTotal(l), 0);
       return (
-        "<div class='" + grpCls(list) + "' style='border-left-color:" + spineFor(list) + "'><div class='grp-h'>" + label + "</div>" +
+        "<div class='" + grpCls(vis) + "' style='border-left-color:" + spineFor(vis) + "'><div class='grp-h'>" + label + "</div>" +
         "<table class='t-sum'>" + head + "<tbody>" + namesFor(list) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(t) + "</span></div>" + "</div>"
       );
@@ -4778,18 +4807,21 @@ function qtQuoteHtml(opts) {
       (anyDisc ? "<th class='n'>Disc</th>" : "") + "<th class='n'>Total</th></tr></thead>";
     for (const g of groups) {
       const gl = lines.filter((l) => l.groupId === g.id);
-      if (!gl.length) continue;
+      const gv = visible(gl);
+      if (!gv.length) continue;
+      // Subtotal from the WHOLE group — hidden rows are paid for, so they are in.
       const gt = gl.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='" + grpCls(gl) + "' style='border-left-color:" + spineFor(gl) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
+        "<div class='" + grpCls(gv) + "' style='border-left-color:" + spineFor(gv) + "'><div class='grp-h'>" + qtEsc(g.name) + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(gl) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(gt) + "</span></div>" + "</div>";
     }
     const un = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
-    if (un.length) {
+    const uv = visible(un);
+    if (uv.length) {
       const ut = un.reduce((t, l) => t + qtLineTotal(l), 0);
       body +=
-        "<div class='" + grpCls(un) + "' style='border-left-color:" + spineFor(un) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
+        "<div class='" + grpCls(uv) + "' style='border-left-color:" + spineFor(uv) + "'><div class='grp-h'>" + (groups.length ? "Additional" : "Equipment &amp; Labor") + "</div>" +
         "<table>" + head + "<tbody>" + rowsFor(un) + "</tbody></table>" +
         "<div class='grp-f'><span class='k'>Subtotal</span><span class='amt'>" + money(ut) + "</span></div>" + "</div>";
     }
@@ -4944,6 +4976,9 @@ function qtQuoteHtml(opts) {
     "td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
     ".t-sum td.n,.t-sum th.n{width:56pt}" +
     "td.b{font-weight:700;color:#23201F}" +
+    // A priced-out line. Deliberately quiet — it is a statement that the item
+    // is covered, not a number the eye should stop on and try to add up.
+    "td.inc{font-weight:600;font-style:italic;color:#8A8683;letter-spacing:.01em}" +
     ".dot{display:inline-block;width:5pt;height:5pt;border-radius:50%;margin-right:6pt;vertical-align:middle}" +
     // Total as a panel, not a line of text — it is the number they are deciding on.
     ".total{break-inside:avoid;page-break-inside:avoid;display:flex;justify-content:space-between;align-items:center;margin-top:20pt;padding:13pt 15pt;background:#00699F;border-radius:6pt}" +
@@ -5388,7 +5423,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const [browse, setBrowse] = useState(null); // { groupId } while the picker is open
   const [terms, setTerms] = useState("");
   const [revs, setRevs] = useState([]);
-  const [bulk, setBulk] = useState({ qty: "", days: "", discount: "" });
+  const [bulk, setBulk] = useState({ qty: "", days: "", discount: "", seen: "" });
   const [exporting, setExporting] = useState(false);
   const [pushOpen, setPushOpen] = useState(false);
   const [linkOpen, setLinkOpen] = useState(false);
@@ -5470,6 +5505,20 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const ungrouped = lines.filter((l) => !l.groupId || !groups.some((g) => g.id === l.groupId));
   const grand = lines.reduce((t, l) => t + qtLineTotal(l), 0);
   const groupTotal = (gid) => lines.filter((l) => l.groupId === gid).reduce((t, l) => t + qtLineTotal(l), 0);
+  /* How much of this quote the client will not see itemised, and what it is
+     worth. `hide` wins over `hidePrice` — a row that does not print has no
+     price to hide — so a line is counted once, never twice. */
+  const hiddenCounts = (() => {
+    let hidden = 0, noPrice = 0, value = 0;
+    for (const l of lines) {
+      if (!l) continue;
+      if (l.hide) hidden++;
+      else if (l.hidePrice) noPrice++;
+      else continue;
+      value += qtLineTotal(l);
+    }
+    return { hidden, noPrice, any: hidden + noPrice, value };
+  })();
   // Worked out across the whole quote, not line by line — see qtSubrentMap.
   const subMap = qtSubrentMap(lines, catalog);
   const subs = qtSubrentTotals(lines, subMap);
@@ -5621,9 +5670,10 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
       if (bulk.qty !== "") patch.qty = qtNum(bulk.qty);
       if (bulk.days !== "") patch.days = qtNum(bulk.days);
       if (bulk.discount !== "") patch.discount = qtNum(bulk.discount);
+      if (bulk.seen !== "") { patch.hide = bulk.seen === "hidden"; patch.hidePrice = bulk.seen === "noprice"; }
       return { ...l, ...patch };
     }));
-    setBulk({ qty: "", days: "", discount: "" });
+    setBulk({ qty: "", days: "", discount: "", seen: "" });
     setSel(new Set());
   };
 
@@ -5858,9 +5908,13 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
   const lineRow = (l) => {
     const on = sel.has(l.id);
     const sub = subMap[l.id];
+    /* Three mutually exclusive states rather than two checkboxes, because
+       "hidden" makes "no price" meaningless and two boxes would let you tick
+       both and wonder which won. */
+    const seen = l.hide ? "hidden" : l.hidePrice ? "noprice" : "shown";
     return (
       <div key={l.id} style={{ marginBottom: 4 }}>
-      <div style={{ ...qtListRow, marginBottom: 0, background: on ? "var(--panel2)" : "var(--panel)" }}>
+      <div style={{ ...qtListRow, marginBottom: 0, background: on ? "var(--panel2)" : "var(--panel)", borderLeft: seen === "shown" ? undefined : "3px solid #FFB020" }}>
         {!locked && <input type="checkbox" checked={on} onChange={() => toggleSel(l.id)} style={{ width: 15, height: 15, flex: "0 0 auto" }} />}
         <input value={l.name} onChange={(e) => patchLine(l.id, { name: e.target.value })} disabled={locked} style={{ flex: "1 1 180px", minWidth: 130 }} />
         <input value={l.qty} onChange={(e) => patchLine(l.id, { qty: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Qty" />
@@ -5868,6 +5922,24 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         <input value={l.rate} onChange={(e) => patchLine(l.id, { rate: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 88, textAlign: "right" }} title="Rate per day" />
         <input value={l.discount} onChange={(e) => patchLine(l.id, { discount: e.target.value })} disabled={locked} inputMode="decimal" style={{ width: 54, textAlign: "center" }} title="Discount %" />
         <span style={{ width: 104, textAlign: "right", fontVariantNumeric: "tabular-nums", fontSize: 14, fontWeight: 700 }}>{qtMoney(qtLineTotal(l))}</span>
+        {/* What the CLIENT sees of this row. The number to its left never
+            changes — hiding is a printing decision, not a pricing one. */}
+        {locked ? (
+          <span style={{ width: 104, fontSize: 12, fontWeight: 700, color: seen === "shown" ? "var(--dim)" : "#FFB020" }}>
+            {seen === "hidden" ? "Hidden" : seen === "noprice" ? "No price" : "Shown"}
+          </span>
+        ) : (
+          <select
+            value={seen}
+            onChange={(e) => patchLine(l.id, { hide: e.target.value === "hidden", hidePrice: e.target.value === "noprice" })}
+            style={{ width: 104, color: seen === "shown" ? undefined : "#FFB020", fontWeight: seen === "shown" ? undefined : 700 }}
+            title="What the client's PDF shows for this line. Either way it still counts towards every total."
+          >
+            <option value="shown">Shown</option>
+            <option value="noprice">No price</option>
+            <option value="hidden">Hidden</option>
+          </select>
+        )}
         {!locked && (
           <select value={l.groupId || ""} onChange={(e) => patchLine(l.id, { groupId: e.target.value || null })} style={{ width: 120 }} title="Group">
             <option value="">Ungrouped</option>
@@ -6071,6 +6143,14 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           <input value={bulk.qty} onChange={(e) => setBulk({ ...bulk, qty: e.target.value })} placeholder="Qty" style={{ width: 66 }} inputMode="decimal" />
           <input value={bulk.days} onChange={(e) => setBulk({ ...bulk, days: e.target.value })} placeholder="Days" style={{ width: 66 }} inputMode="decimal" />
           <input value={bulk.discount} onChange={(e) => setBulk({ ...bulk, discount: e.target.value })} placeholder="Disc %" style={{ width: 76 }} inputMode="decimal" />
+          {/* Hiding a run of rows one at a time is the thing you would do on a
+              big quote, so it belongs here as well as on the row. */}
+          <select value={bulk.seen} onChange={(e) => setBulk({ ...bulk, seen: e.target.value })} style={{ width: 132 }} title="What the client's PDF shows for these lines">
+            <option value="">Client sees…</option>
+            <option value="shown">Shown</option>
+            <option value="noprice">No price</option>
+            <option value="hidden">Hidden</option>
+          </select>
           <button className="btn amber" onClick={applyBulk} style={{ padding: "6px 12px" }}>Apply</button>
           <button className="btn ghost" onClick={() => setSel(new Set())} style={{ padding: "6px 12px" }}>Clear</button>
           <span style={{ ...qtHint, flexBasis: "100%", marginTop: 2 }}>Blank boxes are left alone — fill in only what you want to change.</span>
@@ -6087,6 +6167,7 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
           <span style={{ width: 88, textAlign: "right" }}>Rate</span>
           <span style={{ width: 54, textAlign: "center" }}>Disc</span>
           <span style={{ width: 104, textAlign: "right" }}>Total</span>
+          <span style={{ width: 104 }}>Client sees</span>
           {!locked && <span style={{ width: 120 }}>Group</span>}
           {!locked && <span style={{ width: 26 }} />}
         </div>
@@ -6184,6 +6265,30 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
         </div>
         <div style={{ fontSize: 22, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{qtMoney(grand)}</div>
       </div>
+
+      {/* ---- what is being kept back, and the arithmetic it causes ----
+          Worth saying out loud every time: the money is still in the totals, so
+          the rows the client CAN see will not add up to the subtotal printed
+          under them. That is the trade, and it is better read here than
+          discovered in a phone call from a client with a calculator. */}
+      {hiddenCounts.any > 0 && (
+        <div className="panel" style={{ marginTop: 10, borderColor: "#FFB020" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#FFB020", marginBottom: 4 }}>
+            {hiddenCounts.hidden > 0 && hiddenCounts.noPrice > 0
+              ? hiddenCounts.hidden + " line" + (hiddenCounts.hidden === 1 ? "" : "s") + " hidden, " + hiddenCounts.noPrice + " priced as “Included”"
+              : hiddenCounts.hidden > 0
+              ? hiddenCounts.hidden + " line" + (hiddenCounts.hidden === 1 ? " is" : "s are") + " hidden from the client's PDF"
+              : hiddenCounts.noPrice + " line" + (hiddenCounts.noPrice === 1 ? "" : "s") + " print as “Included” instead of a price"}
+          </div>
+          <p style={{ ...qtHint, margin: 0 }}>
+            All {qtMoney(hiddenCounts.value)} of it still counts — the subtotals and the {qtMoney(grand)} total are unchanged, and
+            hidden gear still goes on the pull list and into the P&amp;L. The catch is that the rows a client can see
+            {hiddenCounts.hidden > 0 ? " will not add up to the subtotal printed beneath them" : " give no rate to check the subtotal against"}.
+            {data.displayMode === "groups" ? " In Group totals only, no lines print at all, so these settings change nothing." : ""}
+            {data.displayMode === "summary" && hiddenCounts.noPrice > 0 ? " In Items, group prices no rates print anyway, so “No price” looks the same as “Shown”." : ""}
+          </p>
+        </div>
+      )}
 
       {/* ---- sub-rentals ---- */}
       {(subs.count > 0 || placeholders > 0) && (
