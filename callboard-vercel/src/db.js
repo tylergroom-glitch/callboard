@@ -319,6 +319,15 @@ export const listCallAcks = (showId) =>
 export const confirmCall = (showId, crewId, ackOf) =>
   api("POST", "/api/call-ack?show=" + encodeURIComponent(showId), { crewId, ackOf });
 
+/* Crew availability. Asking, and what came back.
+   The crew member's own side of this is not here: they answer on a page served
+   by /api/availability itself, from a link in an email, with no sign-in and no
+   bundle. See api/availability.js. */
+export const listAvailability = (showId) =>
+  api("GET", "/api/availability?show=" + encodeURIComponent(showId));
+export const askAvailability = (showId, body) =>
+  api("POST", "/api/availability?show=" + encodeURIComponent(showId), body);
+
 /* Todoist. The sync is two-way for completions: your list goes out, ticking it
    on the phone comes back. See api/todoist.js for why it cannot silently
    drift — the short version is that reads are a bookmark and writes are

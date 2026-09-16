@@ -107,6 +107,8 @@ import {
   viewReceipt,
   listCallAcks,
   confirmCall,
+  listAvailability,
+  askAvailability,
   getTodoistStatus,
   connectTodoist,
   disconnectTodoist,
@@ -6930,7 +6932,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.37.0";
+const APP_VERSION = "1.38.0";
 
 const ADM_NAV = [
   { key: "today", label: "Today" },
@@ -9359,6 +9361,223 @@ function ExpensesScreen({ onClose, events }) {
    "they know" about something they have never seen. Folding it in with
    "confirmed" would make this panel lie on precisely the day it matters —
    the day the schedule changed. */
+/* Two strips share the `ack-strip` box style, so each also carries a class of
+   its own — `av-strip` here, `ack-confirm-strip` on the confirmations below.
+   Without that, any test or script selecting `.ack-strip` silently matches
+   both, which is how adding this component turned the Got it suite red at a
+   line that had nothing to do with it.
+
+   Who have I asked, and who is free.
+
+   This sits above the Got it strip because it happens first: you ask three
+   weeks out, they confirm their call the night before. Two questions, two
+   strips, in the order you ask them.
+
+   It asks about AVAILABILITY, not about taking the job. Nothing here books
+   anybody, and the email carries no rate — a number in a forwardable email
+   reads as an offer, and an offer needs a rule for two people accepting one
+   slot. That is a later round. */
+function AvailAsk({ showId, event, roster, positions, onDone, onCancel }) {
+  const [picked, setPicked] = useState(() => new Set());
+  const [position, setPosition] = useState("");
+  const [q, setQ] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  /* The positions row is a settings record living in the roster table. It is
+     filtered server-side too — this is so it never even appears in the list. */
+  const people = (roster || []).filter((r) => r && r.name && r.name !== "__positions__");
+
+  const needle = q.trim().toLowerCase();
+  const shown = people.filter((r) => {
+    if (position && !memberPositions(r.data).includes(position)) return false;
+    if (!needle) return true;
+    return (r.name || "").toLowerCase().includes(needle) ||
+           memberPositions(r.data).join(" ").toLowerCase().includes(needle);
+  });
+
+  const toggle = (id) => setPicked((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const send = async () => {
+    setBusy(true); setErr("");
+    try {
+      const out = await askAvailability(showId, {
+        rosterIds: [...picked],
+        position,
+      });
+      onDone(out);
+    } catch (e) {
+      setErr((e && e.message) || "That didn't send.");
+      setBusy(false);
+    }
+  };
+
+  const noEmail = shown.filter((r) => !(r.data && r.data.email)).length;
+
+  return (
+    <div className="av-ask">
+      <div className="av-ask-row">
+        <label className="av-f">
+          <span>Role you want them for</span>
+          <select value={position} onChange={(e) => setPosition(e.target.value)}>
+            <option value="">Any — don't say</option>
+            {(positions || []).map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+        <label className="av-f av-grow">
+          <span>Find someone</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Name or position" />
+        </label>
+      </div>
+
+      {/* Picking a role filters the list to people who do it. It is also what
+          the email says, which is why it is one control and not two. */}
+      <div className="av-people">
+        {!shown.length ? (
+          <div className="av-none">Nobody on the roster matches that.</div>
+        ) : shown.map((r) => {
+          const email = (r.data && r.data.email) || "";
+          return (
+            <label key={r.id} className={"av-person" + (picked.has(r.id) ? " on" : "") + (email ? "" : " cant")}>
+              <input type="checkbox" checked={picked.has(r.id)} disabled={!email}
+                     onChange={() => toggle(r.id)} />
+              <span className="av-person-name">{r.name}</span>
+              <span className="av-person-pos">{memberPositions(r.data).join(", ")}</span>
+              {/* Said here rather than discovered after sending. */}
+              {email ? null : <span className="av-person-no">no email on file</span>}
+            </label>
+          );
+        })}
+      </div>
+
+      {err ? <div className="tk-err" style={{ marginTop: 8 }}>{err}</div> : null}
+
+      <div className="av-ask-foot">
+        <span className="av-count">
+          {picked.size} selected
+          {noEmail ? " · " + noEmail + " can't be asked without an email address" : ""}
+        </span>
+        <span className="tk-spacer" />
+        <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="btn" onClick={send} disabled={busy || !picked.size}>
+          {/* "Ask" on its own while nothing is selected. "Ask people" reads as
+              a live invitation even greyed out, and says nothing about how
+              many are going to get an email. */}
+          {busy ? "Sending…"
+            : !picked.size ? "Ask"
+            : "Ask " + picked.size + (picked.size === 1 ? " person" : " people")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AvailStrip({ showId, event, canAsk }) {
+  const { roster, positions } = React.useContext(RosterCtx);
+  const [st, setSt] = useState({ ready: false, requests: [], tally: null, err: "" });
+  const [asking, setAsking] = useState(false);
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await listAvailability(showId);
+      setSt({ ready: true, requests: (r && r.requests) || [], tally: (r && r.tally) || null, err: "" });
+    } catch (e) {
+      setSt({ ready: true, requests: [], tally: null, err: (e && e.message) || "Couldn't load availability." });
+    }
+  };
+  useEffect(() => { if (showId) load(); }, [showId]);
+
+  /* One sentence covering every outcome, including the ones that look like
+     success from the outside. "Asked 4" when nothing was emailed is the state
+     worth naming. */
+  const describe = (out) => {
+    const bits = [];
+    if (out.sent) bits.push("Asked " + out.sent + (out.sent === 1 ? " person" : " people"));
+    if (out.saved && !out.sent) bits.push("Saved " + out.saved + " — but no email went out. Check the mail settings.");
+    (out.skipped || []).forEach((s) => bits.push(s.name + ": " + s.why));
+    if (!bits.length) bits.push("Nobody was asked.");
+    return bits.join(". ") + ".";
+  };
+
+  const afterSend = async (out) => {
+    setAsking(false);
+    setNote(describe(out));
+    await load();
+  };
+
+  const waiting = st.requests.filter((r) => !r.answer);
+  const nudge = async () => {
+    setBusy(true);
+    try {
+      const out = await askAvailability(showId, { rosterIds: waiting.map((r) => r.rosterId) });
+      setNote(describe(out));
+      await load();
+    } catch (e) { setNote((e && e.message) || "That didn't send."); }
+    setBusy(false);
+  };
+
+  if (!canAsk) return null;
+  if (!st.ready) return null;
+  if (st.err) return <div className="ack-strip"><span className="ack-err">{st.err}</span></div>;
+
+  const yes = st.requests.filter((r) => r.answer === "yes");
+  const no = st.requests.filter((r) => r.answer === "no");
+
+  return (
+    <div className="ack-strip av-strip">
+      <div className="ack-head">
+        <span className="ack-count">
+          {!st.requests.length ? "Nobody has been asked about these dates yet"
+            : yes.length + " free · " + no.length + " not · " + waiting.length + " waiting"}
+        </span>
+        <span className="tk-spacer" />
+        {!asking ? (
+          <>
+            {waiting.length ? (
+              <button className="av-mini" onClick={nudge} disabled={busy}>
+                {/* "Remind", not "ask again" — they were already asked, and
+                    this sends the same question to only the people who have
+                    not answered it. */}
+                {busy ? "Sending…" : "Remind " + waiting.length}
+              </button>
+            ) : null}
+            <button className="av-mini on" onClick={() => { setNote(""); setAsking(true); }}>
+              Ask the crew
+            </button>
+          </>
+        ) : null}
+      </div>
+
+      {note ? <div className="av-note">{note}</div> : null}
+
+      {asking ? (
+        <AvailAsk showId={showId} event={event} roster={roster} positions={positions}
+                  onDone={afterSend} onCancel={() => setAsking(false)} />
+      ) : null}
+
+      {st.requests.length ? (
+        <div className="ack-names">
+          {yes.map((r) => <span key={r.id} className="ack-chip av-yes">{r.name} <b>free</b></span>)}
+          {no.map((r) => (
+            /* Named with what it did to their calendar, because that is the
+               half that is otherwise invisible until round two's grid. */
+            <span key={r.id} className="ack-chip warn" title={"Blocked out " + r.fromDay + " to " + r.toDay}>
+              {r.name} <b>not free</b>
+            </span>
+          ))}
+          {waiting.map((r) => <span key={r.id} className="ack-chip">{r.name} <b className="av-dim">waiting</b></span>)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CrewAckStrip({ showId, event }) {
   const [st, setSt] = useState({ ready: false, acks: [], err: "" });
 
@@ -9400,11 +9619,11 @@ function CrewAckStrip({ showId, event }) {
 
   if (!st.ready) return null;
   if (st.err) {
-    return <div className="ack-strip"><span className="ack-err">{st.err}</span></div>;
+    return <div className="ack-strip ack-confirm-strip"><span className="ack-err">{st.err}</span></div>;
   }
 
   return (
-    <div className="ack-strip">
+    <div className="ack-strip ack-confirm-strip">
       <div className="ack-head">
         <span className={"ack-count" + (done.length === rows.length ? " all" : "")}>
           {done.length} of {rows.length} confirmed their call
@@ -9751,6 +9970,9 @@ function BriefTab({ event, update, isAdmin, isTcg, showId }) {
         {/* Above the editor rather than a column inside it. The crew grid is
             already six columns of inputs on a phone; the question this answers
             — who do I still need to ring — is a summary, not a field. */}
+        {/* Asking comes before confirming — three weeks out versus the night
+            before — so the strips read in the order the questions happen. */}
+        <AvailStrip showId={showId} event={event} canAsk={isAdmin} />
         <CrewAckStrip showId={showId} event={event} />
 
         <div className="rows">
@@ -17760,6 +17982,48 @@ const CSS = `
 /* A tap target, not a hint — this is used one-handed on a show floor. */
 .cb .ack-call{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
   color:var(--accent); text-decoration:none; padding:2px 4px;}
+
+/* ---- Availability ------------------------------------------------------ */
+.cb .av-strip{margin-bottom:12px;}
+.cb .av-mini{font-size:11.5px; font-weight:700; padding:5px 11px; border-radius:999px;
+  border:1px solid var(--line); background:var(--panel); color:var(--ink); cursor:pointer;}
+.cb .av-mini.on{border-color:var(--accent); color:var(--accent);}
+.cb .av-mini:disabled{opacity:.55; cursor:not-allowed;}
+.cb .av-note{font-size:12.5px; color:var(--dim); margin-top:8px; line-height:1.5;}
+.cb .av-yes b{color:#6FD08A;}
+.cb .av-dim{color:var(--faint); font-weight:600;}
+.cb .ack-chip b{font-weight:700; font-size:11px; text-transform:uppercase; letter-spacing:.04em;}
+
+.cb .av-ask{margin-top:11px; border-top:1px solid var(--line); padding-top:12px;}
+.cb .av-ask-row{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:10px;}
+.cb .av-f{display:flex; flex-direction:column; gap:4px; min-width:0; flex:0 1 220px;}
+.cb .av-f.av-grow{flex:1 1 220px;}
+.cb .av-f > span{font-size:11px; font-weight:700; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--dim);}
+/* Scrolls rather than growing: a forty-person roster would otherwise push the
+   Send button off the bottom of the panel. */
+.cb .av-people{max-height:270px; overflow-y:auto; border:1px solid var(--line);
+  border-radius:10px; background:var(--panel);}
+.cb .av-person{display:flex; align-items:center; gap:10px; padding:8px 11px;
+  border-bottom:1px solid var(--line); cursor:pointer; font-size:13px;}
+.cb .av-person:last-child{border-bottom:none;}
+.cb .av-person:hover{background:var(--panel2);}
+.cb .av-person.on{background:var(--panel2);}
+.cb .av-person.cant{opacity:.55; cursor:not-allowed;}
+.cb .av-person input[type="checkbox"]{width:15px; height:15px; flex:0 0 auto; margin:0;
+  padding:0; cursor:pointer; accent-color:var(--amber);}
+.cb .av-person-name{font-weight:600;}
+.cb .av-person-pos{color:var(--faint); font-size:11.5px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;}
+.cb .av-person-no{margin-left:auto; font-size:11px; color:var(--amber); white-space:nowrap;}
+.cb .av-none{padding:14px; font-size:12.5px; color:var(--dim); text-align:center;}
+.cb .av-ask-foot{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:11px;}
+.cb .av-count{font-size:12px; color:var(--dim);}
+@media (max-width:820px){
+  .cb .av-f, .cb .av-f.av-grow{flex:1 1 100%;}
+  .cb .av-person-pos{display:none;}
+  .cb .av-ask-foot .btn{flex:1 1 auto;}
+}
 
 /* ---- Expenses ---------------------------------------------------------- */
 /* Capped, or the select stretches to fill the filter row on a wide screen and
