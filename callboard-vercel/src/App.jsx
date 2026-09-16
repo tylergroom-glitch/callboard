@@ -6932,7 +6932,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.38.0";
+const APP_VERSION = "1.39.0";
 
 const ADM_NAV = [
   { key: "today", label: "Today" },
@@ -9070,64 +9070,128 @@ const exMoney = (n) => {
 /* Top level, not nested inside ExpensesScreen: a component declared inside
    another is a new type on every render, so React remounts it between
    keystrokes and the form loses focus after one character. */
-function ExpenseForm({ draft, onChange, onFile, fileName, busy, onSave, onCancel, editing }) {
+/* FOUR THINGS ON THE FACE OF IT: how much, who to, what for, and whether it
+   belongs to the company or to a show.
+
+   It had six fields and two dropdowns, and Tyler asked for it to stop. The
+   date, the two categories and the re-bill flag are still here — they are what
+   the April export is built on, and they were his decision, not mine — but
+   they are behind More with defaults that are right most of the time. An
+   expense nobody enters because the form is tedious is worth less than one
+   filed under Misc.
+
+   Where it belongs is IN THE FORM rather than a view you have to switch to
+   first: "I have a receipt in my pocket" does not start with deciding which
+   list to be looking at. */
+function ExpenseForm({
+  draft, onChange, onFile, fileName, busy, onSave, onCancel, editing,
+  formScope, onFormScope, events, more, onMore,
+}) {
   const set = (k) => (e) => onChange({ ...draft, [k]: e.target.value });
   const amountOk = Number.isFinite(Number(draft.amount)) && String(draft.amount).trim() !== "";
+  /* The server refuses a meal with no note, because a deduction that cannot
+     say who was there cannot be defended. Surfacing it here means the rule is
+     met rather than discovered as a 400 after the receipt has uploaded. */
+  const needsWho = draft.category === "meals";
+  const whoOk = !needsWho || !!String(draft.note || "").trim();
+
   return (
     <div className="ex-form">
       <div className="ex-form-grid">
         <label>
-          <span>Date</span>
-          <input type="date" value={draft.spent_on || ""} onChange={set("spent_on")} />
-        </label>
-        <label>
           <span>Amount</span>
-          <input inputMode="decimal" placeholder="0.00" value={draft.amount} onChange={set("amount")} />
+          <input inputMode="decimal" placeholder="0.00" value={draft.amount} onChange={set("amount")} autoFocus />
         </label>
         <label>
           <span>Who it was paid to</span>
           <input placeholder="Vendor" value={draft.vendor} onChange={set("vendor")} />
         </label>
-        <label>
-          <span>Category</span>
-          <select value={draft.category} onChange={set("category")}>
-            {EX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>Tax category</span>
-          <select value={draft.tax_category || ""} onChange={set("tax_category")}>
-            {EX_TAX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-        </label>
         <label className="ex-wide">
           <span>What it was for</span>
-          <input placeholder="Description" value={draft.description} onChange={set("description")} />
+          <input placeholder="A short note" value={draft.description} onChange={set("description")} />
         </label>
+        {/* Not offered on an edit: the endpoint keeps a row's show_id and
+            ignores an attempt to change it, so a picker here would look like
+            it worked and do nothing. */}
+        {editing ? null : (
+          <label className="ex-wide">
+            <span>Where it belongs</span>
+            <select value={formScope.kind === "show" ? formScope.showId : "__overhead__"}
+                    onChange={(e) => onFormScope(e.target.value === "__overhead__"
+                      ? { kind: "overhead", showId: "" }
+                      : { kind: "show", showId: e.target.value })}>
+              <option value="__overhead__">The company — not a show</option>
+              {(events || []).map((ev) => <option key={ev.id} value={ev.id}>{ev.name}</option>)}
+            </select>
+          </label>
+        )}
       </div>
 
       <div className="ex-form-foot">
         <label className="ex-file">
-          {/* The camera on a phone, the file picker on a laptop — one input
-              does both, and `capture` is only a hint so it degrades quietly. */}
-          <input type="file" accept="image/jpeg,image/png,application/pdf" capture="environment"
+          {/* NO `capture` ATTRIBUTE, deliberately. With it, a phone opens the
+              camera and never offers the photo library — so a receipt already
+              photographed could not be attached, which is most of them. Plain
+              `image/*` gets the iPhone action sheet: Photo Library, Take
+              Photo, Choose File. `image/*` rather than a list of three types
+              so an iPhone's HEIC is not greyed out. */}
+          <input type="file" accept="image/*,application/pdf"
                  onChange={(e) => onFile(e.target.files && e.target.files[0])} />
-          <span className="ex-file-btn">{fileName ? "Change receipt" : "📷 Add a receipt"}</span>
+          <span className="ex-file-btn">{fileName ? "Change receipt" : "📷 Photo or PDF"}</span>
           {fileName ? <span className="ex-file-name">{fileName}</span> : null}
         </label>
-        <label className="ex-bill">
-          <input type="checkbox" checked={draft.billable === true}
-                 onChange={(e) => onChange({ ...draft, billable: e.target.checked })} />
-          Re-bill to the client
-        </label>
+        <button type="button" className="ex-more" onClick={() => onMore(!more)}>
+          {more ? "Less" : "More"}
+        </button>
         <span className="tk-spacer" />
         <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
-        <button className="btn" onClick={onSave} disabled={busy || !amountOk}>
+        <button className="btn" onClick={onSave} disabled={busy || !amountOk || !whoOk}>
           {busy ? "Saving…" : editing ? "Save changes" : "Add expense"}
         </button>
       </div>
+
+      {more ? (
+        <div className="ex-more-box">
+          <div className="ex-form-grid">
+            <label>
+              <span>Date</span>
+              <input type="date" value={draft.spent_on || ""} onChange={set("spent_on")} />
+            </label>
+            <label>
+              <span>Category</span>
+              <select value={draft.category} onChange={set("category")}>
+                {EX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Tax category</span>
+              <select value={draft.tax_category || ""} onChange={set("tax_category")}>
+                {EX_TAX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+              </select>
+            </label>
+            {needsWho ? (
+              <label className="ex-wide">
+                <span>Who was there, and why</span>
+                <input placeholder="Required for meals" value={draft.note || ""} onChange={set("note")} />
+              </label>
+            ) : null}
+          </div>
+          <label className="ex-bill" style={{ marginTop: 10 }}>
+            <input type="checkbox" checked={draft.billable === true}
+                   onChange={(e) => onChange({ ...draft, billable: e.target.checked })} />
+            Re-bill to the client
+          </label>
+        </div>
+      ) : null}
+
       {!amountOk && String(draft.amount).trim() !== "" ? (
         <div className="tk-err" style={{ marginTop: 8 }}>That amount is not a number.</div>
+      ) : null}
+      {/* Said where the rule is, not after the save fails. */}
+      {needsWho && !whoOk ? (
+        <div className="tk-err" style={{ marginTop: 8 }}>
+          A meal needs a note saying who was there and why — open More.
+        </div>
       ) : null}
     </div>
   );
@@ -9135,7 +9199,7 @@ function ExpenseForm({ draft, onChange, onFile, fileName, busy, onSave, onCancel
 
 const exBlank = () => ({
   spent_on: tdToday(), amount: "", vendor: "", category: "misc",
-  tax_category: "", description: "", billable: false,
+  tax_category: "", description: "", note: "", billable: false,
 });
 
 function ExpensesScreen({ onClose, events }) {
@@ -9148,6 +9212,12 @@ function ExpensesScreen({ onClose, events }) {
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
+  /* Where the thing being typed will be filed, which is NOT the same as which
+     list is on screen. Opening the form from the year view used to save into
+     whatever the chips happened to say; now the form asks, and defaults to
+     wherever you already are. */
+  const [formScope, setFormScope] = useState({ kind: "overhead", showId: "" });
+  const [more, setMore] = useState(false);
 
   const isOverhead = scope.kind === "overhead";
   const load = async () => {
@@ -9165,20 +9235,33 @@ function ExpensesScreen({ onClose, events }) {
 
   const showName = (id) => (events || []).find((e) => e.id === id)?.name || "a show";
 
-  const beginAdd = () => { setEditId(""); setDraft(exBlank()); setFile(null); setAdding(true); setNote(""); };
+  const beginAdd = () => {
+    setEditId(""); setDraft(exBlank()); setFile(null); setAdding(true); setNote(""); setMore(false);
+    /* Whatever you are looking at is the likely answer. The year view is not a
+       place a row can live, so that falls back to the company. */
+    setFormScope(scope.kind === "show" && scope.showId
+      ? { kind: "show", showId: scope.showId }
+      : { kind: "overhead", showId: "" });
+  };
   const beginEdit = (row) => {
-    setAdding(false); setFile(null); setNote("");
+    setAdding(false); setFile(null); setNote(""); setMore(false);
     setEditId(row.id);
     setDraft({
       spent_on: row.spent_on || "", amount: String(row.amount ?? ""), vendor: row.vendor || "",
       category: row.category || "misc", tax_category: row.tax_category || "",
-      description: row.description || "", billable: row.billable === true,
+      description: row.description || "", note: row.note || "", billable: row.billable === true,
     });
   };
   const cancel = () => { setAdding(false); setEditId(""); setFile(null); };
 
   const save = async () => {
     setBusy(true); setNote("");
+    /* One place decides where this row goes, so the receipt and the row can
+       never be filed against different things. On an edit the endpoint keeps
+       the row's existing show_id, so the form does not offer to move it. */
+    const target = editId
+      ? (isOverhead ? { overhead: true } : { showId: scope.showId })
+      : (formScope.kind === "show" ? { showId: formScope.showId } : { overhead: true });
     try {
       let receipt_path = "";
       if (file) {
@@ -9186,7 +9269,7 @@ function ExpensesScreen({ onClose, events }) {
            writes a row claiming a receipt that may not exist — and an expense
            that says it has substantiation and does not is worse in an audit
            than one that admits it has none. */
-        const sign = await signReceiptUpload(file.type, isOverhead ? { overhead: true } : { showId: scope.showId });
+        const sign = await signReceiptUpload(file.type, target);
         if (!sign || !sign.url) throw new Error("Couldn't start the receipt upload.");
         const put = await fetch(sign.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
         if (!put.ok) throw new Error("The receipt didn't upload (" + put.status + ").");
@@ -9196,11 +9279,20 @@ function ExpensesScreen({ onClose, events }) {
       if (receipt_path) payload.receipt_path = receipt_path;
 
       if (editId) await updateExpense(editId, payload);
-      else await createExpenses([payload], isOverhead ? { overhead: true } : { showId: scope.showId });
+      else await createExpenses([payload], target);
 
       cancel();
-      await load();
-      setNote(editId ? "Saved." : "Added.");
+      /* Show the list the row actually landed in. Saving a show expense while
+         looking at overhead used to succeed and then show you a list it was
+         not in, which reads exactly like a save that failed. */
+      if (!editId && formScope.kind === "show" && formScope.showId !== scope.showId) {
+        setScope((s2) => ({ ...s2, kind: "show", showId: formScope.showId }));
+      } else {
+        await load();
+      }
+      setNote(editId ? "Saved."
+        : formScope.kind === "show" ? "Added to " + showName(formScope.showId) + "."
+        : "Added to company costs.");
     } catch (e) {
       setNote("");
       setSt((s) => ({ ...s, err: (e && e.message) || "Couldn't save that." }));
@@ -9280,6 +9372,8 @@ function ExpensesScreen({ onClose, events }) {
           draft={draft} onChange={setDraft} onFile={setFile}
           fileName={file ? file.name : ""} busy={busy}
           onSave={save} onCancel={cancel} editing={!!editId}
+          formScope={formScope} onFormScope={setFormScope} events={events}
+          more={more} onMore={setMore}
         />
       ) : null}
 
@@ -18049,6 +18143,10 @@ const CSS = `
 .ex-file input[type="file"]:focus-visible + .ex-file-btn{outline:2px solid var(--amber); outline-offset:2px;}
 .ex-file-name{font-size:12px; color:var(--dim); max-width:190px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap;}
+.ex-more{font-size:11.5px; font-weight:700; padding:7px 13px; border-radius:9px;
+  border:1px solid var(--line); background:var(--panel2); color:var(--dim); cursor:pointer;}
+.ex-more:hover{color:var(--ink);}
+.ex-more-box{margin-top:12px; padding-top:12px; border-top:1px solid var(--line);}
 .ex-bill{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--dim);}
 /* The shared .cb input rule sets width:100% for text fields. Left alone, the
    checkbox becomes a full-width box with its tick floating in the middle and
