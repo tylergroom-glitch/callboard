@@ -391,9 +391,15 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
 
    Returns the count, because "did this reach everyone" is the only question
    worth asking afterwards. */
-export async function sendBrevoBatch(messages) {
+export async function sendBrevoBatch(messages, opts = {}) {
   const list = (messages || []).filter((m) => m && m.to);
   if (!BREVO_API_KEY || !list.length) return { sent: 0, failed: list.map((m) => m.to) };
+  /* Attachments ride at the TOP level, not inside a version: Brevo sends the
+     bytes once and applies them to every version in the call. Putting them per
+     version would upload the same packet thirty-five times and blow the 20MB
+     request ceiling on a crew of any size. */
+  const attachment = Array.isArray(opts.attachment) && opts.attachment.length
+    ? opts.attachment : null;
   const senderEmail = BREVO_SENDER_EMAIL || "crewcall@touchstonecreativegroup.com";
   const senderName = BREVO_SENDER_NAME || "Touchstone Crew Call";
 
@@ -410,6 +416,7 @@ export async function sendBrevoBatch(messages) {
         headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           sender: { email: senderEmail, name: senderName },
+          ...(attachment ? { attachment } : {}),
           // A version per person: own recipient, own subject, own body.
           messageVersions: chunk.map((m) => ({
             to: [{ email: m.to, ...(m.toName ? { name: m.toName } : {}) }],

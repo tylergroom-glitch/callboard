@@ -186,6 +186,22 @@ export default async function handler(req, res) {
       return json(res, 200, { url: await signView("receipts", row.receipt_path) });
     }
 
+    // ---- read: every show receipt, thin, for the roll-up ------------------
+    /* The company-wide P&L needs each show's receipts folded into its actual
+       cost. It cannot use ?show= — that is one request per show — and it
+       cannot use a pre-summed total per show either, because a receipt can be
+       excluded from the P&L by hand (it is already counted in a typed row)
+       and the exclusion list lives in that show's costing, not here.
+       So: one row per receipt, four columns, and the caller does the maths
+       with the same function the show's own P&L uses. */
+    if (req.method === "GET" && (q.totals === "1" || q.totals === "true")) {
+      if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+      const parts = ["select=id,show_id,amount,category", LIVE, "show_id=not.is.null"];
+      if (q.from && isDate(q.from)) parts.push("spent_on=gte." + q.from);
+      if (q.to && isDate(q.to)) parts.push("spent_on=lte." + q.to);
+      return json(res, 200, { rows: await supabaseRest("GET", "/expenses?" + parts.join("&"), null) || [] });
+    }
+
     // ---- read -------------------------------------------------------------
     if (req.method === "GET") {
       if (q.year || overhead) {

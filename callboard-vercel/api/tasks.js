@@ -1,5 +1,9 @@
 // /api/tasks
 //   GET    /api/tasks                list tasks (admin)
+//   GET    /api/tasks?owner=me       only mine   (needs an ACCOUNT, not the
+//                                    shared admin password — see below)
+//   GET    /api/tasks?owner=<uuid>   only that person's
+//   GET    /api/tasks?owner=none     only the ones nobody has taken
 //   GET    /api/tasks?settings=1     inbox settings (allowed senders, digest on/off)
 //   POST   /api/tasks                create one         { task }
 //   POST   /api/tasks?settings=1     save settings      { settings }
@@ -11,7 +15,7 @@
 //
 // SETUP: run setup-tasks.sql. No new env vars for this file; the inbox needs
 // its own (see api/inbox.js).
-import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
+import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, sendBrevoEmail } from "./_lib.js";
 
 const SETTINGS_KEY = "inbox_settings";
 const BUSINESS_TZ = "America/Los_Angeles";
@@ -27,7 +31,76 @@ const PRIORITIES = ["high", "med", "low", ""];
 /* Only these columns can be written from a request. Anything else a caller
    sends is dropped rather than trusted — id, created_at and the source_*
    fields are set here or by the inbox, never by a client. */
-const WRITABLE = ["title", "notes", "status", "review", "event_id", "due", "due_time", "priority", "kind"];
+const WRITABLE = ["title", "notes", "status", "review", "event_id", "due", "due_time", "priority", "kind", "owner_id"];
+
+const isUuid = (v) =>
+  typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+/* WHO IS ASKING.
+
+   An account token carries { sub }. The shared admin password carries
+   { scope: "admin" } and no identity at all — so with it there is no such
+   person as "me", and every path that needs one has to say so instead of
+   quietly falling back to showing everything. */
+const whoami = (p) => (p && p.sub && isUuid(p.sub) ? p.sub : null);
+
+/* An owner has to be a real account AND an admin.
+
+   Tasks are admin-only to read. Assigning one to a crew account would email
+   somebody about a list they cannot open — a dead end that looks like it
+   worked. Refusing is the only honest answer, and it is also the check that
+   stops an arbitrary uuid being written into the column.
+
+   Returns { id, name } or { error }. */
+async function resolveOwner(id) {
+  if (id === null || id === "") return { id: null, name: null };   // unassign
+  if (!isUuid(id)) return { error: "That is not a person." };
+  const prof = await supabaseProfile(id);
+  if (!prof) return { error: "That account does not exist." };
+  if (!prof.is_tcg) {
+    return { error: "Only an admin can be given a to-do — the list is admin-only." };
+  }
+  return { id, name: String(prof.name || prof.email || "").slice(0, 200), email: prof.email || "" };
+}
+
+/* Whose name goes on the email. The shared admin password has no profile, so
+   it is honestly "Someone" rather than a guess at which of them it was. */
+async function myName(p) {
+  const me = whoami(p);
+  if (!me) return "Someone";
+  try {
+    const prof = await supabaseProfile(me);
+    return String((prof && (prof.name || prof.email)) || "Someone").slice(0, 200);
+  } catch { return "Someone"; }
+}
+
+/* One email, and only when the task lands on somebody ELSE. Assigning
+   something to yourself is not news. Wrapped so a mail failure can never fail
+   the save — the task is already written, and a 500 here would have the
+   caller retry and reassign it. */
+async function tellThem({ to, toName, title, due, byName, host }) {
+  if (!to) return false;
+  const esc = (x) => String(x == null ? "" : x)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const link = "https://" + (host || "crewcall.touchstonecreativegroup.com");
+  try {
+    return await sendBrevoEmail({
+      to, toName,
+      subject: "For you: " + String(title || "a to-do").slice(0, 120),
+      html:
+        `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:520px;color:#1E293B">
+<p style="font-size:15px;line-height:1.6">${esc(byName || "Someone")} put this on your list:</p>
+<p style="font-size:17px;font-weight:700;line-height:1.4;margin:14px 0">${esc(title)}</p>
+${due ? `<p style="font-size:14px;color:#64748B">Due ${esc(due)}</p>` : ""}
+<p style="margin:22px 0"><a href="${esc(link)}"
+ style="background:#0F1E35;color:#fff;text-decoration:none;padding:13px 21px;border-radius:10px;font-weight:700;font-size:15px;display:inline-block">Open Crew Call</a></p>
+</div>`,
+      text: (byName || "Someone") + " put this on your list:\n\n" + String(title || "") +
+            (due ? "\nDue " + due : "") + "\n\n" + link + "\n",
+    });
+  } catch { return false; }
+}
 
 /* A wall-clock time in the business timezone, "HH:MM" or "HH:MM:SS". NOT an
    instant — a task due at 3pm is due at 3pm whichever side of a clock change
@@ -47,6 +120,8 @@ function clean(input, { creating }) {
   if (o.review !== undefined) o.review = !!o.review;
   // Empty string is not a null uuid or a null date; PostgREST will reject it.
   if (o.event_id !== undefined && !String(o.event_id || "").trim()) o.event_id = null;
+  // Same shape as event_id: an empty string means "nobody", not a null uuid.
+  if (o.owner_id !== undefined && !String(o.owner_id || "").trim()) o.owner_id = null;
   if (o.due !== undefined && !String(o.due || "").trim()) o.due = null;
   if (o.due_time !== undefined) {
     const t = String(o.due_time || "").trim();
@@ -148,10 +223,38 @@ export default async function handler(req, res) {
     // Default view is what still needs doing. Done items are fetched only when
     // asked for, so the common request stays small however long the list gets.
     if (q.status) parts.push("status=eq." + encodeURIComponent(String(q.status)));
+
+    /* WHOSE. Absent means everybody's, which is what this list has always
+       been and stays for anyone who does not ask otherwise. */
+    const owner = q.owner ? String(q.owner) : "";
+    if (owner === "me") {
+      const me = whoami(p);
+      /* Signed in with the shared admin password: there is no "me". Saying so
+         beats returning the whole list, which would look like "you have 41
+         things to do" and be a lie. */
+      if (!me) {
+        return json(res, 200, {
+          tasks: [], today: today(),
+          noIdentity: true,
+          error: "This sign-in is the shared admin password, so it is not a " +
+                 "person. Sign in with your own email to see your own list.",
+        });
+      }
+      parts.push("owner_id=eq." + encodeURIComponent(me));
+    } else if (owner === "none") {
+      parts.push("owner_id=is.null");
+    } else if (owner && isUuid(owner)) {
+      parts.push("owner_id=eq." + encodeURIComponent(owner));
+    } else if (owner && owner !== "any") {
+      return json(res, 400, { error: "Unknown owner filter." });
+    }
+
     parts.push("order=review.desc,due.asc.nullslast,created_at.desc");
     parts.push("limit=" + Math.min(parseInt(q.limit, 10) || 500, 2000));
     const rows = await supabaseRest("GET", "/tasks?" + parts.join("&"), null);
-    return json(res, 200, { tasks: rows || [], today: today() });
+    /* `me` is echoed so the screen can mark "yours" without a second call and
+       without guessing from a name. Null for the shared password. */
+    return json(res, 200, { tasks: rows || [], today: today(), me: whoami(p) });
   }
 
   // ---- create -------------------------------------------------------------
@@ -160,8 +263,28 @@ export default async function handler(req, res) {
     const r = clean((body && body.task) || {}, { creating: true });
     if (r.error) return json(res, 400, { error: r.error });
     const row = { ...r.value, source: "app", review: false };
+
+    let owner = null;
+    if (row.owner_id !== undefined) {
+      owner = await resolveOwner(row.owner_id);
+      if (owner.error) return json(res, 400, { error: owner.error });
+      row.owner_id = owner.id;
+      row.owner_name = owner.name;
+    }
+
     const made = await supabaseRest("POST", "/tasks", row, "return=representation");
-    return json(res, 200, { task: Array.isArray(made) ? made[0] : made });
+    const task = Array.isArray(made) ? made[0] : made;
+
+    /* After the write, never before: an email about a task that failed to save
+       is worse than no email. */
+    let emailed = false;
+    if (owner && owner.id && owner.id !== whoami(p)) {
+      emailed = await tellThem({
+        to: owner.email, toName: owner.name, title: task && task.title,
+        due: task && task.due, byName: await myName(p), host: req.headers?.host,
+      });
+    }
+    return json(res, 200, { task, emailed });
   }
 
   // ---- update -------------------------------------------------------------
@@ -183,11 +306,30 @@ export default async function handler(req, res) {
       const had = prev && prev[0] && prev[0].due;
       if (!had) return json(res, 400, { error: "A due time needs a due date as well." });
     }
+    /* Reassignment. The name is re-snapshotted here rather than joined on
+       read, so the list still reads correctly years later. */
+    let owner = null;
+    if (r.value.owner_id !== undefined) {
+      owner = await resolveOwner(r.value.owner_id);
+      if (owner.error) return json(res, 400, { error: owner.error });
+      r.value.owner_id = owner.id;
+      r.value.owner_name = owner.name;
+    }
+
     const out = await supabaseRest(
       "PATCH", "/tasks?id=eq." + encodeURIComponent(q.id), r.value, "return=representation");
     const row = Array.isArray(out) ? out[0] : out;
     if (!row) return json(res, 404, { error: "No such task." });
-    return json(res, 200, { task: row });
+
+    /* After the write, never before. */
+    let emailed = false;
+    if (owner && owner.id && owner.id !== whoami(p)) {
+      emailed = await tellThem({
+        to: owner.email, toName: owner.name, title: row.title, due: row.due,
+        byName: await myName(p), host: req.headers?.host,
+      });
+    }
+    return json(res, 200, { task: row, emailed });
   }
 
   // ---- delete -------------------------------------------------------------
