@@ -752,3 +752,122 @@ export async function telegramNotify(text) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// THE ACTIVITY LOG
+//
+// One line in a route: `logActivity(p, "quote.won", "Quote v3 marked won", {...})`
+//
+// THREE RULES, ALL OF THEM LOAD-BEARING
+//
+// 1. IT CANNOT FAIL THE THING IT IS RECORDING.
+//    Every call swallows its own errors and returns nothing worth checking.
+//    If the log table is missing, or Supabase is slow, or somebody has not
+//    run the SQL yet, saving a quote still saves the quote. A logger that can
+//    500 a save is a logger that takes the app down to protect its own diary.
+//
+//    BUT IT IS AWAITED, AND THAT IS NOT A CONTRADICTION.
+//
+//    The obvious shape for a logger like this is fire-and-forget: call it,
+//    do not wait, return. On a long-lived server that is right. On Vercel it
+//    silently does not work. The instance is FROZEN the moment the response
+//    is sent, so a promise still in flight is not "finished a few
+//    milliseconds later" — it is abandoned, usually before the request even
+//    leaves. A feed built that way is empty most of the time and full
+//    occasionally, which is the worst of both: it looks like it works.
+//
+//    So every call site awaits. Cost: one insert, tens of milliseconds,
+//    before a response the user is already waiting on. Benefit: the entry is
+//    actually there. Awaiting is only safe because of the rule above — this
+//    function cannot throw, so awaiting it cannot fail the save either.
+//
+// 2. THE SUMMARY IS COMPOSED FROM NAMES AND COUNTS. NEVER FROM A RECORD.
+//    Do not pass a row into this. Do not interpolate `JSON.stringify(body)`.
+//    A rate, an hours total, a taxpayer id or a token written here is written
+//    forever — this is the one table nothing ever prunes. Every call site
+//    spells out its sentence by hand, which is tedious on purpose: it makes
+//    "what exactly ends up in the log" answerable by reading the call.
+//
+//    stripLogText below is the backstop, not the plan. It flattens anything
+//    that looks like a currency amount, because the most likely accident is
+//    somebody one day putting a total into a sentence without thinking.
+//
+// 3. THE ACTOR COMES FROM THE TOKEN, NEVER FROM THE REQUEST.
+//    A body that could name its own author is a log that can be lied to,
+//    which is worse than no log at all. Same reasoning as the upload folder
+//    in crew-docs.js.
+// ---------------------------------------------------------------------------
+
+/* The backstop. It runs on every summary, including ones that are already
+   clean, because a filter you have to remember to apply is not a filter.
+ *
+ * TWO RULES, AND THE ONE THAT IS DELIBERATELY NOT HERE.
+ *
+ *   1. Anything carrying a currency marker: $1,200  USD 1200  1200 USD.
+ *   2. A number introduced by a money word: "total 412.50", "rate: 650".
+ *
+ * The rule I took out was "any number with two decimal places". It sounds
+ * like the safe catch-all and it is not: it eats "Call at 10.30" and
+ * "Order 2.50 ft of cable", turning honest task titles into "[amount]" —
+ * a log that corrupts what it records is worse than one that misses
+ * something, because you cannot tell which lines were mangled.
+ *
+ * And it bought almost nothing. The accident this exists for is somebody
+ * concatenating a field into a sentence, which produces "412.5" or "650" —
+ * neither of which that rule matched anyway. Rule 2 catches the realistic
+ * version, because a number worth hiding almost always has a word in front
+ * of it saying what it is. */
+const MONEY_WORDS = "total|totalling|amount|amounts|cost|costs|costing|rate|rates|" +
+                    "paid|pay|payment|invoice|invoiced|price|priced|budget|balance|" +
+                    "deposit|fee|fees|worth|charge|charged";
+
+export function stripLogText(v) {
+  return String(v == null ? "" : v)
+    // $1,200.50 / USD 1200 / 1200 USD
+    .replace(/(?:\$|usd\s*)\s*\d[\d,]*(?:\.\d+)?/gi, "[amount]")
+    .replace(/\b\d[\d,]*(?:\.\d+)?\s*(?:usd|dollars?)\b/gi, "[amount]")
+    // total 412.50 / rate: 650 / paid $0 (already caught) / budget is 12,000
+    .replace(new RegExp(
+      "\\b(" + MONEY_WORDS + ")\\b(\\s*(?:of|is|was|at|:|=)?\\s*)\\d[\\d,]*(?:\\.\\d+)?",
+      "gi"), "$1$2[amount]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+}
+
+/* Who the token says is doing this.
+   An account token carries { sub, is_tcg } and a name is not in it, so the
+   name is passed in by the caller when it has one to hand. The shared admin
+   password carries no identity at all and correctly produces nulls — the feed
+   then says "someone signed in with the admin password", which is true, and
+   better than attributing it to Tyler because he is usually the one. */
+export function logActor(p, name) {
+  const id = p && typeof p.sub === "string" ? p.sub : null;
+  const nm = String(name == null ? "" : name).trim().slice(0, 120);
+  return { actor: nm || null, actor_id: id };
+}
+
+/* Write one entry. Returns a promise that ALWAYS resolves.
+   Call it without awaiting; if you do await it, it still cannot throw. */
+export async function logActivity(p, kind, summary, opts = {}) {
+  try {
+    const k = String(kind || "").trim().slice(0, 60);
+    const s = stripLogText(summary);
+    if (!k || !s) return;
+    const who = logActor(p, opts.actorName);
+    const meta = (opts.meta && typeof opts.meta === "object" && !Array.isArray(opts.meta))
+      ? opts.meta : {};
+    await supabaseRest("POST", "/activity", {
+      kind: k,
+      summary: s,
+      show_id: opts.showId || null,
+      actor: opts.system ? null : who.actor,
+      actor_id: opts.system ? null : who.actor_id,
+      meta,
+    }, "return=minimal");
+  } catch (e) {
+    /* Deliberately swallowed. See rule 1. It is logged to the function console
+       so it is findable, and goes no further. */
+    console.log("[activity] not recorded: " + ((e && e.message) || e));
+  }
+}

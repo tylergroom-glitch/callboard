@@ -29,7 +29,7 @@
 //   and showGate() below refuses to run at all without a show id.
 import crypto from "node:crypto";
 import { json, readBody, auth, isAdmin, canManageShow, supabaseRest,
-         signUpload, signView, UPLOAD_EXT } from "./_lib.js";
+         signUpload, signView, UPLOAD_EXT, logActivity } from "./_lib.js";
 
 // Storage credentials now live in _lib.js with the helpers that use them.
 
@@ -247,6 +247,25 @@ export default async function handler(req, res) {
         out.push(row);
       }
       const saved = await supabaseRest("POST", "/expenses", out, "return=representation");
+
+      /* COUNTS AND CATEGORIES, NEVER AMOUNTS.
+         This is the log's sharpest edge. An expense IS a number, so the
+         tempting sentence is "Expense added: $412.50 for freight" — and that
+         number would then live forever in a table nothing prunes, on a feed
+         that will eventually be shown to somebody who should not see what
+         Touchstone pays for things. The count and the category say that money
+         moved and what kind, which is what a feed is for. The amount is one
+         click away on the screen that is allowed to show it. */
+      const n = (saved || []).length || out.length;
+      const cats = [...new Set(out.map((r) => String(r.category || "").trim()).filter(Boolean))];
+      await logActivity(p, "expense.added",
+        (n === 1 ? "Expense added" : n + " expenses added") +
+        (overhead ? " to overhead" : "") +
+        (cats.length && cats.length <= 3 ? " (" + cats.join(", ") + ")" : ""),
+        { showId: overhead ? null : showId,
+          actorName: (b && String(b.actorName || "").trim()) || "",
+          meta: { count: n } });
+
       return json(res, 200, { rows: saved || [] });
     }
 

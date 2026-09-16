@@ -19,7 +19,7 @@
 //
 // SETUP: run setup-catalog.sql, setup-quotes.sql, then setup-quotes-v4.sql for
 // presets. No new env vars.
-import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
+import { json, readBody, auth, isAdmin, supabaseRest, logActivity } from "./_lib.js";
 import { syncQuoteItems } from "./_items.js";
 
 const STATUSES = ["draft", "sent", "won", "lost"];
@@ -291,6 +291,16 @@ export default async function handler(req, res) {
         } catch (e) {
           console.log("[quotes] show_items sync failed for " + q.id + ": " + ((e && e.message) || e));
         }
+
+        /* The feed entry. NOTE WHAT IS ABSENT: the quote total.
+           A quote is money, this log is never pruned, and the feed will one
+           day be shown somewhere a producer can see it. "Quote v3 marked won"
+           carries the news without carrying the number. */
+        await logActivity(p, "quote." + st,
+          "Quote v" + (cur.version || "?") + " marked " + st +
+          (cur.name ? " - " + String(cur.name).slice(0, 100) : ""),
+          { showId: cur.event_id || null,
+            meta: { quoteId: q.id, version: cur.version, status: st } });
 
         return json(res, 200, { ok: true, status: st });
       }

@@ -16,7 +16,7 @@
 // are byte-for-byte what they were, so nothing in the front end changes: the
 // only visible difference is that `id` is now a uuid rather than an Airtable
 // record id, and both are opaque to the caller.
-import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
+import { json, readBody, auth, isAdmin, supabaseRest, logActivity } from "./_lib.js";
 
 const POS_KEY = "__positions__";
 const COLS = "id,name,data";
@@ -203,6 +203,13 @@ export default async function handler(req, res) {
         return json(res, 200, { ok: true, id: b.id });
       }
       const made = await supabaseRest("POST", `/roster?select=${COLS}`, payload, "return=representation");
+      /* Added, not edited. An edit to somebody already on the roster is a
+         detail change and does not belong in a feed; a new person joining is
+         news. Note the NAME only — the roster row carries rates and contact
+         details and none of that goes into a log. */
+      await logActivity(p, "crew.added", "Crew member added: " + name,
+        { actorName: (b && String(b.actorName || "").trim()) || "",
+          meta: { rosterId: (made && made[0] && made[0].id) || null } });
       return json(res, 200, rosterRecord((made && made[0]) || { id: null, name, data: payload.data }));
     }
 

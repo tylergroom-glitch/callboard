@@ -26,6 +26,27 @@ export const SECTION_KEYS = SECTIONS.map((s) => s.key);
 const s = (v) => (v === undefined || v === null ? "" : String(v)).trim();
 const nonEmpty = (row, keys) => keys.some((k) => s(row[k]));
 
+/* EVERY list this file reads goes through here first.
+ *
+ * WHY, IN ONE SENTENCE: a single null in a crew array used to 500 the whole
+ * endpoint, so a show with one stray row could not be messaged at all.
+ *
+ * The longer version. These lists come out of a JSON blob that has been
+ * written by every version of this app there has ever been. A crew array can
+ * hold a null where a row was cleared, `schedule` can be an object on a show
+ * that predates days, `pull.loose` can be a string on a record somebody
+ * imported. Nothing validates the blob on the way in and nothing ever will,
+ * because the blob is the schema.
+ *
+ * A renderer that trusts the shape turns any one of those into a 500 — and a
+ * 500 here does not mean "that section came out empty", it means Tyler cannot
+ * send his crew anything at all until somebody works out which row is the bad
+ * one. Coercing is not sloppiness; it is the difference between a packet with
+ * one line missing and no packet.
+ *
+ * So: not an array -> empty. Entries that are not objects -> dropped. */
+const rowsOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
+
 /* Days are sorted by DATE where there is one and by their stored order where
    there is not. A packet whose schedule is out of order is worse than no
    packet — somebody turns up on the wrong day. */
@@ -48,7 +69,7 @@ function brief(w, ev) {
     w.gap(6);
   }
 
-  const contacts = (ev.contacts || []).filter((c) => nonEmpty(c, ["name", "role", "phone", "email"]));
+  const contacts = rowsOf(ev.contacts).filter((c) => nonEmpty(c, ["name", "role", "phone", "email"]));
   if (contacts.length) {
     w.subheading("Contacts");
     w.table(
@@ -58,14 +79,14 @@ function brief(w, ev) {
     );
   }
 
-  const crew = (ev.crew || []).filter((c) => s(c.name));
+  const crew = rowsOf(ev.crew).filter((c) => s(c.name));
   if (crew.length) {
     w.subheading("Crew");
     /* Call times live per DAY per person. The packet shows the earliest one
        each person has, labelled as such, because "your call" is the number
        somebody actually needs and the full grid is the Schedule section's job. */
     const callFor = (cid) => {
-      const days = [...(ev.schedule || [])].sort(byDate);
+      const days = rowsOf(ev.schedule).slice().sort(byDate);
       for (const d of days) {
         const t = ev.callTimes && ev.callTimes[d.id] && ev.callTimes[d.id][cid];
         if (s(t)) return s(t);
@@ -83,7 +104,7 @@ function brief(w, ev) {
     );
   }
 
-  const wifi = (ev.wifi || []).filter((n) => nonEmpty(n, ["network", "ssid", "password"]));
+  const wifi = rowsOf(ev.wifi).filter((n) => nonEmpty(n, ["network", "ssid", "password"]));
   if (wifi.length) {
     w.subheading("Wi-Fi");
     w.table(
@@ -100,11 +121,11 @@ function brief(w, ev) {
 
 /* ------------------------------------------------------------- schedule -- */
 function schedule(w, ev) {
-  const days = [...(ev.schedule || [])].sort(byDate);
+  const days = rowsOf(ev.schedule).slice().sort(byDate);
   if (!days.length) { w.note("No schedule has been built yet."); return; }
   let any = false;
   for (const d of days) {
-    const items = (d.items || []).filter((i) => nonEmpty(i, ["time", "activity"]));
+    const items = rowsOf(d.items).filter((i) => nonEmpty(i, ["time", "activity"]));
     if (!items.length && !s(d.label)) continue;
     any = true;
     w.subheading([s(d.label), s(d.date)].filter(Boolean).join("  -  ") || "Day");
@@ -122,10 +143,11 @@ function rundown(w, ev) {
   const rd = ev.rundown || {};
   /* Columns are user-configurable, so the table is built from whatever this
      show actually has. Image columns are dropped: a packet is text. */
-  const cols = (Array.isArray(rd.columns) ? rd.columns : []).filter((c) => c && c.type !== "image");
-  const days = Array.isArray(rd.days) && rd.days.length
-    ? rd.days
-    : [{ id: "d1", label: "Run of Show", rows: rd.rows || [] }];
+  const cols = rowsOf(rd.columns).filter((c) => c.type !== "image");
+  const rdDays = rowsOf(rd.days);
+  const days = rdDays.length
+    ? rdDays
+    : [{ id: "d1", label: "Run of Show", rows: rowsOf(rd.rows) }];
 
   if (!cols.length) { w.note("This show's run of show has no columns set up."); return; }
 
@@ -135,7 +157,7 @@ function rundown(w, ev) {
 
   let any = false;
   for (const d of days) {
-    const rows = (d.rows || []).filter((r) => r && r.kind === "item");
+    const rows = rowsOf(d.rows).filter((r) => r.kind === "item");
     if (!rows.length) continue;
     any = true;
     const head = [s(d.label) || "Run of Show", s(d.date), s(d.start) ? "start " + s(d.start) : ""]
@@ -158,8 +180,9 @@ function rundown(w, ev) {
 /* ------------------------------------------------------------------ I/O -- */
 function io(kind) {
   return (w, ev) => {
-    const blocks = ((ev[kind] || {}).blocks || []).filter(
-      (b) => b && ((b.ins || []).length || (b.outs || []).length));
+    const src = (ev[kind] && typeof ev[kind] === "object") ? ev[kind] : {};
+    const blocks = rowsOf(src.blocks).filter(
+      (b) => rowsOf(b.ins).length || rowsOf(b.outs).length);
     if (!blocks.length) { w.note("No " + kind + " I/O has been entered."); return; }
     const spec = [
       { label: "#", key: "num", w: 0.6, dim: true },
@@ -169,7 +192,7 @@ function io(kind) {
       { label: "Length", key: "length", w: 1, dim: true },
       { label: "Notes", key: "notes", w: 2.4, dim: true },
     ];
-    const rows = (list) => (list || [])
+    const rows = (list) => rowsOf(list)
       .filter((r) => nonEmpty(r, ["num", "name", "patch", "signal", "notes"]))
       .map((r) => ({
         num: s(r.num), name: s(r.name), patch: s(r.patch), signal: s(r.signal),
@@ -187,9 +210,9 @@ function io(kind) {
 
 /* ------------------------------------------------------------ pull list -- */
 function pull(w, ev) {
-  const p = ev.pull || {};
-  const cases = (p.cases || []).filter((c) => c && (c.items || []).length);
-  const loose = (p.loose || []).filter((i) => nonEmpty(i, ["item", "qty", "notes"]));
+  const p = (ev.pull && typeof ev.pull === "object") ? ev.pull : {};
+  const cases = rowsOf(p.cases).filter((c) => rowsOf(c.items).length);
+  const loose = rowsOf(p.loose).filter((i) => nonEmpty(i, ["item", "qty", "notes"]));
   if (!cases.length && !loose.length) { w.note("The pull list is empty."); return; }
 
   const spec = [
@@ -208,7 +231,7 @@ function pull(w, ev) {
   });
 
   for (const c of cases) {
-    const items = (c.items || []).filter((i) => nonEmpty(i, ["item", "qty"]));
+    const items = rowsOf(c.items).filter((i) => nonEmpty(i, ["item", "qty"]));
     if (!items.length) continue;
     const head = ["Case " + (s(c.caseNo) || "-"), s(c.case), s(c.category)].filter(Boolean).join("  -  ");
     w.subheading(head);
@@ -229,7 +252,7 @@ const RENDER = {
    way whoever built it. Returns { bytes, pages, sections }. */
 export async function buildPacket(showData, sections, meta) {
   /* THE STRIP. Everything below renders from `ev`, never from `showData`. */
-  const ev = stripShowForRole(showData || {}, "crew");
+  const ev = stripShowForRole((showData && typeof showData === "object") ? showData : {}, "crew") || {};
 
   const wanted = SECTIONS.filter((x) => (sections || []).includes(x.key));
   const d = await newDoc();

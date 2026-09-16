@@ -1,14 +1,17 @@
 // /api/show-message — message everyone on a show, with a PDF packet attached.
 //
-//   POST ?show=<id>&preview=1   build the packet and hand it back, send nothing
-//   POST ?show=<id>             build it and send it
+//   POST ?show=<id>&preview=1    build the packet and hand it back, send nothing
+//   POST ?show=<id>              build it and send it now
+//   POST ?show=<id>              ...or, with `sendAt` in the body, schedule it
+//   GET  ?show=<id>&history=1    what has been sent and what is waiting to go
+//   POST ?show=<id>&cancel=<id>  call back a scheduled message before it goes
 //
-//   body: { subject, message, sections: [...], to: ["email", ...] }
+//   body: { subject, message, sections: [...], to: ["email", ...], sendAt }
 //
 // ---------------------------------------------------------------------------
 // THE RULE THIS FILE IS BUILT AROUND
 //
-//   WHO CAN BE EMAILED IS DECIDED HERE, FROM THE SHOW, NEVER FROM THE REQUEST.
+//   WHO CAN BE EMAILED IS DECIDED FROM THE SHOW, NEVER FROM THE REQUEST.
 //
 //   `to` is a FILTER over the show's own crew list, not an address book. An
 //   address that is not on the show is dropped, silently as far as the caller
@@ -17,112 +20,140 @@
 //   Touchstone's domain to anywhere — which is a deliverability problem, a
 //   reputation problem, and somebody else's spam complaint.
 //
-//   Same shape as the `crewId` check in call-ack.js: the request may choose
-//   among things the server already knows, and may not introduce new ones.
+//   The rule and the machinery both live in api/_send.js now, because
+//   /api/send-scheduled has to obey them identically.
 // ---------------------------------------------------------------------------
 //
-// WHY THE PDF IS BUILT HERE AND NOT IN THE BROWSER
-//   Every other PDF in this app is stamped client-side. That cannot serve a
-//   scheduled send, and two builders that must agree is how a packet starts
-//   differing depending on who pressed what. See the header of _pdf.js.
+// WHAT A SCHEDULED MESSAGE ACTUALLY STORES
+//   The instruction, not the email. Subject, body, which sections to attach,
+//   which people to filter to — and NOT the PDF. A packet built on Monday and
+//   sent on Thursday is a Monday packet: the schedule moved, two people were
+//   swapped, the pull list grew, and the crew would be holding a document that
+//   disagrees with the app with no way to know it. It is built fresh at send
+//   time. That is the whole reason this is worth having.
 //
-// SETUP: needs BREVO_API_KEY, which already exists. No new SQL.
-import { json, readBody, auth, canManageShow, supabaseRest,
-         sendBrevoBatch, stripShowForRole } from "./_lib.js";
-import { buildPacket, SECTION_KEYS, SECTIONS } from "./_packet.js";
+// SETUP: needs BREVO_API_KEY, which already exists.
+//        Scheduling needs sql/setup-activity.sql and a cron on
+//        /api/send-scheduled. Sending now works without either.
+import { json, readBody, auth, canManageShow, supabaseRest, logActivity } from "./_lib.js";
+import { SECTIONS } from "./_packet.js";
+import {
+  str, stampNow, cleanSections, loadShow, audience, applyFilter,
+  makePacket, packetFileName, deliverMessage, PacketError,
+  MAX_PREVIEW_BYTES,
+} from "./_send.js";
 
-/* Brevo takes 20MB per request INCLUDING the base64 attachment, which is
-   about a third bigger than the bytes. Vercel caps a function response at
-   4.5MB, which is what bounds the preview. Both are refused in words rather
-   than failing as a 500 somebody has to guess at. */
-const MAX_PDF_BYTES = 6 * 1024 * 1024;        // ~8MB base64, well inside Brevo
-const MAX_PREVIEW_BYTES = 3 * 1024 * 1024;    // ~4MB base64, inside Vercel
+/* How far ahead a message may be scheduled. Not a technical limit — a
+   sanity one. A send set for 2031 is a typo, and finding out in 2031 is
+   not a recovery. */
+const MAX_AHEAD_DAYS = 120;
 
-const str = (v, n) => String(v === null || v === undefined ? "" : v).trim().slice(0, n);
-const emailKey = (v) => String(v || "").trim().toLowerCase();
+/* The dispatcher runs on a cron, so a message can only go at a cron tick.
+   Scheduling something for 90 seconds from now would sit there looking broken
+   until the next run. Below this, it is refused with the reason. */
+const MIN_AHEAD_MS = 5 * 60 * 1000;
 
-const esc = (v) => String(v === null || v === undefined ? "" : v)
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+const SCHED_COLS = "id,show_id,subject,message,sections,recipients,send_at,status," +
+                   "created_at,created_by,sent_at,result";
 
-const BUSINESS_TZ = "America/Los_Angeles";
-function stampNow() {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: BUSINESS_TZ, day: "numeric", month: "short", year: "numeric",
-    hour: "numeric", minute: "2-digit",
-  }).format(new Date());
+const label = (key) => (SECTIONS.find((x) => x.key === key) || {}).label || key;
+
+/* A stored row, as the composer wants to read it. Note `recipients` goes out
+   as a count, not a list: the history panel is a record of what happened, and
+   nobody needs thirty-five addresses rendered into it. */
+function schedOut(r) {
+  return {
+    id: r.id,
+    subject: r.subject,
+    message: r.message || "",
+    sections: (Array.isArray(r.sections) ? r.sections : []).map(label),
+    sectionKeys: Array.isArray(r.sections) ? r.sections : [],
+    to: Array.isArray(r.recipients) ? r.recipients.length : null,
+    sendAt: r.send_at,
+    status: r.status,
+    createdAt: r.created_at,
+    createdBy: r.created_by || null,
+    sentAt: r.sent_at || null,
+    result: (r.result && typeof r.result === "object") ? r.result : null,
+  };
 }
 
-async function loadShow(id) {
-  const rows = await supabaseRest(
-    "GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=id,name,client,start_date,end_date,data", null);
-  return (rows && rows[0]) || null;
-}
-
-/* Everyone on this show who can actually be emailed, plus everyone who cannot.
-   Both halves are returned: "sent to 9 people" is only useful next to "and 3
-   have no email address on the crew list". */
-function audience(showData) {
-  const crew = (showData && Array.isArray(showData.crew) ? showData.crew : [])
-    .filter((c) => c && str(c.name, 200));
-  const withEmail = [];
-  const withoutEmail = [];
-  const seen = new Set();
-  for (const c of crew) {
-    const key = emailKey(c.email);
-    if (!key) { withoutEmail.push(str(c.name, 200)); continue; }
-    /* One person can hold two positions on a show — two crew rows, one human.
-       Emailing them the same packet twice is a small thing that makes the app
-       look broken. */
-    if (seen.has(key)) continue;
-    seen.add(key);
-    withEmail.push({ email: key, name: str(c.name, 200), position: str(c.position, 120) });
-  }
-  return { withEmail, withoutEmail };
-}
-
-function bodyHtml({ showName, message, sections, stamp, pages }) {
-  const lines = String(message || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
-  const paras = lines.length
-    ? lines.map((p) => '<p style="font-size:15px;line-height:1.6;margin:0 0 14px">' +
-        esc(p).replace(/\n/g, "<br>") + "</p>").join("")
-    : "";
-  const list = sections.length
-    ? '<ul style="font-size:14px;line-height:1.7;color:#444;margin:0 0 16px;padding-left:20px">' +
-      sections.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ul>"
-    : "";
-  return '<div style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px">' +
-    '<h1 style="font-size:19px;margin:0 0 4px">' + esc(showName) + "</h1>" +
-    paras +
-    (sections.length
-      ? '<p style="font-size:14px;margin:0 0 6px;color:#444"><b>Attached (' + pages +
-        " page" + (pages === 1 ? "" : "s") + "):</b></p>" + list
-      : "") +
-    '<p style="font-size:12px;color:#777;margin:18px 0 0;border-top:1px solid #e5e5e5;padding-top:12px">' +
-    "This packet is a snapshot as of " + esc(stamp) +
-    ". Open Crew Call for the current version.</p></div>";
+/* The table is only there once the SQL has been run. Everything that touches
+   it says so in words rather than showing a blank panel or a raw PostgREST
+   message about a relation. */
+function notSetUp(e) {
+  const msg = String((e && e.message) || "");
+  return e && (e.status === 404 || /does not exist|relation .*scheduled_messages/i.test(msg));
 }
 
 export default async function handler(req, res) {
   const p = auth(req);
   if (!p) return json(res, 401, { error: "Not signed in" });
-  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
 
   const q = req.query || {};
   const showId = q.show ? String(q.show) : null;
-  const preview = q.preview === "1" || q.preview === "true";
   if (!showId) return json(res, 400, { error: "show required" });
   if (!canManageShow(p, showId)) return json(res, 403, { error: "Not allowed" });
 
+  const preview = q.preview === "1" || q.preview === "true";
+  const history = q.history === "1" || q.history === "true";
+  const cancelId = q.cancel ? String(q.cancel) : null;
+
+  if (req.method === "GET") {
+    if (!history) return json(res, 405, { error: "Method not allowed" });
+    try {
+      const rows = await supabaseRest("GET",
+        "/scheduled_messages?select=" + SCHED_COLS +
+        "&show_id=eq." + encodeURIComponent(showId) +
+        "&order=send_at.desc&limit=50", null);
+      return json(res, 200, { messages: (rows || []).map(schedOut) });
+    } catch (e) {
+      if (notSetUp(e)) return json(res, 200, { messages: [], setup: true });
+      return json(res, e.status || 500, { error: e.message || "Server error" });
+    }
+  }
+
+  if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
+
+  /* Read ONCE. readBody consumes the request stream, so a second call returns
+     nothing — which is the kind of bug that looks like "the name is sometimes
+     missing" and takes an hour to find. */
+  let b = null;
+  try { b = await readBody(req); } catch { b = null; }
+  const actorName = str(b && b.actorName, 120);
+
+  /* ---- call one back -------------------------------------------------- */
+  if (cancelId) {
+    try {
+      /* Conditional on BOTH the show and the status. Scoping to the show stops
+         a manager of show A cancelling show B's message with a guessed id;
+         scoping to 'pending' stops a cancel racing a send that has already
+         started and reporting success for mail that is on its way out. */
+      const rows = await supabaseRest("PATCH",
+        "/scheduled_messages?id=eq." + encodeURIComponent(cancelId) +
+        "&show_id=eq." + encodeURIComponent(showId) + "&status=eq.pending",
+        { status: "cancelled" }, "return=representation");
+      if (!rows || !rows.length) {
+        return json(res, 409, {
+          error: "That message is no longer waiting to go — it has already been sent, or cancelled.",
+        });
+      }
+      await logActivity(p, "message.cancelled",
+        "Scheduled message cancelled: " + str(rows[0].subject, 120),
+        { showId, actorName });
+      return json(res, 200, { cancelled: true, message: schedOut(rows[0]) });
+    } catch (e) {
+      if (notSetUp(e)) return json(res, 503, { error: "Scheduling has not been set up yet." });
+      return json(res, e.status || 500, { error: e.message || "Server error" });
+    }
+  }
+
   try {
-    const b = await readBody(req);
     const subject = str(b && b.subject, 200);
     const message = str(b && b.message, 8000);
     if (!preview && !subject) return json(res, 400, { error: "A subject is required." });
 
-    const sections = (Array.isArray(b && b.sections) ? b.sections : [])
-      .map((x) => str(x, 40))
-      .filter((x) => SECTION_KEYS.includes(x));
+    const sections = cleanSections(b && b.sections);
     if (!sections.length && !message) {
       return json(res, 400, { error: "Write a message, or tick at least one section to attach." });
     }
@@ -133,40 +164,17 @@ export default async function handler(req, res) {
     const showName = str(show.name || data.name, 200) || "Show";
 
     const { withEmail, withoutEmail } = audience(data);
+    const { chosen, rejected } = applyFilter(withEmail, b && b.to);
 
-    /* The filter, not an address book. */
-    const asked = Array.isArray(b && b.to) ? b.to.map(emailKey).filter(Boolean) : null;
-    const chosen = asked ? withEmail.filter((c) => asked.includes(c.email)) : withEmail;
-    const rejected = asked ? asked.filter((a) => !withEmail.some((c) => c.email === a)) : [];
-
-    const stamp = stampNow();
-    let packet = null;
-    if (sections.length) {
-      packet = await buildPacket(data, sections, {
-        title: showName + " - Crew Packet",
-        subtitle: [str(show.client || data.client, 120),
-                   str((data.venue || {}).name, 160)].filter(Boolean).join("   |   "),
-        stamp,
-      });
-      const cap = preview ? MAX_PREVIEW_BYTES : MAX_PDF_BYTES;
-      if (packet.bytes.length > cap) {
-        return json(res, 413, {
-          error: "That packet came to " + Math.round(packet.bytes.length / 1024) +
-                 " KB, which is too big to " + (preview ? "preview" : "email") +
-                 ". Untick a section or two and try again.",
-        });
-      }
-    }
-
-    const base64 = packet ? Buffer.from(packet.bytes).toString("base64") : null;
-    const fileName = showName.replace(/[^A-Za-z0-9 _-]+/g, "").trim().replace(/\s+/g, "-") + "-packet.pdf";
-
+    /* ---- preview: sends nothing --------------------------------------- */
     if (preview) {
-      /* Sends nothing. This is what Tyler looks at before thirty-five people
-         get it, and the whole reason the endpoint has two modes. */
+      const packet = await makePacket({
+        show, data, sections, stamp: stampNow(), cap: MAX_PREVIEW_BYTES,
+      });
       return json(res, 200, {
         preview: true,
-        pdf: base64, fileName,
+        pdf: packet ? Buffer.from(packet.bytes).toString("base64") : null,
+        fileName: packetFileName(showName),
         pages: packet ? packet.pages : 0,
         sections: packet ? packet.sections : [],
         wouldSendTo: chosen.map((c) => ({ email: c.email, name: c.name })),
@@ -175,36 +183,91 @@ export default async function handler(req, res) {
       });
     }
 
-    if (!chosen.length) {
-      return json(res, 400, {
-        error: withEmail.length
-          ? "Nobody was selected."
-          : "Nobody on this show's crew list has an email address.",
-        noEmail: withoutEmail,
-      });
+    /* ---- schedule ------------------------------------------------------ */
+    const sendAtRaw = str(b && b.sendAt, 40);
+    if (sendAtRaw) {
+      const when = new Date(sendAtRaw);
+      if (!Number.isFinite(when.getTime())) {
+        return json(res, 400, { error: "That send time could not be read." });
+      }
+      const ms = when.getTime() - Date.now();
+      if (ms < MIN_AHEAD_MS) {
+        return json(res, 400, {
+          error: "Scheduled sends are checked every few minutes, so pick a time at " +
+                 "least 5 minutes out — or send it now.",
+        });
+      }
+      if (ms > MAX_AHEAD_DAYS * 24 * 60 * 60 * 1000) {
+        return json(res, 400, { error: "That is more than " + MAX_AHEAD_DAYS + " days away." });
+      }
+      /* Refused now rather than at send time. A message scheduled to nobody
+         fails silently in a cron run at 6am, which is the worst possible
+         moment to discover it. */
+      if (!chosen.length) {
+        return json(res, 400, {
+          error: withEmail.length
+            ? "Nobody was selected."
+            : "Nobody on this show's crew list has an email address.",
+          noEmail: withoutEmail,
+        });
+      }
+      /* The packet is NOT built here. It is built at send time, from the show
+         as it stands then. But it IS tested here, so a packet that cannot be
+         built is refused while somebody is looking at the screen rather than
+         at 6am on Thursday. The bytes are thrown away. */
+      await makePacket({ show, data, sections, stamp: stampNow(), cap: MAX_PREVIEW_BYTES });
+
+      try {
+        const rows = await supabaseRest("POST", "/scheduled_messages", {
+          show_id: showId,
+          subject, message, sections,
+          /* Stored as asked. Re-applied as a filter at send time. */
+          recipients: Array.isArray(b && b.to) ? chosen.map((c) => c.email) : null,
+          send_at: when.toISOString(),
+          created_by: actorName || null,
+          creator_id: (p && typeof p.sub === "string") ? p.sub : null,
+        }, "return=representation");
+        const row = (rows && rows[0]) || null;
+        await logActivity(p, "message.scheduled",
+          "Message scheduled for " + showName + ": " + subject,
+          { showId, actorName, meta: { sendAt: when.toISOString(), to: chosen.length } });
+        return json(res, 200, {
+          scheduled: true,
+          message: row ? schedOut(row) : null,
+          willSendTo: chosen.length,
+          noEmail: withoutEmail,
+          rejected,
+        });
+      } catch (e) {
+        if (notSetUp(e)) {
+          return json(res, 503, {
+            error: "Scheduling has not been set up yet. Run sql/setup-activity.sql in Supabase. " +
+                   "Sending now still works.",
+            setup: true,
+          });
+        }
+        throw e;
+      }
     }
 
-    const html = bodyHtml({
-      showName, message,
-      sections: packet ? packet.sections : [],
-      stamp, pages: packet ? packet.pages : 0,
+    /* ---- send now ------------------------------------------------------ */
+    const result = await deliverMessage({
+      show, data, subject, message, sections,
+      recipients: b && b.to, p, actorName,
     });
-
-    const { sent, failed } = await sendBrevoBatch(
-      chosen.map((c) => ({ to: c.email, toName: c.name, subject, html })),
-      packet ? { attachment: [{ content: base64, name: fileName }] } : {},
-    );
-
-    return json(res, 200, {
-      sent, failed,
-      pages: packet ? packet.pages : 0,
-      sections: packet ? packet.sections : [],
-      noEmail: withoutEmail,
-      /* Named, not counted. An address that was asked for and not sent to is
-         the one thing somebody needs to see. */
-      rejected,
-    });
+    return json(res, 200, result);
   } catch (e) {
-    return json(res, e.status || 500, { error: e.message || "Server error" });
+    if (e instanceof PacketError) {
+      console.log("[show-message] packet build failed for show " + showId + ": " +
+                  ((e.cause && e.cause.stack) || e.cause || ""));
+      return json(res, 500, {
+        error: e.message + " Untick sections one at a time to find which one, " +
+               "and send me that — the message itself will still go out with no attachment.",
+      });
+    }
+    return json(res, e.status || 500, {
+      error: e.message || "Server error",
+      ...(e.noEmail ? { noEmail: e.noEmail } : {}),
+    });
   }
 }

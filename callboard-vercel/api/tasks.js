@@ -15,7 +15,7 @@
 //
 // SETUP: run setup-tasks.sql. No new env vars for this file; the inbox needs
 // its own (see api/inbox.js).
-import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, sendBrevoEmail } from "./_lib.js";
+import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, sendBrevoEmail, logActivity } from "./_lib.js";
 
 const SETTINGS_KEY = "inbox_settings";
 const BUSINESS_TZ = "America/Los_Angeles";
@@ -284,6 +284,14 @@ export default async function handler(req, res) {
         due: task && task.due, byName: await myName(p), host: req.headers?.host,
       });
     }
+    /* The feed entry. Composed by hand from the title and the owner's name:
+       no body, no notes, nothing but what a person would say out loud. */
+    await logActivity(p, "task.created",
+      "New task: " + String((task && task.title) || "").slice(0, 120) +
+      (owner && owner.name ? " (for " + owner.name + ")" : ""),
+      { showId: (task && task.event_id) || null, actorName: await myName(p),
+        meta: { taskId: task && task.id } });
+
     return json(res, 200, { task, emailed });
   }
 
@@ -329,6 +337,20 @@ export default async function handler(req, res) {
         byName: await myName(p), host: req.headers?.host,
       });
     }
+    /* Only two changes are worth a line in the feed: finishing something, and
+       handing it to somebody else. Every other PATCH — a retitled task, a date
+       nudged by a day — is noise, and a feed that logs everything is a feed
+       nobody reads. */
+    if (r.value.status === "done") {
+      await logActivity(p, "task.completed",
+        "Task completed: " + String(row.title || "").slice(0, 120),
+        { showId: row.event_id || null, actorName: await myName(p), meta: { taskId: row.id } });
+    } else if (owner && owner.id) {
+      await logActivity(p, "task.assigned",
+        "Task given to " + owner.name + ": " + String(row.title || "").slice(0, 120),
+        { showId: row.event_id || null, actorName: await myName(p), meta: { taskId: row.id } });
+    }
+
     return json(res, 200, { task: row, emailed });
   }
 
