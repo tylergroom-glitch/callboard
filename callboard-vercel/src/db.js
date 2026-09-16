@@ -424,3 +424,28 @@ export const getDocTemplate = (docType) =>
   api("GET", "/api/crew-docs?template=" + encodeURIComponent(docType));
 export const signDocTemplateUpload = (docType) =>
   api("POST", "/api/crew-docs?template=1", { docType, contentType: "application/pdf" });
+
+/* ---- the activity feed -------------------------------------------------- */
+/* Newest first. Unscoped is admin-only; narrowed to a show it follows the
+   ordinary show-access rule. */
+export const getActivity = ({ showId, limit } = {}) =>
+  api("GET", "/api/activity?" + [
+    showId ? "show=" + encodeURIComponent(showId) : "",
+    limit ? "limit=" + encodeURIComponent(limit) : "",
+  ].filter(Boolean).join("&"));
+
+/* ---- scheduled messages ------------------------------------------------- */
+/* Same endpoint as an immediate send — the only difference is `sendAt` in the
+   body. Deliberately not a separate function calling a separate route: one
+   composer, one set of rules, one place a refusal can come from. */
+export const scheduleShowMessage = (showId, body) =>
+  api("POST", "/api/show-message?show=" + encodeURIComponent(showId), body);
+export const listShowMessages = (showId) =>
+  api("GET", "/api/show-message?history=1&show=" + encodeURIComponent(showId));
+export const cancelShowMessage = (showId, id) =>
+  api("POST", "/api/show-message?show=" + encodeURIComponent(showId) +
+      "&cancel=" + encodeURIComponent(id), {});
+
+/* ---- appearance --------------------------------------------------------- */
+export const getAppearance = () => api("GET", "/api/appearance");
+export const saveAppearance = (patch) => api("PUT", "/api/appearance", patch);

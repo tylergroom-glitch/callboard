@@ -40,6 +40,11 @@ import {
   previewShowMessage,
   sendShowMessage,
   getDashboard,
+  getActivity,
+  getAppearance,
+  saveAppearance,
+  listShowMessages,
+  cancelShowMessage,
   importQuote,
   listInventory,
   saveInventoryCase,
@@ -7090,7 +7095,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.46.0";
+const APP_VERSION = "1.47.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -7103,23 +7108,70 @@ const APP_VERSION = "1.46.0";
    without reading. The set is deliberately spread around the wheel so no two
    neighbours are confusable, and every one of them is dark enough to carry
    white text — checked, not assumed. */
+/* THE COLOURS, AND WHY THEY CHANGED TWICE.
+ *
+ * Round one forced WHITE text on every pill and then darkened each colour
+ * until white cleared 4.5:1. That is a legitimate way to pass the check and
+ * it produced a muted rail — #10804A for Today, #9A6B00 for Billing — which
+ * is exactly what "can you do some colors like this" was asking me to undo.
+ *
+ * Round two fixes the thing that was actually wrong: the INK was fixed and
+ * the colour was the variable. Turn it round — pick the bright colour first,
+ * then pick the ink that reads on it — and the rail can be as saturated as
+ * the mockup while clearing AA by a wide margin.
+ *
+ * One ink for all eight, deliberately. Seven dark pills and one white one
+ * looks like a mistake even when every one passes.
+ *
+ * Measured, not guessed. Worst of the eight is Shows at 6.28:1; six of the
+ * eight clear AAA (7:1). The script that computed these is in the round's
+ * notes — if you change a colour here, re-run it rather than eyeballing. */
 const ADM_NAV = [
-  { key: "today", label: "Today", c: "#10804A" },
-  { key: "todo", label: "To Do", c: "#D6246E" },
-  { key: "shows", label: "Shows", c: "#4338CA" },
-  { key: "pipeline", label: "Pipeline", c: "#0E7490" },
-  { key: "quotes", label: "Quotes", c: "#7C3AED" },
-  { key: "billing", label: "Billing", c: "#9A6B00" },
+  { key: "today", label: "Today", c: "#4ADE80" },
+  { key: "todo", label: "To Do", c: "#F472B6" },
+  { key: "shows", label: "Shows", c: "#818CF8" },
+  { key: "pipeline", label: "Pipeline", c: "#22D3EE" },
+  { key: "quotes", label: "Quotes", c: "#C4B5FD" },
+  { key: "billing", label: "Billing", c: "#FACC15" },
   /* Next to Billing, not buried in Settings: money out belongs beside money
      in, and the reason to open it — "I have a receipt in my pocket" — is the
      same kind of errand. */
-  { key: "expenses", label: "Expenses", c: "#B23A0A" },
-  { key: "catalog", label: "Catalog", c: "#1D4ED8" },
+  { key: "expenses", label: "Expenses", c: "#FB923C" },
+  { key: "catalog", label: "Catalog", c: "#60A5FA" },
 ];
 
+/* The wallpaper is fetched HERE rather than threaded down from the app shell.
+   The rail is rendered once and is the only thing that uses it, so a prop
+   through three components would be carrying a value nobody in between cares
+   about. It fails silently on purpose: a background image is the last thing
+   that should put an error on the screen. */
+function useWallpaper() {
+  const [wall, setWall] = useState({ wallpaper: null, dim: 60 });
+  useEffect(() => {
+    let alive = true;
+    getAppearance()
+      .then((r) => alive && r && setWall({ wallpaper: r.wallpaper || null, dim: Number(r.dim) || 0 }))
+      .catch(() => {});
+    /* Set from the Appearance panel without a reload. One listener, one
+       event, rather than lifting this into a context for a single value. */
+    const onChange = (e) => alive && e && e.detail && setWall({
+      wallpaper: e.detail.wallpaper || null, dim: Number(e.detail.dim) || 0,
+    });
+    window.addEventListener("cb-appearance", onChange);
+    return () => { alive = false; window.removeEventListener("cb-appearance", onChange); };
+  }, []);
+  return wall;
+}
+
 function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
+  const wall = useWallpaper();
   return (
-    <nav className="adm-side">
+    <nav
+      className={"adm-side" + (wall.wallpaper ? "" : " nowall")}
+      style={wall.wallpaper
+        ? { "--wall": "url(" + JSON.stringify(wall.wallpaper) + ")", "--wall-dim": wall.dim }
+        : undefined}
+    >
       <div className="adm-brand">
         <img className="adm-logo" src="/logo.png" alt="" width="34" height="30" />
         <div className="adm-brandname">{APP_NAME}</div>
@@ -7184,6 +7236,28 @@ function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
 const BUSINESS_TZ = "America/Los_Angeles";
 const tdToday = () => new Date().toLocaleDateString("en-CA", { timeZone: BUSINESS_TZ });
 const tdMoney0 = (n) => "$" + Math.round(Number(n) || 0).toLocaleString();
+
+/* Elapsed time is tdAgo(), declared further down beside the Settings screen.
+   NOT re-implemented here: a second "3 minutes ago" that rounds differently
+   is how the same event reads as 2 minutes on one panel and 3 on another.
+   It is a function declaration, so it hoists and this file can call it from
+   anywhere above its definition. */
+
+/* The icon and the colour both come from the half of the kind BEFORE the dot
+   — 'quote.won' and 'quote.lost' are the same kind of thing and should look
+   alike. That is why the kinds are dotted: no lookup table to keep in step
+   with the server every time a new verb is logged. An unknown family falls
+   back to a document, which is honest rather than blank. */
+const ACT_FAMILY = {
+  quote: { icon: "doc", tone: "violet" },
+  task: { icon: "check", tone: "pink" },
+  crew: { icon: "people", tone: "green" },
+  message: { icon: "doc", tone: "blue" },
+  expense: { icon: "money", tone: "amber" },
+};
+const actFamily = (kind) => ACT_FAMILY[String(kind || "").split(".")[0]] || { icon: "doc", tone: "blue" };
+const actIcon = (kind) => actFamily(kind).icon;
+const actTone = (kind) => actFamily(kind).tone;
 const tdShift = (iso, days) => {
   const d = new Date(iso + "T12:00:00");
   if (isNaN(d)) return iso;
@@ -7263,6 +7337,12 @@ function TodayScreen({ go, onOpenShow }) {
      take the invoices down with it. */
   const [fresh, setFresh] = useState({ st: "load", rows: [], err: "" });
   const [dash, setDash] = useState({ st: "load", shows: [], pipeline: { openTotal: 0, openCount: 0 }, unfilled: 0, err: "" });
+  /* The seventh loader, same rule as the other six: own state, own error, own
+     panel. This one is also the only one that can legitimately come back
+     saying "not set up yet" — the activity table arrives with a migration,
+     and until it is run the panel says so instead of showing an empty list
+     that looks like nothing has happened. */
+  const [act, setAct] = useState({ st: "load", rows: [], setup: false, err: "" });
   const [clearing, setClearing] = useState("");
 
   useEffect(() => {
@@ -7279,6 +7359,12 @@ function TodayScreen({ go, onOpenShow }) {
        pipeline total, which are the things Today could not get without one
        request per show. If it dies, three panels say so and the rest of the
        page is untouched. */
+    getActivity({ limit: 8 })
+      .then((r) => alive && setAct({ st: "ok", rows: (r && r.entries) || [], setup: false, err: "" }))
+      .catch((e) => alive && setAct({
+        st: "err", rows: [], setup: !!(e && e.setup),
+        err: (e && e.message) || "Couldn't load.",
+      }));
     getDashboard()
       .then((r) => alive && setDash({ st: "ok", shows: (r && r.shows) || [], pipeline: (r && r.pipeline) || { openTotal: 0, openCount: 0 }, unfilled: (r && r.unfilled) || 0, err: "" }))
       .catch((e) => alive && setDash({ st: "err", shows: [], pipeline: { openTotal: 0, openCount: 0 }, unfilled: 0, err: (e && e.message) || "Couldn't load." }));
@@ -7554,6 +7640,37 @@ function TodayScreen({ go, onOpenShow }) {
             has three cards; these two would otherwise sit in the first two and
             leave a column of nothing where Recent Activity will eventually go. */}
         <div className="dash-row2">
+        {/* ---- recent activity ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead">
+            <h2>Recent Activity</h2>
+            {/* No "View all": there is no activity screen yet, and a link
+                that goes nowhere is worse than no link. The panel shows the
+                last eight, which is what the question "what just happened"
+                actually wants. */}
+          </div>
+          {act.st === "err" && act.setup
+            ? <p className="dash-empty">Not switched on yet — run sql/setup-activity.sql in Supabase.</p>
+            : act.st === "err" ? <p className="dash-warn">{act.err}</p>
+            : act.st === "load" ? <p className="dash-empty">Loading…</p>
+            : !act.rows.length ? <p className="dash-empty">Nothing recorded yet. It fills up as you work.</p>
+            : act.rows.map((e) => (
+              <button key={e.id} className={"dash-act" + (e.showId ? "" : " flat")}
+                      onClick={() => (e.showId ? onOpenShow && onOpenShow(e.showId) : go("todo"))}>
+                <span className={"dash-act-i " + actTone(e.kind)}><DashIcon name={actIcon(e.kind)} /></span>
+                <span className="dash-act-t">
+                  <span className="dash-act-s">{e.summary}</span>
+                  <span className="dash-act-m">
+                    {/* Who, then how long ago. A null actor is the shared admin
+                        password or the scheduler — said in words rather than
+                        left blank or invented. */}
+                    {[e.actor || "automatic", tdAgo(e.at)].filter(Boolean).join("  ·  ")}
+                  </span>
+                </span>
+              </button>
+            ))}
+        </section>
+
         {/* ---- tasks due soon ---- */}
         <section className="dash-card">
           <div className="dash-cardhead">
@@ -7672,6 +7789,7 @@ const SET_TABS = [
   { key: "inbox", label: "Inbox & alerts" },
   { key: "todoist", label: "Todoist" },
   { key: "docs", label: "Crew documents" },
+  { key: "look", label: "Appearance" },
 ];
 
 /* How long ago, in words. A timestamp is a number you have to subtract from
@@ -7690,6 +7808,156 @@ function tdAgo(iso) {
   const h = Math.round(m / 60);
   if (h < 36) return h + (h === 1 ? " hour ago" : " hours ago");
   return Math.round(h / 24) + " days ago";
+}
+
+/* ---------------------------------------------------------------------------
+   APPEARANCE — the sidebar wallpaper.
+
+   THE WHOLE TRICK IS THAT THE BROWSER SHRINKS THE IMAGE BEFORE IT SENDS IT.
+
+   A photo off a phone is 3–8 MB and 4000px wide. The rail it decorates is 206
+   CSS pixels. Sending the original would mean a multi-megabyte row read on
+   every admin page load, to draw something a twentieth of its size.
+
+   So the file never leaves the browser at full size: it is drawn onto a canvas
+   at a sane height and re-encoded as JPEG, which turns a 6 MB photo into
+   roughly 150 KB. The server caps what it will accept anyway — belt and
+   braces, because this code runs on the client and the client is not where a
+   size limit is enforced.
+--------------------------------------------------------------------------- */
+
+/* Tall and narrow: the rail is a 206px column the full height of the window,
+   so the useful dimension is HEIGHT. Sizing by width would throw away most
+   of a landscape photo's resolution exactly where it is needed. */
+const WALL_MAX_H = 1400;
+const WALL_MAX_W = 900;
+const WALL_QUALITY = 0.82;
+
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, WALL_MAX_H / img.height, WALL_MAX_W / img.width);
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement("canvas");
+        c.width = w; c.height = h;
+        const ctx = c.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        /* JPEG, not PNG. A photograph as PNG is several times larger for no
+           visible gain, and a wallpaper is always a photograph. */
+        resolve(c.toDataURL("image/jpeg", WALL_QUALITY));
+      } catch (e) { reject(e); }
+      finally { URL.revokeObjectURL(url); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("That file could not be read as an image.")); };
+    img.src = url;
+  });
+}
+
+function SetAppearance() {
+  const [cur, setCur] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try { setCur(await getAppearance()); }
+    catch (e) { setErr((e && e.message) || "Couldn't read the appearance settings."); setCur({ wallpaper: null, dim: 60 }); }
+  };
+  useEffect(() => { load(); }, []);
+
+  /* Tell the rail without a reload. The sidebar listens for this rather than
+     being handed the value, because it is rendered outside this screen. */
+  const announce = (v) => {
+    setCur(v);
+    try { window.dispatchEvent(new CustomEvent("cb-appearance", { detail: v })); } catch {}
+  };
+
+  const onPick = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setErr(""); setNote(""); setBusy("Shrinking…");
+    try {
+      const dataUrl = await shrinkImage(file);
+      setBusy("Saving…");
+      const saved = await saveAppearance({ wallpaper: dataUrl });
+      announce(saved);
+      setNote("Saved — about " + Math.round(dataUrl.length / 1024) + " KB after shrinking, from " +
+              Math.round(file.size / 1024) + " KB.");
+    } catch (e2) {
+      setErr((e2 && e2.message) || "That image could not be saved.");
+    } finally { setBusy(""); }
+  };
+
+  const clear = async () => {
+    setErr(""); setNote(""); setBusy("Removing…");
+    try { announce(await saveAppearance({ wallpaper: null })); setNote("Removed."); }
+    catch (e) { setErr((e && e.message) || "Couldn't remove it."); }
+    finally { setBusy(""); }
+  };
+
+  const setDim = async (v) => {
+    setErr("");
+    try { announce(await saveAppearance({ dim: v })); }
+    catch (e) { setErr((e && e.message) || "Couldn't save that."); }
+  };
+
+  if (!cur) return <p style={{ color: "var(--dim)", fontSize: 13 }}>Loading…</p>;
+
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <h2 style={{ fontSize: 15, margin: "0 0 4px" }}>Sidebar wallpaper</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, margin: "0 0 14px" }}>
+        A picture behind the navigation rail. It is shrunk in your browser before
+        it is saved, so a photo straight off your phone is fine.
+      </p>
+
+      {cur.wallpaper ? (
+        <div style={{
+          width: 206, height: 190, borderRadius: 10, overflow: "hidden",
+          border: "1px solid var(--line)", marginBottom: 12,
+          backgroundImage: "url(" + JSON.stringify(cur.wallpaper) + ")",
+          backgroundSize: "cover", backgroundPosition: "center",
+        }} />
+      ) : (
+        <p style={{ color: "var(--faint)", fontSize: 13, margin: "0 0 12px" }}>Nothing set — the rail is plain.</p>
+      )}
+
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <label className="btn" style={{ cursor: "pointer", margin: 0 }}>
+          {cur.wallpaper ? "Choose a different picture" : "Choose a picture"}
+          <input type="file" accept="image/*" onChange={onPick} disabled={!!busy}
+                 style={{ display: "none", width: "auto" }} />
+        </label>
+        {cur.wallpaper ? <button className="btn ghost" onClick={clear} disabled={!!busy}>Remove</button> : null}
+        {busy ? <span style={{ color: "var(--dim)", fontSize: 13 }}>{busy}</span> : null}
+      </div>
+
+      {cur.wallpaper ? (
+        <div style={{ marginTop: 18 }}>
+          <label style={{ fontSize: 13, color: "var(--dim)", display: "block", marginBottom: 6 }}>
+            How much to fade it behind the menu — {cur.dim}%
+          </label>
+          {/* The slider exists because readability depends on the picture, and
+              only the person looking at it can judge. A dark photo needs almost
+              no scrim; a bright sky needs a lot. */}
+          <input type="range" min="0" max="90" step="5" value={cur.dim}
+                 onChange={(e) => announce({ ...cur, dim: Number(e.target.value) })}
+                 onMouseUp={(e) => setDim(Number(e.target.value))}
+                 onTouchEnd={(e) => setDim(Number(e.target.value))}
+                 style={{ width: 280 }} />
+        </div>
+      ) : null}
+
+      {note ? <p style={{ color: "var(--green)", fontSize: 13, marginTop: 12 }}>{note}</p> : null}
+      {err ? <p style={{ color: "var(--danger)", fontSize: 13, marginTop: 12 }}>{err}</p> : null}
+    </div>
+  );
 }
 
 function SetTodoist() {
@@ -7839,6 +8107,7 @@ function SettingsScreen({ onClose }) {
       {tab === "inbox" ? <SetInbox /> : null}
       {tab === "todoist" ? <SetTodoist /> : null}
       {tab === "docs" ? <SetCrewDocs /> : null}
+      {tab === "look" ? <SetAppearance /> : null}
     </div>
   );
 }
@@ -17772,6 +18041,9 @@ const CSS = `
   --ink:#E9ECF2; --dim:#96A0B2; --faint:#6C7688;
   --amber:#FFB020; --amber-deep:#E8971A;
   --green:#5FD08A; --danger:#FF6B6B;
+  /* The ink that sits ON a coloured nav pill. Near-black rather than pure
+     black: pure black on a saturated colour vibrates. */
+  --nav-ink:#0B1220;
   background:var(--bg); color:var(--ink);
   font-family:'Inter',system-ui,sans-serif;
   min-height:100vh; padding:0 0 60px;
@@ -17789,6 +18061,54 @@ const CSS = `
   background:var(--panel); border-right:1px solid var(--line);
   padding:22px 12px 16px;
 }
+/* ---- the wallpaper ----
+   Two pseudo-elements, and they have to be two.
+
+   ::before is the picture. ::after is a scrim over it — a gradient from the
+   panel colour at the top, where the brand and the nav live, to transparent
+   further down. Without the scrim, a light photo makes the nav labels
+   unreadable, and a wallpaper you cannot use is not a feature.
+
+   The picture is set from JS as --wall. When nothing is set it resolves to
+   none, ::before paints nothing, and the rail is exactly what it was.
+
+   z-index: picture 0, scrim 1, everything else 2. The children need the
+   stacking context, which is what position:relative on .adm-side provides. */
+.cb .adm-side{position:relative; overflow:hidden;}
+.cb .adm-side::before{
+  content:""; position:absolute; inset:0; z-index:0;
+  background-image:var(--wall, none);
+  background-size:cover; background-position:center;
+  pointer-events:none;
+}
+.cb .adm-side::after{
+  content:""; position:absolute; inset:0; z-index:1; pointer-events:none;
+  /* FALLBACK FIRST. If color-mix is not supported the gradient below is an
+     invalid declaration and is dropped entirely — leaving no scrim at all and
+     a rail whose labels sit directly on the photograph. A flat wash here means
+     the worst case is "less pretty", not "unreadable". */
+  background:rgba(27,30,38,.62);
+  /* The scrim never reaches transparent, and that is the point.
+     It used to: panel at the top easing to nothing at the bottom, on the
+     reasoning that the brand and the nav are up top. Rendering it against a
+     test picture with a bright band low down showed what that misses — the
+     rail has content all the way to the floor, and Settings and Sign out are
+     drawn in the faintest colour in the palette. They vanished.
+     So: strongest at the very top, easing to a FLOOR that holds the rest of
+     the way, and coming back up slightly over the last stretch where those
+     two faint labels live. A picture is worth less than being able to read
+     your own menu. */
+  background:linear-gradient(
+    180deg,
+    var(--panel) 0%,
+    color-mix(in srgb, var(--panel) calc(var(--wall-dim, 60) * 1%), transparent) 38%,
+    color-mix(in srgb, var(--panel) calc(var(--wall-dim, 60) * 1%), transparent) 68%,
+    color-mix(in srgb, var(--panel) calc((var(--wall-dim, 60) + 22) * 1%), transparent) 100%);
+}
+/* Nothing to dim when there is no picture — otherwise the scrim paints a
+   gradient over a flat panel for no reason. */
+.cb .adm-side.nowall::before, .cb .adm-side.nowall::after{display:none;}
+.cb .adm-side > *{position:relative; z-index:2;}
 .cb .adm-brand{padding:0 10px 20px;}
 .cb .adm-logo{display:block; width:34px; height:auto; margin-bottom:9px;}
 .cb .adm-brandname{
@@ -17812,10 +18132,19 @@ const CSS = `
    style, so these rules only carry what every one of them shares.
    .colour beats the hover and .on rules above by specificity, which is why
    those two are restated here rather than left to fight. */
-.cb .adm-navbtn.colour{color:#fff; font-weight:600; opacity:.88;}
-.cb .adm-navbtn.colour:hover{opacity:1; color:#fff;}
-.cb .adm-navbtn.colour.on{opacity:1; color:#fff; box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px rgba(255,255,255,.55);}
-.cb .adm-navbtn.colour .adm-badge{background:rgba(0,0,0,.35); color:#fff;}
+/* ONE ink for every pill, dark, because the pills are bright. See ADM_NAV
+   for the measured contrast figures. Full opacity: dimming a colour to
+   signal "not selected" was what made the rail look washed out, and the
+   ring below says which one is active far more clearly. */
+.cb .adm-navbtn.colour{color:var(--nav-ink); font-weight:650; opacity:1;}
+.cb .adm-navbtn.colour:hover{color:var(--nav-ink); filter:brightness(1.08);}
+.cb .adm-navbtn.colour.on{
+  color:var(--nav-ink);
+  box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px rgba(255,255,255,.72);
+}
+/* Dark badge on a bright pill: white on near-black, so it reads on all eight
+   without needing a per-colour rule. */
+.cb .adm-navbtn.colour .adm-badge{background:rgba(9,14,26,.82); color:#fff;}
 .cb .adm-navbtn.dim{color:var(--faint); font-weight:500;}
 .cb .adm-div{height:1px; background:var(--line); margin:10px 12px;}
 .cb .adm-spacer{flex:1; min-height:20px;}
@@ -18899,8 +19228,13 @@ const CSS = `
 .cb .mc-blockhead{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin-bottom:8px; display:flex; align-items:center; gap:8px;}
 .cb .mc-all{background:none; border:0; color:var(--amber); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; padding:0;}
 .cb .mc-chips{display:flex; flex-wrap:wrap; gap:7px;}
-.cb .mc-chip{display:inline-flex; align-items:center; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer; user-select:none;}
-.cb .mc-chip.on{border-color:var(--amber); background:rgba(255,176,32,.10);}
+/* .mc-wchip is the Send now / Send later pair. It shares the chip's
+   appearance and deliberately NOT its class name: ".mc-chip.on" means "a
+   ticked section" to the styles, to the tests and to whoever reads this next,
+   and one of these two is always on. Reusing the class made "every section
+   can be unticked" fail against a composer that was behaving perfectly. */
+.cb .mc-chip, .cb .mc-wchip{display:inline-flex; align-items:center; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer; user-select:none;}
+.cb .mc-chip.on, .cb .mc-wchip.on{border-color:var(--amber); background:rgba(255,176,32,.10);}
 .cb .mc-people{display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; margin-bottom:8px;}
 .cb .mc-person{display:flex; align-items:center; gap:9px; padding:6px 4px; border-radius:7px; cursor:pointer; font-size:13.5px;}
 .cb .mc-person:hover{background:var(--panel2);}
@@ -18917,6 +19251,40 @@ const CSS = `
 .cb .mc-warn{background:rgba(255,176,32,.09); border:1px solid var(--amber); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-top:8px;}
 .cb .mc-warn .mc-why{display:block; color:var(--dim); font-size:11.5px; margin-top:3px;}
 .cb .mc-sent{font-size:15px; margin:4px 0 6px;}
+/* ---- send later, and what is already queued ---- */
+.cb .mc-when{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+/* EVERY input needs an explicit width. .cb input{width:100%} applies to
+   radios and checkboxes too, which is how a tick box once rendered as a
+   full-width grey bar. */
+.cb .mc-dt{
+  width:auto; min-width:210px; background:var(--panel2); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:7px 9px;
+  font:inherit; font-size:13px;
+}
+.cb .mc-hist{display:flex; flex-direction:column; gap:1px;}
+.cb .mc-hrow{
+  display:flex; align-items:center; gap:10px;
+  padding:7px 2px; border-bottom:1px solid var(--line); font-size:12.5px;
+}
+.cb .mc-hrow:last-child{border-bottom:0;}
+.cb .mc-hwhen{color:var(--dim); flex:0 0 auto; font-variant-numeric:tabular-nums;}
+/* min-width:0 so a long subject ellipsises instead of pushing the row wider
+   than the modal. */
+.cb .mc-hsub{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .mc-hst{flex:0 0 auto; font-weight:600;}
+.cb .mc-hst.pending{color:var(--amber);}
+.cb .mc-hst.sent{color:var(--green);}
+.cb .mc-hst.sending{color:var(--amber-deep);}
+.cb .mc-hst.failed{color:var(--danger);}
+.cb .mc-hst.cancelled{color:var(--faint);}
+.cb .mc-callback{
+  flex:0 0 66px; text-align:right; background:none; border:0; padding:0;
+  font:inherit; font-size:12px; color:var(--amber); cursor:pointer;
+}
+.cb .mc-callback:hover{text-decoration:underline;}
+/* The placeholder keeps the column aligned on rows that cannot be called
+   back, so the statuses do not jitter left and right down the list. */
+.cb .mc-callback.ghost{cursor:default;}
 
 /* ---------- Today dashboard ----------
    No backticks anywhere in this stylesheet: the whole thing is inside a JS
@@ -18960,7 +19328,37 @@ const CSS = `
    the nowrap stage track inside pushed every card to 996px on a 390px phone
    and the whole page scrolled sideways. Same reason on the flex rows below. */
 .cb .dash-card.wide{grid-column:1 / -1;}
-.cb .dash-row2{grid-column:1 / -1; display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; min-width:0;}
+.cb .dash-row2{grid-column:1 / -1; display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; align-items:start; min-width:0;}
+
+/* ---- recent activity ----
+   NOTE: no backticks anywhere in this stylesheet, including in comments. The
+   whole thing is a JS template literal and one backtick ends it. */
+.cb .dash-act{
+  display:flex; align-items:flex-start; gap:11px; width:100%; text-align:left;
+  background:none; border:0; border-bottom:1px solid var(--line);
+  padding:9px 2px; cursor:pointer; font-family:inherit; color:var(--ink);
+}
+.cb .dash-act:last-child{border-bottom:0;}
+.cb .dash-act:hover{background:var(--panel2);}
+.cb .dash-act.flat{cursor:default;}
+.cb .dash-act.flat:hover{background:none;}
+.cb .dash-act-i{
+  width:28px; height:28px; border-radius:50%; margin-top:1px;
+  display:inline-flex; align-items:center; justify-content:center;
+  flex:0 0 auto; color:#fff;
+}
+.cb .dash-act-i.violet{background:#6D28D9;}
+.cb .dash-act-i.pink{background:#BE185D;}
+.cb .dash-act-i.green{background:#047857;}
+.cb .dash-act-i.blue{background:#1D4ED8;}
+.cb .dash-act-i.amber{background:#B45309;}
+/* min-width:0 so a long summary wraps instead of forcing the grid column
+   wider than the viewport. Grid items default to min-width:auto and cannot
+   shrink below their content, which is what produced a 996px row inside a
+   390px phone the last time this was forgotten. */
+.cb .dash-act-t{flex:1; min-width:0; display:flex; flex-direction:column; gap:2px;}
+.cb .dash-act-s{font-size:13.5px; line-height:1.35; overflow-wrap:anywhere;}
+.cb .dash-act-m{font-size:11.5px; color:var(--faint);}
 .cb .dash-cardhead{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; min-width:0;}
 .cb .dash-cardhead h2{font-size:15px; margin:0; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis;}
 .cb .dash-link{background:none; border:0; color:var(--amber); font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer; padding:0; white-space:nowrap;}
@@ -20085,6 +20483,51 @@ const CSS = `
       email address is named on screen, before and after, because "sent to 9"
       next to a crew of 12 is the number that matters.
    ============================================================ */
+/* Who to record as having done this.
+ *
+ * The token does not carry a name — an account token is { sub, is_tcg } and
+ * the shared admin password carries no identity at all — so the browser sends
+ * one for the feed to show. It is a LABEL, never a permission: the server
+ * takes the actor id from the token and this only ever fills in the human-
+ * readable part. A body that could name its own author would be a log anyone
+ * could write fiction into, which is the whole reason the id is not taken
+ * from here.
+ *
+ * Falls back to the email, then to nothing — and nothing is fine: the feed
+ * says "automatic" rather than inventing somebody. */
+function myDisplayName() {
+  try {
+    const raw = sessionStorage.getItem("cb_auth");
+    const a = raw ? JSON.parse(raw) : null;
+    return String((a && (a.name || a.email)) || "").trim().slice(0, 120);
+  } catch { return ""; }
+}
+
+/* A stored instant, shown in the business timezone — NOT the browser's.
+   Tyler schedules from a laptop that is sometimes on the road, and a message
+   that says "9:00 AM" in one city and "12:00 PM" in another for the same row
+   is how somebody double-books a send. Everything dated in this app is
+   Pacific; this is too, and it says so. */
+function fmtWhen(iso) {
+  if (!iso) return "";
+  const t = new Date(iso);
+  if (isNaN(t.getTime())) return "";
+  return t.toLocaleString("en-US", {
+    timeZone: "America/Los_Angeles",
+    weekday: "short", month: "short", day: "numeric",
+    hour: "numeric", minute: "2-digit",
+  }) + " PT";
+}
+
+/* The earliest the picker will offer, as a datetime-local string in the
+   BROWSER's zone, because that is the only thing the input understands.
+   Ten minutes out: the server refuses anything under five, and offering a
+   time it will refuse is a trap. */
+function minWhenLocal() {
+  const d = new Date(Date.now() + 10 * 60000 - new Date().getTimezoneOffset() * 60000);
+  return d.toISOString().slice(0, 16);
+}
+
 const MSG_SECTIONS = [
   { key: "brief",    label: "Crew Brief" },
   { key: "schedule", label: "Schedule" },
@@ -20101,6 +20544,21 @@ function MessageCrewModal({ event, onClose, flash }) {
   const [busy, setBusy] = useState("");          // "" | "preview" | "send"
   const [err, setErr] = useState("");
   const [done, setDone] = useState(null);
+  /* "" = send now. A datetime-local value = schedule it.
+     One composer, one set of rules; the only difference between sending now
+     and sending Thursday is whether this string is empty. */
+  const [when, setWhen] = useState("");
+  const [hist, setHist] = useState({ st: "load", rows: [], err: "" });
+
+  const loadHist = async () => {
+    try {
+      const r = await listShowMessages(event.id);
+      setHist({ st: "ok", rows: (r && r.messages) || [], err: "" });
+    } catch (e) {
+      setHist({ st: "err", rows: [], err: (e && e.message) || "Couldn't read the history." });
+    }
+  };
+  useEffect(() => { loadHist(); /* eslint-disable-next-line */ }, [event.id]);
 
   /* The audience is computed here for display only. The SERVER decides who is
      actually emailed, from the show, and drops anything not on it — this list
@@ -20125,12 +20583,22 @@ function MessageCrewModal({ event, onClose, flash }) {
   const recipients = roster.filter((r) => to.has(r.email));
   const canSend = !!subject.trim() && recipients.length > 0 && (sections.length > 0 || !!message.trim());
 
-  const body = () => ({ subject: subject.trim(), message, sections, to: recipients.map((r) => r.email) });
+  const body = (withWhen) => ({
+    subject: subject.trim(), message, sections,
+    to: recipients.map((r) => r.email),
+    /* The browser gives a local wall-clock string with no zone. new Date()
+       reads it in the browser's own zone, which is the one Tyler picked it
+       in, and toISOString hands the server an unambiguous instant. Sending
+       the bare string would make "9am" mean 9am UTC on the server — two
+       hours before anyone is awake, in the wrong direction, twice a year. */
+    ...(withWhen && when ? { sendAt: new Date(when).toISOString() } : {}),
+    actorName: myDisplayName(),
+  });
 
   const preview = async () => {
     setErr(""); setBusy("preview");
     try {
-      const r = await previewShowMessage(event.id, body());
+      const r = await previewShowMessage(event.id, body(false));
       if (!r.pdf) throw new Error("Nothing was attached — tick a section first.");
       /* Opened, not downloaded: the point is to LOOK at it. */
       const bin = atob(r.pdf);
@@ -20146,12 +20614,49 @@ function MessageCrewModal({ event, onClose, flash }) {
   const send = async () => {
     setErr(""); setBusy("send");
     try {
-      const r = await sendShowMessage(event.id, body());
+      const r = await sendShowMessage(event.id, body(true));
       setDone(r);
-      if (flash) flash("Sent to " + r.sent + (r.sent === 1 ? " person" : " people"));
+      if (flash) {
+        flash(r.scheduled
+          ? "Scheduled for " + fmtWhen(r.message && r.message.sendAt)
+          : "Sent to " + r.sent + (r.sent === 1 ? " person" : " people"));
+      }
+      if (r.scheduled) loadHist();
     } catch (e) { setErr((e && e.message) || "Could not send."); }
     setBusy("");
   };
+
+  const callBack = async (id) => {
+    setErr("");
+    try { await cancelShowMessage(event.id, id); loadHist(); if (flash) flash("Called back."); }
+    catch (e) { setErr((e && e.message) || "Could not cancel it."); }
+  };
+
+  if (done && done.scheduled) {
+    return (
+      <div className="sa-overlay" onClick={onClose}>
+        <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sa-title">Scheduled</div>
+          <p className="mc-sent">
+            Going to <b>{done.willSendTo}</b> {done.willSendTo === 1 ? "person" : "people"} on{" "}
+            <b>{fmtWhen(done.message && done.message.sendAt)}</b>.
+          </p>
+          {/* The one thing somebody has to understand about a scheduled send,
+              said at the moment they schedule it rather than discovered after
+              the fact. */}
+          <p className="sa-hint">
+            The PDF is built when it goes out, not now — so it will match the show
+            as it stands that morning, not as it stands today. Anyone taken off the
+            crew before then will not receive it.
+          </p>
+          {done.noEmail && done.noEmail.length
+            ? <div className="mc-warn"><b>No email address on the crew list:</b> {done.noEmail.join(", ")}
+                <span className="mc-why">They will not be emailed. Add an address on the Brief.</span></div> : null}
+          <div className="sa-actions"><button className="btn" onClick={onClose}>Close</button></div>
+        </div>
+      </div>
+    );
+  }
 
   if (done) {
     return (
@@ -20239,6 +20744,71 @@ function MessageCrewModal({ event, onClose, flash }) {
           ) : null}
         </div>
 
+        <div className="mc-block">
+          <div className="mc-blockhead">When</div>
+          <div className="mc-when">
+            <label className={"mc-wchip" + (when ? "" : " on")}>
+              <input type="radio" className="mc-cbx" name="mc-when" checked={!when}
+                     onChange={() => setWhen("")} />
+              Send now
+            </label>
+            <label className={"mc-wchip" + (when ? " on" : "")}>
+              <input type="radio" className="mc-cbx" name="mc-when" checked={!!when}
+                     onChange={() => setWhen(minWhenLocal())} />
+              Send later
+            </label>
+            {when ? (
+              <input type="datetime-local" className="mc-dt" value={when} min={minWhenLocal()}
+                     onChange={(e) => setWhen(e.target.value)} />
+            ) : null}
+          </div>
+          {when ? (
+            <div className="sa-hint">
+              {fmtWhen(new Date(when).toISOString())} — the packet is built then, from
+              the show as it stands at that moment. Checked every five minutes, so it
+              may go up to five minutes late.
+            </div>
+          ) : null}
+        </div>
+
+        {/* What is already queued or gone. Sits inside the composer rather than
+            on its own screen because "has this already gone out?" is a question
+            you ask with your hand on the Send button. */}
+        {hist.st === "ok" && hist.rows.length ? (
+          <div className="mc-block">
+            <div className="mc-blockhead">Already sent or waiting</div>
+            <div className="mc-hist">
+              {hist.rows.slice(0, 6).map((m) => (
+                <div key={m.id} className={"mc-hrow " + m.status}>
+                  <span className="mc-hwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
+                  <span className="mc-hsub">{m.subject}</span>
+                  <span className={"mc-hst " + m.status}>
+                    {m.status === "pending" ? "waiting"
+                      : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
+                      : m.status === "sending" ? "stuck mid-send"
+                      : m.status}
+                  </span>
+                  {m.status === "pending"
+                    ? <button className="mc-callback" onClick={() => callBack(m.id)}>Call back</button>
+                    : <span className="mc-callback ghost" />}
+                </div>
+              ))}
+            </div>
+            {hist.rows.some((m) => m.status === "sending") ? (
+              /* Deliberately not retried automatically: nobody here can tell
+                 whether the mail went before the process died, and sending the
+                 same packet twice is worse than sending it late. */
+              <div className="mc-warn">
+                <b>One send stopped part way through.</b>
+                <span className="mc-why">
+                  It is not retried on its own — check whether the crew received it,
+                  then send again if they did not.
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {err ? <div className="sa-err">{err}</div> : null}
         <div className="sa-actions">
           <button className="btn ghost" onClick={onClose} disabled={!!busy}>Cancel</button>
@@ -20247,7 +20817,9 @@ function MessageCrewModal({ event, onClose, flash }) {
             {busy === "preview" ? "Building…" : "Preview the PDF"}
           </button>
           <button className="btn" onClick={send} disabled={!!busy || !canSend}>
-            {busy === "send" ? "Sending…" : "Send to " + recipients.length}
+            {busy === "send"
+              ? (when ? "Scheduling…" : "Sending…")
+              : (when ? "Schedule for " + recipients.length : "Send to " + recipients.length)}
           </button>
         </div>
       </div>
