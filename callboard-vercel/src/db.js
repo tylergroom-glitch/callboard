@@ -286,6 +286,52 @@ export const updateTask = (id, patch) =>
   api("PATCH", "/api/tasks?id=" + encodeURIComponent(id), { patch });
 export const deleteTask = (id) => api("DELETE", "/api/tasks?id=" + encodeURIComponent(id));
 // Which addresses and numbers may file things, and whether the digest is on.
+/* Expenses and receipts. The endpoint has existed and worked for weeks with
+   nothing calling it — these are the calls the screen makes.
+
+   `deleteExpense` is a SOFT delete on the server: the row leaves every list
+   and the receipt stays in the bucket, because a receipt is tax evidence and
+   tidying a screen must not be able to destroy it. */
+export const listShowExpenses = (showId) =>
+  api("GET", "/api/expenses?show=" + encodeURIComponent(showId));
+export const listOverheadExpenses = (from, to) =>
+  api("GET", "/api/expenses?overhead=1" +
+    (from ? "&from=" + encodeURIComponent(from) : "") +
+    (to ? "&to=" + encodeURIComponent(to) : ""));
+export const listYearExpenses = (year) =>
+  api("GET", "/api/expenses?year=" + encodeURIComponent(year));
+export const createExpenses = (rows, { showId, overhead } = {}) =>
+  api("POST", "/api/expenses?" + (overhead ? "overhead=1" : "show=" + encodeURIComponent(showId)), { rows });
+export const updateExpense = (id, patch) =>
+  api("PATCH", "/api/expenses?id=" + encodeURIComponent(id), patch);
+export const deleteExpense = (id) =>
+  api("DELETE", "/api/expenses?id=" + encodeURIComponent(id));
+export const signReceiptUpload = (contentType, { showId, overhead } = {}) =>
+  api("POST", "/api/expenses?upload=1&" + (overhead ? "overhead=1" : "show=" + encodeURIComponent(showId)), { contentType });
+export const viewReceipt = (id) =>
+  api("GET", "/api/expenses?receipt=" + encodeURIComponent(id));
+
+/* "Got it" on the call sheet. Its own endpoint rather than a field on the show,
+   because every crew member confirms within the same few minutes and the show
+   record saves whole — see api/call-ack.js. */
+export const listCallAcks = (showId) =>
+  api("GET", "/api/call-ack?show=" + encodeURIComponent(showId));
+export const confirmCall = (showId, crewId, ackOf) =>
+  api("POST", "/api/call-ack?show=" + encodeURIComponent(showId), { crewId, ackOf });
+
+/* Todoist. The sync is two-way for completions: your list goes out, ticking it
+   on the phone comes back. See api/todoist.js for why it cannot silently
+   drift — the short version is that reads are a bookmark and writes are
+   idempotent. */
+export const getTodoistStatus = () => api("GET", "/api/todoist?status=1");
+export const connectTodoist = () => api("POST", "/api/todoist?connect=1");
+export const disconnectTodoist = () => api("POST", "/api/todoist?disconnect=1");
+export const syncTodoist = () => api("POST", "/api/todoist?sync=1");
+
+// Send one Telegram message now and report exactly what Telegram said back.
+// The only way to tell "this deployment cannot reach my phone" from "the
+// schedule is not running" without reading Vercel's logs.
+export const sendTestNudge = () => api("GET", "/api/nudge?test=1");
 export const getInboxSettings = () => api("GET", "/api/tasks?settings=1");
 export const saveInboxSettings = (settings) => api("POST", "/api/tasks?settings=1", { settings });
 

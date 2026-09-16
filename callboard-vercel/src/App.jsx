@@ -96,6 +96,21 @@ import {
   updateTask,
   deleteTask,
   getInboxSettings,
+  sendTestNudge,
+  listShowExpenses,
+  listOverheadExpenses,
+  listYearExpenses,
+  createExpenses,
+  updateExpense,
+  deleteExpense,
+  signReceiptUpload,
+  viewReceipt,
+  listCallAcks,
+  confirmCall,
+  getTodoistStatus,
+  connectTodoist,
+  disconnectTodoist,
+  syncTodoist,
   saveInboxSettings,
   getAgentThread,
   sendAgent,
@@ -1352,6 +1367,8 @@ function Callboard({ auth, onLogout }) {
               />
             ) : admSection === "billing" ? (
               <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
+            ) : admSection === "expenses" ? (
+              <ExpensesScreen onClose={() => goAdmin("shows")} events={events} />
             ) : admSection === "roster" ? (
               <RosterScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "staff" ? (
@@ -2438,6 +2455,23 @@ function SetInbox() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [tg, setTg] = useState(null);
+
+  /* The endpoint never throws on a Telegram failure — that is the whole point,
+     it reports instead — so a thrown error here means the request itself did
+     not land, which is a different thing and says so. */
+  const test = async () => {
+    setTesting(true); setTg(null); setErr("");
+    try {
+      setTg(await sendTestNudge());
+    } catch (e) {
+      setTg({ ok: false, botTokenSet: true, idsConfigured: 1,
+        reason: "Could not reach /api/nudge — " + ((e && e.message) || "no response") +
+                ". If that is a 404, api/nudge.js is not deployed." });
+    }
+    setTesting(false);
+  };
 
   useEffect(() => {
     getInboxSettings()
@@ -2511,6 +2545,60 @@ function SetInbox() {
               is set under <b>Billing → Daily email</b>, where you can also send yourself a test copy.
             </div>
 
+            {/* ---- the test send ----
+                Notifications going quiet used to be unanswerable from inside
+                the app: every failure looked the same, and the difference
+                between "the bot cannot reach me" and "the schedule is not
+                running" was only visible in Vercel's logs. This answers the
+                first half in one click and says which half it was. */}
+            <div className="tk-tg">
+              <div>
+                <div className="tk-lbl" style={{ margin: 0 }}>Are notifications actually working?</div>
+                <div className="tk-help" style={{ margin: "3px 0 0" }}>
+                  Sends one message to the ids above, right now, and tells you what Telegram said back.
+                  Save first if you have just changed them.
+                </div>
+              </div>
+              <button className="btn ghost" onClick={test} disabled={busy || testing}>
+                {testing ? "Sending…" : "Send a test message"}
+              </button>
+            </div>
+
+            {tg ? (
+              <div className={tg.ok ? "tk-tgok" : "tk-err"} style={{ marginTop: 10 }}>
+                {tg.ok ? (
+                  <>Sent. Check Telegram — it should be on your phone now.</>
+                ) : (
+                  <>
+                    <b>Nothing was sent.</b>{" "}
+                    {!tg.botTokenSet
+                      ? "TELEGRAM_BOT_TOKEN is not set on this deployment — add it in Vercel → Settings → Environment Variables, for the environment this branch deploys to, then redeploy."
+                      : !tg.idsConfigured
+                      ? "There are no Telegram ids saved above."
+                      : tg.reason || "Telegram refused it."}
+                    {tg.botTokenSet && tg.idsConfigured ? (
+                      <div style={{ marginTop: 8, fontWeight: 400 }}>
+                        {/* The commonest cause by a mile, and the least
+                            guessable: Telegram forbids a bot from opening a
+                            conversation, so a person who has never messaged it
+                            simply cannot be messaged. */}
+                        “chat not found” usually means that id has never sent the bot a message.
+                        Open Telegram, find the bot, and send it <b>/start</b> once — then test again.
+                      </div>
+                    ) : null}
+                  </>
+                )}
+                {tg.ok ? (
+                  <div style={{ marginTop: 8, fontWeight: 400 }}>
+                    If the test arrives but the daily reminders never do, the schedule is not running
+                    rather than the bot. Vercel only runs cron jobs on <b>production</b> deployments,
+                    and <code>vercel.json</code> has to be at the top of the repository, not inside{" "}
+                    <code>/api</code>. Vercel → Settings → Cron Jobs lists what is actually registered.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className="set-actions">
               {saved && <span className="set-saved">Saved</span>}
               <button className="btn" onClick={save} disabled={busy}>{busy ? "Saving…" : "Save"}</button>
@@ -2559,6 +2647,92 @@ function tkDueLabel(due, today) {
    sorting and rendering never have to care which table it lives in. */
 function tkRow(x) { return x; }
 
+/* Pull anything ticked off in Todoist, when the To Do screen opens.
+
+   The schedule does this too. This exists because the schedule is the part of
+   this system that has already failed silently once — if vercel.json is in the
+   wrong place or the branch is not the production one, no cron ever runs and
+   nothing says so. Looking at the list reconciles it regardless, so there is no
+   single point of failure.
+
+   Module-level, not component state: it must survive the screen being closed
+   and reopened, which is exactly when somebody would otherwise hammer it. */
+let tkLastSync = 0;
+const TK_SYNC_EVERY = 60 * 1000;
+
+async function tkSyncTodoist() {
+  if (Date.now() - tkLastSync < TK_SYNC_EVERY) return false;
+  tkLastSync = Date.now();
+  try {
+    const r = await syncTodoist();
+    /* Quiet on purpose. Not connected, no token, switched off — all of these
+       are normal and none of them is news while you are trying to read your
+       to-do list. The Settings panel is where the state of the sync is
+       reported; this is just an opportunistic catch-up. */
+    return !!(r && (r.completed || r.added || r.closed || r.reopened));
+  } catch { return false; }
+}
+
+/* The editor a row turns into when you click it.
+
+   DEFINED AT TOP LEVEL, deliberately. A component declared inside TasksScreen
+   is a new component type on every render, so React unmounts and remounts it
+   between keystrokes and the input loses focus after one character. RosterForm
+   further down this file carries a comment about the same trap; this is the
+   second time it would have bitten.
+
+   Title, date and notes only. Priority, due time, moving a task between shows
+   and deleting one are all supported by /api/tasks already — they are left out
+   here on purpose rather than for want of a route. */
+function TkEdit({ draft, onChange, busy, onSave, onCancel, where }) {
+  const canSave = !!String(draft.title || "").trim();
+  const esc = (e) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } };
+  return (
+    <div className="tk-row tk-editing">
+      <div className="tk-edit">
+        <input
+          className="tk-edit-title"
+          autoFocus
+          value={draft.title}
+          placeholder="What needs doing"
+          onChange={(e) => onChange({ ...draft, title: e.target.value })}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); if (canSave && !busy) onSave(); }
+            esc(e);
+          }}
+        />
+        <textarea
+          className="tk-edit-notes" rows={2} value={draft.notes}
+          placeholder="Notes — anything you want next to it"
+          onChange={(e) => onChange({ ...draft, notes: e.target.value })}
+          onKeyDown={esc}
+        />
+        <div className="tk-edit-foot">
+          <input
+            className="tk-edit-due" type="date" value={draft.due}
+            onChange={(e) => onChange({ ...draft, due: e.target.value })}
+            onKeyDown={esc}
+          />
+          {/* Clearing a date needs its own control: emptying a date input is
+              fiddly in every browser, and "no date" is a real answer here —
+              undated work sorts below dated work rather than vanishing. */}
+          {draft.due ? (
+            <button className="btn ghost tk-edit-clear" onClick={() => onChange({ ...draft, due: "" })} disabled={busy}>
+              Clear date
+            </button>
+          ) : null}
+          {where ? <span className="tk-edit-where">{where}</span> : null}
+          <span className="tk-spacer" />
+          <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn" onClick={onSave} disabled={!canSave || busy}>
+            {busy ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TasksScreen({ onClose, onOpenShow }) {
   const [state, setState] = useState("loading");
   const [err, setErr] = useState("");
@@ -2571,6 +2745,10 @@ function TasksScreen({ onClose, onOpenShow }) {
   const [newDue, setNewDue] = useState("");
   const [busy, setBusy] = useState("");
   const [openRaw, setOpenRaw] = useState(null);
+  /* One row at a time, held by key rather than by id: a task and a show to-do
+     can share an id, and the merged list is keyed accordingly. */
+  const [editKey, setEditKey] = useState("");
+  const [draft, setDraft] = useState({ title: "", due: "", notes: "" });
 
   const load = async () => {
     setState("loading"); setErr("");
@@ -2594,7 +2772,19 @@ function TasksScreen({ onClose, onOpenShow }) {
       setState("ready");
     }
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    let alive = true;
+    /* Show the list FIRST, then reconcile. A sync in front of the load would
+       make opening To Do wait on a third-party API — and on the day Todoist is
+       slow, the screen would look broken. This way the worst case is a list
+       that updates a second after you see it. */
+    load().then(async () => {
+      if (!alive) return;
+      if (await tkSyncTodoist()) { if (alive) load(); }
+    });
+    return () => { alive = false; };
+  }, []);
 
   const shows = showRows.map((s) => ({ id: s.id, name: s.name }));
   const showName = (id) => (showRows.find((s) => s.id === id) || {}).name || "";
@@ -2665,6 +2855,47 @@ function TasksScreen({ onClose, onOpenShow }) {
         setShowRows((prev) => prev.map((s) => (s.id === r.showId ? { ...s, todos: next } : s)));
       }
     } catch (e) {
+      setErr((e && e.message) || "Couldn't save that.");
+    }
+    setBusy("");
+  };
+
+  /* ---- editing a row ----------------------------------------------------
+     Both kinds are editable. A task is a row in its own table and takes a
+     PATCH; a show to-do lives inside the show record, so it is a read, a
+     change and a write of that show — the same path `toggle` above already
+     uses, re-read fresh each time rather than written from what this screen
+     happens to be holding. */
+  const beginEdit = (r) => {
+    if (busy) return;
+    setErr("");
+    setEditKey(r.key);
+    setDraft({ title: r.title || "", due: r.due || "", notes: r.notes || "" });
+  };
+
+  const saveEdit = async (r) => {
+    const title = String(draft.title || "").trim();
+    /* A blank title is refused rather than saved. An empty task is invisible
+       on this screen — show to-dos with no title are filtered out of the list
+       entirely — so saving one would look exactly like the row being deleted. */
+    if (!title) return;
+    setBusy("edit"); setErr("");
+    try {
+      if (r.kind === "task") {
+        const out = await updateTask(r.id, { title, due: draft.due || null, notes: draft.notes });
+        setTasks((prev) => prev.map((t) => (t.id === r.id ? out.task : t)));
+      } else {
+        const full = await getEvent(r.showId);
+        const next = (full.todos || []).map((t) =>
+          t.id === r.id ? { ...t, title, due: draft.due || "", notes: draft.notes } : t);
+        await updateEvent(r.showId, { data: { ...full, todos: next } });
+        setShowRows((prev) => prev.map((s) => (s.id === r.showId ? { ...s, todos: next } : s)));
+      }
+      setEditKey("");
+    } catch (e) {
+      /* The editor stays open with what was typed still in it. Closing it on a
+         failed save would throw the text away and report the loss at the same
+         time. */
       setErr((e && e.message) || "Couldn't save that.");
     }
     setBusy("");
@@ -2841,10 +3072,33 @@ function TasksScreen({ onClose, onOpenShow }) {
               : "Nothing open in this view."}
           </div>
         ) : visible.map((r) => (
-          <div key={r.key} className={"tk-row" + (r.done ? " done" : "")}>
+          editKey === r.key ? (
+            <TkEdit
+              key={r.key} draft={draft} onChange={setDraft} busy={busy === "edit"}
+              where={r.showLabel}
+              onSave={() => saveEdit(r)} onCancel={() => setEditKey("")}
+            />
+          ) : (
+          <div
+            key={r.key} className={"tk-row" + (r.done ? " done" : "")}
+            onClick={(e) => {
+              /* The checkbox and the show button are their own actions.
+                 Without this, ticking something off would also open it for
+                 editing, and every click on "open the show" would leave an
+                 editor behind on the way out. */
+              if (e.target.closest("input, button, a, label")) return;
+              beginEdit(r);
+            }}
+          >
             <input type="checkbox" checked={r.done} disabled={busy === r.key} onChange={() => toggle(r)} />
             <div className="tk-main">
-              <div className="tk-title">{r.title}</div>
+              {/* A real button, not a click handler on the row: it has to be
+                  reachable by keyboard, and the row cannot take that job
+                  itself because it already contains a checkbox and a button —
+                  interactive elements do not nest. */}
+              <button type="button" className="tk-title tk-titlebtn" onClick={() => beginEdit(r)}>
+                {r.title}
+              </button>
               {r.notes ? <div className="tk-notes">{r.notes}</div> : null}
             </div>
             {r.priority ? <span className="tk-pri" style={{ background: TK_PRI[r.priority] }} title={r.priority} /> : null}
@@ -2864,6 +3118,7 @@ function TasksScreen({ onClose, onOpenShow }) {
               ? <span className={"tk-due" + (tkOverdue(r.due, today) && !r.done ? " late" : "")}>{tkDueLabel(r.due, today)}</span>
               : <span className="tk-due none">—</span>}
           </div>
+          )
         ))}
       </div>
 
@@ -6675,7 +6930,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.33.0";
+const APP_VERSION = "1.37.0";
 
 const ADM_NAV = [
   { key: "today", label: "Today" },
@@ -6684,6 +6939,10 @@ const ADM_NAV = [
   { key: "pipeline", label: "Pipeline" },
   { key: "quotes", label: "Quotes" },
   { key: "billing", label: "Billing" },
+  /* Next to Billing, not buried in Settings: money out belongs beside money
+     in, and the reason to open it — "I have a receipt in my pocket" — is the
+     same kind of errand. */
+  { key: "expenses", label: "Expenses" },
   { key: "catalog", label: "Catalog" },
 ];
 
@@ -7124,8 +7383,151 @@ const SET_TABS = [
   { key: "trucking", label: "Trucking" },
   { key: "terms", label: "Quote terms" },
   { key: "inbox", label: "Inbox & alerts" },
+  { key: "todoist", label: "Todoist" },
   { key: "docs", label: "Crew documents" },
 ];
+
+/* How long ago, in words. A timestamp is a number you have to subtract from
+   now in your head; "3 minutes ago" is the thing you actually wanted to know,
+   and "yesterday" is an alarm. */
+function tdAgo(iso) {
+  if (!iso) return "never";
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return "never";
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 90) return s < 10 ? "just now" : s + " seconds ago";
+  const m = Math.round(s / 60);
+  /* Switches at 60, not 90. "60 minutes ago" is a sentence no one says, and it
+     is the exact wording someone reads an hour after confirming their call. */
+  if (m < 60) return m + (m === 1 ? " minute ago" : " minutes ago");
+  const h = Math.round(m / 60);
+  if (h < 36) return h + (h === 1 ? " hour ago" : " hours ago");
+  return Math.round(h / 24) + " days ago";
+}
+
+function SetTodoist() {
+  const [st, setSt] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [last, setLast] = useState(null);
+
+  const load = async () => {
+    setErr("");
+    try { setSt(await getTodoistStatus()); }
+    catch (e) { setErr((e && e.message) || "Couldn't read the Todoist settings."); setSt({ ready: false }); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const act = (name, fn) => async () => {
+    setBusy(name); setErr(""); setLast(null);
+    try {
+      const r = await fn();
+      setLast(r && r.sync ? r.sync : r);
+      await load();
+    } catch (e) { setErr((e && e.message) || "That didn't work."); }
+    setBusy("");
+  };
+
+  const report = last || (st && st.lastResult);
+
+  return (
+    <div className="set-panel">
+      <p className="set-lead">
+        Your to-do list, mirrored into Todoist so it can sit on your iPhone lock screen.
+        Tick something there and it clears here.
+      </p>
+      {err ? <div className="tk-err">{err}</div> : null}
+      {!st ? <div style={{ color: "var(--dim)", padding: "20px 0" }}>Loading…</div> : (
+        <>
+          {!st.ready ? (
+            <div className="tk-err">{st.reason || "Not set up yet."}</div>
+          ) : !st.tokenSet ? (
+            <div className="tk-err">
+              <b>No API token.</b> In Todoist go to Settings → Integrations → Developer and copy your
+              API token, then add it in Vercel as <code>TODOIST_API_TOKEN</code> and redeploy.
+              Paste it into Vercel, not into a message — it is a password to your Todoist account.
+            </div>
+          ) : (
+            <>
+              <div className="tk-tg">
+                <div>
+                  <div className="tk-lbl" style={{ margin: 0 }}>
+                    {st.enabled ? "Syncing to Todoist" : "Not syncing yet"}
+                  </div>
+                  <div className="tk-help" style={{ margin: "3px 0 0" }}>
+                    {st.enabled
+                      ? <>Into a Todoist project called <b>Crew&nbsp;Call</b>. Last synced {tdAgo(st.lastSyncAt)}.</>
+                      : <>Connecting creates a Todoist project called <b>Crew&nbsp;Call</b> and puts your open
+                         to-dos in it. Nothing in Todoist is deleted.</>}
+                  </div>
+                </div>
+                {st.enabled ? (
+                  <button className="btn ghost" onClick={act("sync", syncTodoist)} disabled={!!busy}>
+                    {busy === "sync" ? "Syncing…" : "Sync now"}
+                  </button>
+                ) : (
+                  <button className="btn" onClick={act("connect", connectTodoist)} disabled={!!busy}>
+                    {busy === "connect" ? "Connecting…" : "Connect Todoist"}
+                  </button>
+                )}
+              </div>
+
+              {/* The staleness alarm. A mirror that quietly stops is worse than
+                  no mirror — you keep believing a list that is no longer true —
+                  so an old timestamp is called out rather than just printed. */}
+              {st.enabled && st.lastSyncAt &&
+               (Date.now() - new Date(st.lastSyncAt).getTime()) > 6 * 60 * 60 * 1000 ? (
+                <div className="tk-err" style={{ marginTop: 10 }}>
+                  <b>This has not synced since {tdAgo(st.lastSyncAt)}.</b> Opening To&nbsp;Do syncs it,
+                  so the schedule is probably not running — check that <code>vercel.json</code> is at the
+                  top of the repository and that this branch is the production one.
+                </div>
+              ) : null}
+
+              {report ? (
+                <div className={report.ok ? "tk-tgok" : "tk-err"} style={{ marginTop: 10 }}>
+                  {report.ok ? "Synced." : <b>Finished with problems.</b>}{" "}
+                  {[
+                    report.added ? report.added + " sent over" : "",
+                    report.updated ? report.updated + " updated" : "",
+                    report.completed ? report.completed + " ticked off on your phone" : "",
+                    report.closed ? report.closed + " cleared from your phone" : "",
+                    report.reopened ? report.reopened + " re-opened" : "",
+                  ].filter(Boolean).join(", ") || (report.ok ? "Nothing had changed." : "")}
+                  {report.moreToDo
+                    ? <div style={{ marginTop: 6, fontWeight: 400 }}>
+                        {report.moreToDo} more to go — the next sync picks them up.
+                      </div>
+                    : null}
+                  {(report.errors || []).length
+                    ? <ul style={{ margin: "8px 0 0 18px", padding: 0, fontWeight: 400 }}>
+                        {report.errors.slice(0, 6).map((e, i) => <li key={i}>{e}</li>)}
+                      </ul>
+                    : null}
+                </div>
+              ) : null}
+
+              {st.enabled ? (
+                <div className="set-actions">
+                  <button className="btn ghost" onClick={act("off", disconnectTodoist)} disabled={!!busy}>
+                    {busy === "off" ? "Stopping…" : "Stop syncing"}
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="tk-help" style={{ marginTop: 16, lineHeight: 1.6 }}>
+                Your list goes out; ticking something off in Todoist clears it here. Adding a task
+                <i>in</i> Todoist does not come back — Crew&nbsp;Call is where tasks are created, so the
+                two sides can never disagree about the same task.
+                Deleting one in Todoist dismisses it here.
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 function SettingsScreen({ onClose }) {
   const [tab, setTab] = useState("trucking");
@@ -7148,6 +7550,7 @@ function SettingsScreen({ onClose }) {
       {tab === "trucking" ? <SetTrucking /> : null}
       {tab === "terms" ? <CatalogTerms /> : null}
       {tab === "inbox" ? <SetInbox /> : null}
+      {tab === "todoist" ? <SetTodoist /> : null}
       {tab === "docs" ? <SetCrewDocs /> : null}
     </div>
   );
@@ -8113,6 +8516,31 @@ function SurveyTab({ event, update, showId }) {
 }
 
 
+/* WHAT A CONFIRMATION IS A CONFIRMATION *OF*.
+
+   Deliberately only two things: the call time, and the day it starts. Those
+   are what a person is actually agreeing to be somewhere for, and they are
+   what makes an old confirmation wrong if they change.
+
+   Not the venue, not the hotel, not their position — a typo fixed in an
+   address would otherwise wipe every confirmation on the show and have
+   fourteen people re-tapping for nothing. A confirmation that expires too
+   eagerly gets ignored, and an ignored confirmation is the same as none.
+
+   It takes the RESOLVED call time — the string actually on screen — not
+   `me.callTime`. A crew member's call can come from their own row or from the
+   per-day callTimes map, and fingerprinting only the first would let a change
+   made the other way slip past without anyone being asked again. */
+function callFingerprint(shownCall, event) {
+  const first = (event && Array.isArray(event.schedule) && event.schedule.length
+    ? [...event.schedule].sort(schedDaySort)[0]
+    : null);
+  return JSON.stringify([
+    String(shownCall || ""),
+    String((first && first.date) || (event && event.startDate) || ""),
+  ]);
+}
+
 function MyCallTab({ event, showId, update }) {
   const key = "callboard_me_" + showId;
   const [meId, setMeId] = useState(() => {
@@ -8224,6 +8652,68 @@ function MyCallTab({ event, showId, update }) {
       return ak < bk ? -1 : ak > bk ? 1 : 0;
     });
   const toggleTask = (id) => update && update((ev) => { if (!Array.isArray(ev.todos)) return; const x = ev.todos.find((z) => z.id === id); if (x) x.done = !x.done; });
+
+  return (
+    <MyCallBody
+      me={me} event={event} showId={showId} myCall={myCall} venue={venue}
+      stay={stay} flights={flights} schedule={schedule}
+      hotelName={hotelName} hotelAddress={hotelAddress} fmtDate={fmtDate}
+      myTasks={myTasks} toggleTask={toggleTask}
+      autoMatched={autoMatched} mayBrowse={mayBrowse} ident={ident}
+      switchMe={switchMe}
+    />
+  );
+}
+
+/* Split out so the confirmation can hold state of its own without every
+   keystroke elsewhere in the call sheet re-running the identity match. */
+function MyCallBody({
+  me, event, showId, myCall, venue, stay, flights, schedule,
+  hotelName, hotelAddress, fmtDate, myTasks, toggleTask,
+  autoMatched, mayBrowse, ident, switchMe,
+}) {
+  /* ---- "Got it" -------------------------------------------------------
+     Its own endpoint, not the show record: everyone reads their call within
+     the same few minutes and the show saves whole, so two confirmations
+     through the normal path would erase each other. */
+  const [ack, setAck] = useState({ st: "load", at: "", of: "" });
+  const [acking, setAcking] = useState(false);
+  const [ackErr, setAckErr] = useState("");
+  const fingerprint = callFingerprint(myCall, event);
+
+  useEffect(() => {
+    let alive = true;
+    if (!showId || !me) return;
+    listCallAcks(showId)
+      .then((r) => {
+        if (!alive) return;
+        const mine = ((r && r.acks) || []).find((a) => String(a.crewId) === String(me.id));
+        setAck(mine ? { st: "ok", at: mine.ackedAt, of: mine.ackOf } : { st: "ok", at: "", of: "" });
+      })
+      /* A confirmation that cannot be read is shown as un-confirmed rather
+         than hidden. Being asked again is a small cost; being told you have
+         confirmed when nobody knows you have is the failure worth avoiding. */
+      .catch(() => alive && setAck({ st: "err", at: "", of: "" }));
+    return () => { alive = false; };
+  }, [showId, me && me.id]);
+
+  const confirm = async () => {
+    setAcking(true); setAckErr("");
+    try {
+      const r = await confirmCall(showId, me.id, fingerprint);
+      setAck({ st: "ok", at: (r && r.ackedAt) || new Date().toISOString(), of: fingerprint });
+    } catch (e) {
+      setAckErr((e && e.message) || "Couldn't send that — try again in a moment.");
+    }
+    setAcking(false);
+  };
+
+  const confirmed = !!ack.at;
+  /* Confirmed, but the call has moved since. Not "unconfirmed" — saying so
+     out loud is the point, because it is the one case where the old
+     confirmation would have been actively misleading. */
+  const stale = confirmed && ack.of && ack.of !== fingerprint;
+
   return (
     <div className="mc-wrap">
       <div className="mc-head">
@@ -8252,6 +8742,44 @@ function MyCallTab({ event, showId, update }) {
           <div className="mc-call-time dim">See schedule below</div>
         </div>
       )}
+
+      {/* Directly under the call time, because that is the thing being
+          confirmed. Anywhere further down and it becomes a button people
+          scroll past. */}
+      <div className="mc-ack">
+        {stale ? (
+          <>
+            <div className="mc-ack-note warn">
+              Your call has changed since you confirmed it. Have another look, then confirm again.
+            </div>
+            <button className="mc-ack-btn warn" onClick={confirm} disabled={acking}>
+              {acking ? "Sending…" : "Got it — confirm the new time"}
+            </button>
+          </>
+        ) : confirmed ? (
+          <div className="mc-ack-done">
+            <span className="mc-ack-tick" aria-hidden="true">✓</span>
+            <span>
+              Confirmed {tdAgo(ack.at)}
+              {/* The exact time as a tooltip: "2 hours ago" is what you want
+                  to read, the timestamp is what you want when it matters. */}
+              <span className="mc-ack-when" title={new Date(ack.at).toLocaleString()}>
+                {" · "}{new Date(ack.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}
+              </span>
+            </span>
+          </div>
+        ) : (
+          <>
+            <button className="mc-ack-btn" onClick={confirm} disabled={acking || ack.st === "load"}>
+              {acking ? "Sending…" : "Got it"}
+            </button>
+            <div className="mc-ack-note">
+              Tap to let the office know you have seen your call.
+            </div>
+          </>
+        )}
+        {ackErr ? <div className="mc-ack-note warn">{ackErr}</div> : null}
+      </div>
 
       {myTasks.length > 0 && (
         <div className="mc-tasks">
@@ -8493,6 +9021,421 @@ function BriefTravel({ event, roster }) {
         </>
       )}
     </Panel>
+  );
+}
+
+/* ===========================================================================
+   EXPENSES
+
+   The endpoint behind this has existed, worked and been tested for weeks with
+   nothing calling it. This is the screen it was always for.
+
+   THREE VIEWS, BECAUSE THERE ARE THREE QUESTIONS
+     a show        what did this job cost — feeds its P&L
+     overhead      what does the company cost when nothing is on
+     a year        what the accountant asks for, once, in January
+
+   WHAT THIS SCREEN IS CAREFUL ABOUT
+     A receipt is TAX EVIDENCE, not a convenience. Deleting is soft on the
+     server and the wording here says so, because "delete" that quietly
+     destroys substantiation is the kind of button you press once and regret
+     in an audit. The receipt is uploaded BEFORE the row is saved and the row
+     carries its path, so a failed save loses a file rather than orphaning a
+     row that claims to have one.
+   =========================================================================== */
+const EX_CATEGORIES = [
+  ["labor", "Labor"], ["sub_rental", "Sub-rental"], ["trucking", "Trucking"],
+  ["per_diem", "Per diem"], ["travel", "Travel"], ["meals", "Meals"],
+  ["equipment", "Equipment"], ["supplies", "Supplies"], ["misc", "Misc"],
+];
+/* The accountant's list, which is not the same as the operational one — a
+   console is `equipment` to you and a capital purchase to them. Kept separate
+   for exactly that reason. */
+const EX_TAX_CATEGORIES = [
+  ["", "—"], ["advertising", "Advertising"], ["car_and_truck", "Car & truck"],
+  ["insurance", "Insurance"], ["legal_professional", "Legal & professional"],
+  ["office", "Office"], ["rent", "Rent"], ["repairs", "Repairs"],
+  ["supplies", "Supplies"], ["taxes_licenses", "Taxes & licenses"],
+  ["travel", "Travel"], ["meals", "Meals"], ["utilities", "Utilities"],
+  ["wages", "Wages"], ["equipment", "Equipment"], ["other", "Other"],
+];
+const exLabel = (list, key) => (list.find((x) => x[0] === key) || [null, key || "—"])[1];
+const exMoney = (n) => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return (v < 0 ? "-$" : "$") + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+/* Top level, not nested inside ExpensesScreen: a component declared inside
+   another is a new type on every render, so React remounts it between
+   keystrokes and the form loses focus after one character. */
+function ExpenseForm({ draft, onChange, onFile, fileName, busy, onSave, onCancel, editing }) {
+  const set = (k) => (e) => onChange({ ...draft, [k]: e.target.value });
+  const amountOk = Number.isFinite(Number(draft.amount)) && String(draft.amount).trim() !== "";
+  return (
+    <div className="ex-form">
+      <div className="ex-form-grid">
+        <label>
+          <span>Date</span>
+          <input type="date" value={draft.spent_on || ""} onChange={set("spent_on")} />
+        </label>
+        <label>
+          <span>Amount</span>
+          <input inputMode="decimal" placeholder="0.00" value={draft.amount} onChange={set("amount")} />
+        </label>
+        <label>
+          <span>Who it was paid to</span>
+          <input placeholder="Vendor" value={draft.vendor} onChange={set("vendor")} />
+        </label>
+        <label>
+          <span>Category</span>
+          <select value={draft.category} onChange={set("category")}>
+            {EX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>Tax category</span>
+          <select value={draft.tax_category || ""} onChange={set("tax_category")}>
+            {EX_TAX_CATEGORIES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </select>
+        </label>
+        <label className="ex-wide">
+          <span>What it was for</span>
+          <input placeholder="Description" value={draft.description} onChange={set("description")} />
+        </label>
+      </div>
+
+      <div className="ex-form-foot">
+        <label className="ex-file">
+          {/* The camera on a phone, the file picker on a laptop — one input
+              does both, and `capture` is only a hint so it degrades quietly. */}
+          <input type="file" accept="image/jpeg,image/png,application/pdf" capture="environment"
+                 onChange={(e) => onFile(e.target.files && e.target.files[0])} />
+          <span className="ex-file-btn">{fileName ? "Change receipt" : "📷 Add a receipt"}</span>
+          {fileName ? <span className="ex-file-name">{fileName}</span> : null}
+        </label>
+        <label className="ex-bill">
+          <input type="checkbox" checked={draft.billable === true}
+                 onChange={(e) => onChange({ ...draft, billable: e.target.checked })} />
+          Re-bill to the client
+        </label>
+        <span className="tk-spacer" />
+        <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="btn" onClick={onSave} disabled={busy || !amountOk}>
+          {busy ? "Saving…" : editing ? "Save changes" : "Add expense"}
+        </button>
+      </div>
+      {!amountOk && String(draft.amount).trim() !== "" ? (
+        <div className="tk-err" style={{ marginTop: 8 }}>That amount is not a number.</div>
+      ) : null}
+    </div>
+  );
+}
+
+const exBlank = () => ({
+  spent_on: tdToday(), amount: "", vendor: "", category: "misc",
+  tax_category: "", description: "", billable: false,
+});
+
+function ExpensesScreen({ onClose, events }) {
+  const thisYear = new Date().getFullYear();
+  const [scope, setScope] = useState({ kind: "overhead", showId: "", year: thisYear });
+  const [st, setSt] = useState({ ready: false, rows: [], err: "" });
+  const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState("");
+  const [draft, setDraft] = useState(exBlank);
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const isOverhead = scope.kind === "overhead";
+  const load = async () => {
+    setSt((s) => ({ ...s, ready: false, err: "" }));
+    try {
+      const r = scope.kind === "show" ? await listShowExpenses(scope.showId)
+        : scope.kind === "year" ? await listYearExpenses(scope.year)
+        : await listOverheadExpenses();
+      setSt({ ready: true, rows: (r && r.rows) || [], err: "" });
+    } catch (e) {
+      setSt({ ready: true, rows: [], err: (e && e.message) || "Couldn't load expenses." });
+    }
+  };
+  useEffect(() => { load(); }, [scope.kind, scope.showId, scope.year]);
+
+  const showName = (id) => (events || []).find((e) => e.id === id)?.name || "a show";
+
+  const beginAdd = () => { setEditId(""); setDraft(exBlank()); setFile(null); setAdding(true); setNote(""); };
+  const beginEdit = (row) => {
+    setAdding(false); setFile(null); setNote("");
+    setEditId(row.id);
+    setDraft({
+      spent_on: row.spent_on || "", amount: String(row.amount ?? ""), vendor: row.vendor || "",
+      category: row.category || "misc", tax_category: row.tax_category || "",
+      description: row.description || "", billable: row.billable === true,
+    });
+  };
+  const cancel = () => { setAdding(false); setEditId(""); setFile(null); };
+
+  const save = async () => {
+    setBusy(true); setNote("");
+    try {
+      let receipt_path = "";
+      if (file) {
+        /* Upload FIRST, then save the row that points at it. The other order
+           writes a row claiming a receipt that may not exist — and an expense
+           that says it has substantiation and does not is worse in an audit
+           than one that admits it has none. */
+        const sign = await signReceiptUpload(file.type, isOverhead ? { overhead: true } : { showId: scope.showId });
+        if (!sign || !sign.url) throw new Error("Couldn't start the receipt upload.");
+        const put = await fetch(sign.url, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+        if (!put.ok) throw new Error("The receipt didn't upload (" + put.status + ").");
+        receipt_path = sign.path;
+      }
+      const payload = { ...draft, amount: Number(draft.amount) };
+      if (receipt_path) payload.receipt_path = receipt_path;
+
+      if (editId) await updateExpense(editId, payload);
+      else await createExpenses([payload], isOverhead ? { overhead: true } : { showId: scope.showId });
+
+      cancel();
+      await load();
+      setNote(editId ? "Saved." : "Added.");
+    } catch (e) {
+      setNote("");
+      setSt((s) => ({ ...s, err: (e && e.message) || "Couldn't save that." }));
+    }
+    setBusy(false);
+  };
+
+  const remove = async (row) => {
+    /* Named honestly. The server soft-deletes and keeps the receipt; saying so
+       here is the difference between a button people use and one they avoid. */
+    if (!window.confirm(
+      "Remove this expense from your lists?\n\n" +
+      (row.receipt_path ? "The receipt itself is kept — nothing is destroyed." : "This can be undone in the database.")
+    )) return;
+    setBusy(true);
+    try { await deleteExpense(row.id); await load(); setNote("Removed."); }
+    catch (e) { setSt((s) => ({ ...s, err: (e && e.message) || "Couldn't remove that." })); }
+    setBusy(false);
+  };
+
+  const openReceipt = async (row) => {
+    try {
+      const r = await viewReceipt(row.id);
+      if (r && r.url) window.open(r.url, "_blank", "noopener");
+      else setSt((s) => ({ ...s, err: "That receipt could not be opened." }));
+    } catch (e) { setSt((s) => ({ ...s, err: (e && e.message) || "That receipt could not be opened." })); }
+  };
+
+  const total = st.rows.reduce((t, r) => t + (Number(r.amount) || 0), 0);
+  const withReceipt = st.rows.filter((r) => r.receipt_path).length;
+  const byCategory = EX_CATEGORIES
+    .map(([k, l]) => [l, st.rows.filter((r) => r.category === k).reduce((t, r) => t + (Number(r.amount) || 0), 0)])
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1]);
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Expenses</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={load}>Refresh</button>
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      <div className="tk-filters">
+        <button className={"tk-chip" + (isOverhead ? " on" : "")}
+                onClick={() => setScope({ ...scope, kind: "overhead" })}>Overhead</button>
+        <button className={"tk-chip" + (scope.kind === "year" ? " on" : "")}
+                onClick={() => setScope({ ...scope, kind: "year" })}>{scope.year} — everything</button>
+        <select className="ex-showpick" value={scope.kind === "show" ? scope.showId : ""}
+                onChange={(e) => e.target.value && setScope({ ...scope, kind: "show", showId: e.target.value })}>
+          <option value="">A show…</option>
+          {(events || []).map((ev) => <option key={ev.id} value={ev.id}>{ev.name}</option>)}
+        </select>
+        {scope.kind === "year" ? (
+          <select className="ex-showpick" value={scope.year}
+                  onChange={(e) => setScope({ ...scope, year: Number(e.target.value) })}>
+            {[0, 1, 2, 3].map((n) => <option key={n} value={thisYear - n}>{thisYear - n}</option>)}
+          </select>
+        ) : null}
+        <span className="tk-spacer" />
+        {!adding && !editId ? <button className="btn" onClick={beginAdd}>Add an expense</button> : null}
+      </div>
+
+      <p style={{ ...qtHint, marginTop: 0 }}>
+        {isOverhead ? "Company costs that do not belong to a show."
+          : scope.kind === "year" ? "Everything in " + scope.year + ", shows and overhead together — the view your accountant asks for."
+          : "What " + showName(scope.showId) + " has cost."}
+      </p>
+
+      {st.err ? <div className="tk-err">{st.err}</div> : null}
+      {note ? <div className="tk-tgok" style={{ marginBottom: 10 }}>{note}</div> : null}
+
+      {(adding || editId) ? (
+        <ExpenseForm
+          draft={draft} onChange={setDraft} onFile={setFile}
+          fileName={file ? file.name : ""} busy={busy}
+          onSave={save} onCancel={cancel} editing={!!editId}
+        />
+      ) : null}
+
+      {st.ready && st.rows.length ? (
+        <div className="ex-tiles">
+          <div className="panel td-tile">
+            <div className="td-tile-h" style={{ color: "var(--dim)" }}><span>Total</span></div>
+            <div className="td-tile-v">{exMoney(total)}</div>
+            <div className="td-tile-s">{st.rows.length} {st.rows.length === 1 ? "expense" : "expenses"}</div>
+          </div>
+          <div className="panel td-tile">
+            <div className="td-tile-h" style={{ color: withReceipt === st.rows.length ? "var(--dim)" : "var(--amber)" }}>
+              <span>With a receipt</span>
+            </div>
+            <div className="td-tile-v">{withReceipt} of {st.rows.length}</div>
+            {/* Said plainly because it is the number that matters in an audit,
+                and it is invisible unless something says it out loud. */}
+            <div className="td-tile-s">
+              {withReceipt === st.rows.length ? "all substantiated" : (st.rows.length - withReceipt) + " with no evidence attached"}
+            </div>
+          </div>
+          {byCategory.length ? (
+            <div className="panel td-tile">
+              <div className="td-tile-h" style={{ color: "var(--dim)" }}><span>Biggest category</span></div>
+              <div className="td-tile-v">{exMoney(byCategory[0][1])}</div>
+              <div className="td-tile-s">{byCategory[0][0]}</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="tk-list">
+        {!st.ready ? <div className="tk-empty">Loading…</div>
+          : !st.rows.length ? (
+            <div className="tk-empty">
+              {isOverhead ? "No overhead recorded yet."
+                : scope.kind === "show" ? "Nothing has been charged to this show yet."
+                : "Nothing recorded in " + scope.year + "."}
+            </div>
+          ) : st.rows.map((r) => (
+            <div key={r.id} className={"ex-row" + (editId === r.id ? " editing" : "")}>
+              <div className="ex-date">{r.spent_on || "—"}</div>
+              <div className="ex-main">
+                <div className="ex-vendor">
+                  {r.vendor || "—"}
+                  {r.billable ? <span className="ex-flag">re-bill</span> : null}
+                  {r.show_id && scope.kind !== "show" ? <span className="ex-show">{showName(r.show_id)}</span> : null}
+                </div>
+                {r.description ? <div className="ex-desc">{r.description}</div> : null}
+              </div>
+              <div className="ex-cat">
+                {exLabel(EX_CATEGORIES, r.category)}
+                {r.tax_category ? <span className="ex-tax">{exLabel(EX_TAX_CATEGORIES, r.tax_category)}</span> : null}
+              </div>
+              <div className="ex-amt">{exMoney(r.amount)}</div>
+              <div className="ex-tools">
+                {r.receipt_path
+                  ? <button className="ex-rcpt" title="Open the receipt" onClick={() => openReceipt(r)}>receipt</button>
+                  : <span className="ex-norcpt" title="No receipt attached">none</span>}
+                <button className="ex-tool" onClick={() => beginEdit(r)} disabled={busy}>Edit</button>
+                <button className="ex-tool" onClick={() => remove(r)} disabled={busy}>Remove</button>
+              </div>
+            </div>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+/* Who has confirmed their call, and who you still need to ring.
+
+   Three states, and the third is the one that earns this its place:
+
+     confirmed   they have seen this call
+     not yet     they have not
+     STALE       they confirmed, and the call has moved since
+
+   A stale confirmation is worse than no confirmation, because it reads as
+   "they know" about something they have never seen. Folding it in with
+   "confirmed" would make this panel lie on precisely the day it matters —
+   the day the schedule changed. */
+function CrewAckStrip({ showId, event }) {
+  const [st, setSt] = useState({ ready: false, acks: [], err: "" });
+
+  useEffect(() => {
+    let alive = true;
+    if (!showId) return;
+    listCallAcks(showId)
+      .then((r) => alive && setSt({ ready: true, acks: (r && r.acks) || [], err: "" }))
+      .catch((e) => alive && setSt({ ready: true, acks: [], err: (e && e.message) || "Couldn't load confirmations." }));
+    return () => { alive = false; };
+  }, [showId]);
+
+  const named = (event.crew || []).filter((c) => (c.name || "").trim());
+  if (!named.length) return null;
+
+  /* The same resolved call time the crew member saw, computed the same way —
+     their own row first, then the per-day map. Computing it differently here
+     would make everyone look stale for no reason. */
+  const callFor = (c) =>
+    c.callTime ||
+    ([...(event.schedule || [])].sort(schedDaySort)
+      .map((day) => event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][c.id])
+      .find(Boolean) || "");
+
+  const byId = new Map(st.acks.map((a) => [String(a.crewId), a]));
+  const rows = named.map((c) => {
+    const a = byId.get(String(c.id));
+    const want = callFingerprint(callFor(c), event);
+    return {
+      c,
+      state: !a ? "none" : (a.ackOf && a.ackOf !== want ? "stale" : "ok"),
+      at: a ? a.ackedAt : "",
+    };
+  });
+
+  const done = rows.filter((r) => r.state === "ok");
+  const stale = rows.filter((r) => r.state === "stale");
+  const none = rows.filter((r) => r.state === "none");
+
+  if (!st.ready) return null;
+  if (st.err) {
+    return <div className="ack-strip"><span className="ack-err">{st.err}</span></div>;
+  }
+
+  return (
+    <div className="ack-strip">
+      <div className="ack-head">
+        <span className={"ack-count" + (done.length === rows.length ? " all" : "")}>
+          {done.length} of {rows.length} confirmed their call
+        </span>
+        {stale.length ? (
+          <span className="ack-warn">{stale.length} confirmed an older call time</span>
+        ) : null}
+      </div>
+
+      {/* Names, with their number right there. The point of knowing who has
+          not confirmed is doing something about it, and on a phone that is a
+          tap rather than a search through the rows below. */}
+      {none.length || stale.length ? (
+        <div className="ack-names">
+          {stale.map((r) => (
+            <span key={r.c.id} className="ack-chip warn">
+              {r.c.name}
+              {r.c.phone ? <a className="ack-call" href={"tel:" + String(r.c.phone).replace(/[^0-9+]/g, "")}>call</a> : null}
+            </span>
+          ))}
+          {none.map((r) => (
+            <span key={r.c.id} className="ack-chip">
+              {r.c.name}
+              {r.c.phone ? <a className="ack-call" href={"tel:" + String(r.c.phone).replace(/[^0-9+]/g, "")}>call</a> : null}
+            </span>
+          ))}
+        </div>
+      ) : (
+        <div className="ack-allin">Everyone has seen their call.</div>
+      )}
+    </div>
   );
 }
 
@@ -8805,6 +9748,11 @@ function BriefTab({ event, update, isAdmin, isTcg, showId }) {
           </div>
         }
       >
+        {/* Above the editor rather than a column inside it. The crew grid is
+            already six columns of inputs on a phone; the question this answers
+            — who do I still need to ring — is a summary, not a field. */}
+        <CrewAckStrip showId={showId} event={event} />
+
         <div className="rows">
           <div className="rowhead crew-grid">
             <span>Name</span><span>Position</span><span>Phone</span><span>Email</span><span>Call</span><span />
@@ -16779,6 +17727,119 @@ const CSS = `
 .cb .mc-call.muted .mc-call-lbl{color:var(--faint);}
 .cb .mc-call-time{font-family:'Oswald'; font-size:34px; letter-spacing:.01em; color:#fff; margin-top:2px;}
 .cb .mc-call-time.dim{font-size:16px; color:var(--dim); font-family:'Inter',system-ui,sans-serif; font-weight:500; margin-top:6px;}
+/* "Got it". A full-width target, because this is tapped with a thumb, often
+   with gloves on, in a loading dock. 52px is above the 44px Apple minimum
+   with room to spare. */
+.cb .mc-ack{margin:12px 0 18px;}
+.cb .mc-ack-btn{display:block; width:100%; min-height:52px; border-radius:12px; border:0;
+  background:#6FD08A; color:#0F1115; font-size:16px; font-weight:700; cursor:pointer;
+  font-family:'Inter',system-ui,sans-serif;}
+.cb .mc-ack-btn:active{transform:translateY(1px);}
+.cb .mc-ack-btn:disabled{opacity:.6; cursor:default;}
+.cb .mc-ack-btn.warn{background:var(--amber);}
+.cb .mc-ack-note{font-size:12.5px; color:var(--dim); margin-top:8px; text-align:center; line-height:1.5;}
+.cb .mc-ack-note.warn{color:var(--amber); font-weight:600; margin:0 0 10px; text-align:left;}
+.cb .mc-ack-done{display:flex; align-items:center; gap:10px; min-height:52px; padding:0 14px;
+  border-radius:12px; background:rgba(111,208,138,.12); border:1px solid rgba(111,208,138,.35);
+  color:#6FD08A; font-size:14px; font-weight:600;}
+.cb .mc-ack-tick{font-size:18px; line-height:1;}
+.cb .mc-ack-when{color:var(--dim); font-weight:400;}
+/* Who has confirmed, on the Brief. */
+.cb .ack-strip{margin:0 0 12px; padding:11px 13px; border-radius:11px;
+  background:var(--panel2); border:1px solid var(--line);}
+.cb .ack-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;}
+.cb .ack-count{font-size:13px; font-weight:700;}
+.cb .ack-count.all{color:#6FD08A;}
+.cb .ack-warn{font-size:12px; font-weight:700; color:var(--amber);}
+.cb .ack-err{font-size:12.5px; color:var(--dim);}
+.cb .ack-allin{font-size:12.5px; color:#6FD08A; margin-top:6px;}
+.cb .ack-names{display:flex; flex-wrap:wrap; gap:6px; margin-top:9px;}
+.cb .ack-chip{display:inline-flex; align-items:center; gap:7px; font-size:12.5px;
+  padding:4px 9px; border-radius:999px; background:var(--panel); border:1px solid var(--line);}
+.cb .ack-chip.warn{border-color:rgba(243,178,74,.5); color:var(--amber);}
+/* A tap target, not a hint — this is used one-handed on a show floor. */
+.cb .ack-call{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+  color:var(--accent); text-decoration:none; padding:2px 4px;}
+
+/* ---- Expenses ---------------------------------------------------------- */
+/* Capped, or the select stretches to fill the filter row on a wide screen and
+   reads as the page's main control rather than one chip among three. */
+.ex-showpick{height:32px; border-radius:999px; padding:0 10px; font-size:12.5px;
+  flex:0 1 auto; max-width:260px;}
+.ex-tiles{display:grid; grid-template-columns:repeat(auto-fit, minmax(176px,1fr)); gap:14px; margin:4px 0 18px;}
+.ex-form{border:1px solid var(--line); border-radius:12px; padding:14px; margin-bottom:16px; background:var(--panel);}
+.ex-form-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(190px,1fr)); gap:12px;}
+.ex-form-grid label{display:flex; flex-direction:column; gap:4px; min-width:0;}
+.ex-form-grid label > span{font-size:11px; font-weight:700; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--dim);}
+.ex-form-grid input, .ex-form-grid select{width:100%; min-width:0;}
+.ex-wide{grid-column:1 / -1;}
+.ex-form-foot{display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px;
+  padding-top:12px; border-top:1px solid var(--line);}
+/* The real file input is hidden behind its label so the button can be styled
+   and, on a phone, open the camera. */
+.ex-file input[type="file"]{position:absolute; width:1px; height:1px; opacity:0; pointer-events:none;}
+.ex-file{display:inline-flex; align-items:center; gap:9px; cursor:pointer; position:relative;}
+.ex-file-btn{display:inline-block; padding:8px 13px; border-radius:9px; font-size:13px; font-weight:600;
+  border:1px solid var(--line); background:var(--panel2);}
+.ex-file input[type="file"]:focus-visible + .ex-file-btn{outline:2px solid var(--amber); outline-offset:2px;}
+.ex-file-name{font-size:12px; color:var(--dim); max-width:190px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap;}
+.ex-bill{display:inline-flex; align-items:center; gap:7px; font-size:12.5px; color:var(--dim);}
+/* The shared .cb input rule sets width:100% for text fields. Left alone, the
+   checkbox becomes a full-width box with its tick floating in the middle and
+   the label shoved to the far edge. (No backticks in here — this whole
+   stylesheet lives inside a template literal.) */
+.ex-bill input[type="checkbox"]{width:15px; height:15px; flex:0 0 auto; margin:0;
+  padding:0; cursor:pointer; accent-color:var(--amber);}
+
+.ex-row{display:flex; align-items:center; gap:12px; padding:10px 12px;
+  border-bottom:1px solid var(--line);}
+.ex-row:last-child{border-bottom:none;}
+.ex-row:hover{background:var(--panel2);}
+.ex-row.editing{background:var(--panel2);}
+.ex-date{flex:0 0 92px; font-size:12px; color:var(--dim); font-variant-numeric:tabular-nums;}
+.ex-main{flex:1 1 auto; min-width:0;}
+.ex-vendor{font-size:13.5px; font-weight:600; display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.ex-desc{font-size:11.5px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.ex-flag{font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--amber); border:1px solid rgba(243,178,74,.45); border-radius:999px; padding:1px 6px;}
+.ex-show{font-size:11px; color:var(--dim); font-weight:400;}
+.ex-cat{flex:0 0 150px; font-size:12px; color:var(--dim); display:flex; flex-direction:column;}
+.ex-tax{font-size:10.5px; color:var(--faint);}
+.ex-amt{flex:0 0 110px; text-align:right; font-size:13.5px; font-weight:700;
+  font-variant-numeric:tabular-nums;}
+.ex-tools{flex:0 0 auto; display:flex; align-items:center; gap:6px;}
+.ex-tool{background:none; border:1px solid var(--line); border-radius:7px; color:var(--dim);
+  font-size:11.5px; padding:4px 8px; cursor:pointer; font-family:inherit;}
+.ex-tool:hover{color:var(--ink);}
+.ex-rcpt{background:none; border:0; color:var(--accent); font-size:11px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.05em; cursor:pointer; font-family:inherit; padding:4px;}
+/* Said, not omitted. An expense with no receipt is a real state with real
+   consequences, and a blank cell hides it. */
+.ex-norcpt{color:var(--amber); font-size:11px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.05em; padding:4px;}
+@media (max-width:820px){
+  /* Three stacked tiles push the actual expenses off the bottom of a phone,
+     so they go two-up and shorter — the figures are still the first thing you
+     see, but you can see a row of the list without scrolling. */
+  .ex-tiles{grid-template-columns:1fr 1fr; gap:10px;}
+  .ex-tiles .td-tile{padding:10px 12px;}
+  .ex-tiles .td-tile-v{font-size:22px;}
+  /* An odd last tile takes the full width rather than leaving a hole. */
+  .ex-tiles > :last-child:nth-child(odd){grid-column:1 / -1;}
+  /* The foot stacks. Squeezed onto one line the re-bill label wraps to three
+     words over three lines beside its own checkbox. */
+  .ex-file, .ex-bill{flex:1 1 100%; justify-content:flex-start;}
+  .ex-form-foot .tk-spacer{display:none;}
+  /* The row becomes two lines rather than eight squeezed columns. */
+  .ex-row{flex-wrap:wrap;}
+  .ex-date{flex:0 0 auto;}
+  .ex-main{flex:1 1 100%; order:-1;}
+  .ex-cat{flex:1 1 auto;}
+  .ex-amt{flex:0 0 auto; margin-left:auto;}
+  .ex-tools{flex:1 1 100%; justify-content:flex-end;}
+}
 
 .cb .mc-cards{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-bottom:16px;}
 .cb .mc-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px 16px;}
@@ -17649,6 +18710,31 @@ const CSS = `
 .tk-main { flex:1; min-width:0; }
 .tk-title { font-size:13.5px; font-weight:600; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .tk-notes { font-size:11.5px; color:var(--faint); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* The title doubles as the control that opens the editor. Only the button
+   chrome is reset here — font size, weight and colour stay with .tk-title on
+   the same element, and resetting them twice would mean the later rule wins
+   and the title quietly changed size. */
+.tk-titlebtn { display:block; width:100%; text-align:left; background:none; border:0;
+  padding:0; margin:0; font-family:inherit; cursor:pointer; }
+.tk-titlebtn:focus-visible { outline:2px solid var(--amber); outline-offset:2px; border-radius:3px; }
+/* The row is clickable everywhere, so it says so. */
+.tk-row { cursor:pointer; }
+.tk-row.tk-editing, .tk-row.tk-editing:hover { cursor:default; background:var(--panel2); align-items:stretch; }
+.tk-edit { flex:1 1 auto; min-width:0; display:flex; flex-direction:column; gap:8px; padding:3px 0; }
+.tk-edit-title { width:100%; font-size:13.5px; font-weight:600; }
+/* Full text, wrapped. The list truncates a long title to one line with an
+   ellipsis, which is the one place you must be able to see all of it. */
+.tk-edit-notes { width:100%; font-size:12.5px; resize:vertical; min-height:44px; line-height:1.45; }
+.tk-edit-foot { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.tk-edit-due { flex:0 0 160px; }
+.tk-edit-clear { padding:5px 10px; font-size:12px; }
+.tk-edit-where { font-size:11.5px; color:var(--faint); }
+@media (max-width:640px){
+  /* At phone width the footer stacks; the two buttons stay on one line
+     together rather than one per row, which would push Save below the fold. */
+  .tk-edit-due { flex:1 1 140px; }
+  .tk-edit-where { flex-basis:100%; }
+}
 .tk-pri { width:8px; height:8px; border-radius:50%; flex:0 0 auto; }
 .tk-tag { font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; color:var(--dim); border:1px solid var(--line); border-radius:9px; padding:1px 7px; flex:0 0 auto; }
 .tk-src { font-size:9.5px; font-weight:800; letter-spacing:.6px; color:var(--accent,#5A7FE0); background:rgba(90,127,224,.14); border-radius:8px; padding:2px 6px; flex:0 0 auto; }
@@ -17745,6 +18831,13 @@ const CSS = `
 .set-lead { color:var(--dim); font-size:13px; margin:0 0 4px; line-height:1.55; }
 .set-actions { display:flex; gap:10px; align-items:center; justify-content:flex-end; margin-top:22px; padding-top:16px; border-top:1px solid var(--line); }
 .set-saved { color:#6FD08A; font-size:12.5px; font-weight:600; }
+.tk-tg { display:flex; gap:14px; align-items:flex-start; justify-content:space-between;
+  margin-top:18px; padding-top:16px; border-top:1px solid var(--line); flex-wrap:wrap; }
+.tk-tg > div { flex:1 1 260px; min-width:0; }
+.tk-tg > button { flex:0 0 auto; }
+.tk-tgok { background:rgba(111,208,138,.10); border:1px solid rgba(111,208,138,.35);
+  color:#6FD08A; border-radius:9px; padding:10px 12px; font-size:12.5px; line-height:1.5; font-weight:600; }
+.tk-tgok code, .tk-err code { font-size:12px; }
 .set-rate { display:grid; grid-template-columns:auto auto 96px 1fr; align-items:center; gap:4px 10px; margin-bottom:8px; }
 .set-rate-k { font-size:13.5px; font-weight:600; min-width:96px; }
 .set-rate-d { color:var(--dim); }
