@@ -686,21 +686,39 @@ export function scopedSave(stored, incoming, depts) {
 // Best-effort by design. A notification that fails must never fail the thing it
 // was announcing, so every path here resolves rather than throws.
 export async function telegramNotify(text) {
+  /* Still best-effort — nothing here throws, and a notification that fails must
+     never fail the thing it was announcing. What changed is that it now says
+     WHY, because "sent: 0" was indistinguishable across five different causes:
+     no bot token, no ids saved, the settings row missing, a wrong id, and the
+     commonest one of all — a person who has never messaged the bot, which
+     Telegram refuses outright because a bot may not open a conversation.
+
+     Chasing that down meant reading Vercel logs. Now `sent` still means what it
+     did and the rest of the object explains itself, which is what the test
+     button in Settings reports. */
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token || !text) return { sent: 0 };
+  const out = { sent: 0, configured: !!token, ids: 0, results: [], reason: "" };
+  if (!token) { out.reason = "TELEGRAM_BOT_TOKEN is not set on this deployment."; return out; }
+  if (!text) { out.reason = "Nothing to send."; return out; }
+
   let ids = [];
   try {
     const rows = await supabaseRest("GET", "/app_settings?key=eq.inbox_settings&select=value", null);
     const v = rows && rows[0] ? rows[0].value : null;
     ids = Array.isArray(v && v.telegramIds) ? v.telegramIds : [];
-  } catch {
-    return { sent: 0 };
+  } catch (e) {
+    out.reason = "Could not read the settings row: " + ((e && e.message) || e);
+    return out;
   }
+  ids = ids.map((x) => String(x || "").trim()).filter(Boolean);
+  out.ids = ids.length;
+  if (!ids.length) {
+    out.reason = "No Telegram ids are saved in Settings → Inbox & alerts.";
+    return out;
+  }
+
   const body = String(text).length > 3900 ? String(text).slice(0, 3890) + "\n…" : String(text);
-  let sent = 0;
-  for (const raw of ids) {
-    const id = String(raw || "").trim();
-    if (!id) continue;
+  for (const id of ids) {
     try {
       const r = await fetch("https://api.telegram.org/bot" + token + "/sendMessage", {
         method: "POST",
@@ -708,10 +726,22 @@ export async function telegramNotify(text) {
         body: JSON.stringify({ chat_id: id, text: body }),
       });
       const j = await r.json().catch(() => null);
-      if (j && j.ok) sent++;
+      if (j && j.ok) { out.sent++; out.results.push({ id, ok: true }); }
+      else {
+        /* Telegram's own words. "chat not found" means the id is wrong or that
+           person has never started a chat with the bot; "bot was blocked by the
+           user" means exactly that. Both are one-line fixes once you can see
+           them, and invisible until you can. */
+        const why = (j && (j.description || j.error_code)) || ("HTTP " + r.status);
+        out.results.push({ id, ok: false, error: String(why) });
+      }
     } catch (e) {
+      out.results.push({ id, ok: false, error: (e && e.message) || String(e) });
       console.log("[notify] telegram send failed: " + ((e && e.message) || e));
     }
   }
-  return { sent };
+  if (!out.sent && !out.reason) {
+    out.reason = out.results.map((r) => r.id + ": " + r.error).join("; ");
+  }
+  return out;
 }

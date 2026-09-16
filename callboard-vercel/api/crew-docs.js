@@ -527,8 +527,12 @@ export function signPage({ token, docType, name }) {
     "<p class=help>A PDF or a clear photo is fine.</p>" +
     "<input type=file id=file accept=\"application/pdf,image/jpeg,image/png\">" +
     "<p class=file id=fname></p></div>" +
-    "<div class=card><span class=lbl>Your full name</span>" +
-    "<p class=help>Typed as your confirmation that this is you.</p>" +
+    "<div class=card><span class=lbl>Printed name</span>" +
+    "<p class=help>" +
+    (isW9
+      ? "Typed as your confirmation that this is you."
+      : "Printed on the document beside your signature, and your confirmation that this is you.") +
+    "</p>" +
     "<input type=text id=who value=\"" + esc(name || "") + "\" autocomplete=name></div>" +
     "<button class=\"btn go\" id=go>Submit my " + esc(what) + "</button>" +
     "<p class=help style=\"margin-top:14px\">We record the date and time you signed. " +
@@ -619,16 +623,41 @@ function pageScript(token, docType) {
     "var png=c.toDataURL('image/png');" +
     "return doc.embedPng(png).then(function(img){" +
     "return doc.embedFont(PDFLib.StandardFonts.Helvetica).then(function(font){" +
+    "return doc.embedFont(PDFLib.StandardFonts.HelveticaBold).then(function(bold){" +
     "var pg=doc.getPages()[doc.getPageCount()-1];" +
-    "var w=200,h=w*(img.height/img.width);" +
-    "if(h>70){h=70;w=h*(img.width/img.height);}" +
-    "pg.drawImage(img,{x:48,y:96,width:w,height:h});" +
-    "pg.drawLine({start:{x:44,y:90},end:{x:44+Math.max(w,200),y:90},thickness:.7," +
-    "color:PDFLib.rgb(.5,.5,.5)});" +
-    "var when=new Date().toLocaleString();" +
-    "pg.drawText(who+'  ·  signed electronically  ·  '+when,{x:48,y:76,size:8,font:font," +
-    "color:PDFLib.rgb(.35,.35,.35)});" +
-    "return doc.save();});});})" +
+    /* A signature block, not a caption. Two ruled lines side by side — the
+       drawn mark over one, the name typed in plain type over the other — each
+       labelled underneath, with the date below both. That is what a signature
+       block looks like on paper, and a printed name is what makes a scrawl
+       attributable to a person. Before this the name was 8pt grey metadata
+       tucked under the line, which reads as a footnote about the document
+       rather than as part of it. */
+    "var GREY=PDFLib.rgb(.45,.45,.45),INK=PDFLib.rgb(.1,.1,.1);" +
+    "var BASE=112,SX=48,SW=210,NX=300,NW=230;" +
+    /* StandardFonts are WinAnsi: a character outside it makes drawText throw,
+       which would fail the signing with a message nobody could act on. The
+       full name is already stored on the record — that is where it counts — so
+       the drawn copy is reduced to what the font can render rather than
+       taking the whole submission down. */
+    "var shown=who.replace(/[^\\x20-\\x7E\\xA0-\\xFF]/g,'').trim()||who.replace(/[^\\x20-\\x7E]/g,'').trim()||'Signed electronically';" +
+    "var w=SW,h=w*(img.height/img.width);" +
+    "if(h>56){h=56;w=h*(img.width/img.height);}" +
+    "pg.drawImage(img,{x:SX,y:BASE+5,width:w,height:h});" +
+    "pg.drawLine({start:{x:SX,y:BASE},end:{x:SX+SW,y:BASE},thickness:.8,color:GREY});" +
+    "pg.drawText('Signature',{x:SX,y:BASE-11,size:7.5,font:font,color:GREY});" +
+    /* The name sits ON the line like a handwritten one, and is shrunk to fit
+       rather than running past the rule and into the margin. */
+    "var ns=12;while(ns>7&&bold.widthOfTextAtSize(shown,ns)>NW-4)ns-=0.5;" +
+    "pg.drawText(shown,{x:NX+2,y:BASE+6,size:ns,font:bold,color:INK});" +
+    "pg.drawLine({start:{x:NX,y:BASE},end:{x:NX+NW,y:BASE},thickness:.8,color:GREY});" +
+    "pg.drawText('Printed name',{x:NX,y:BASE-11,size:7.5,font:font,color:GREY});" +
+    /* The business timezone, named. A crew member signing from a hotel in
+       Denver would otherwise stamp a Mountain time with nothing saying so, and
+       the one thing a signature date must not be is ambiguous. */
+    "var when=new Date().toLocaleString('en-US',{timeZone:'America/Los_Angeles'," +
+    "year:'numeric',month:'long',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'});" +
+    "pg.drawText('Signed electronically on '+when,{x:SX,y:BASE-27,size:8,font:font,color:GREY});" +
+    "return doc.save();});});});})" +
     ".then(function(out){return new File([out],'signed-'+DOC+'.pdf',{type:'application/pdf'});});}" +
     // --- direct-to-storage upload. The file never goes through a function, so
     //     a 10 MB scan is fine.

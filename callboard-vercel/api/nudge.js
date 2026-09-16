@@ -3,9 +3,25 @@
 //   GET /api/nudge            the deadline check (needs the CRON_SECRET header)
 //   GET /api/nudge?morning=1  the daily list, same header
 //   GET /api/nudge?loose=1    the afternoon poke about undated tasks
-//   GET /api/nudge?dry=1      admin only, in a browser: what WOULD be sent, and
-//                             why each task was or was not picked. Sends nothing.
-//                             Combine with &morning=1 to preview that instead.
+//   GET /api/nudge?dry=1      admin only: what WOULD be sent, and why each task
+//                             was or was not picked. Sends nothing. Combine with
+//                             &morning=1 to preview that instead.
+//   GET /api/nudge?test=1     admin only: send one test message now and report
+//                             exactly what Telegram said. The button for it is
+//                             in Settings → Inbox & alerts.
+//
+// NOTE: both of the above need a signed-in admin's bearer token, so neither
+// works by pasting the URL into a browser tab — an earlier version of this
+// comment said "in a browser", which it never was.
+//
+// IF THE REMINDERS ARE SILENT, IN ORDER:
+//   1. Settings → Inbox & alerts → Send a test message. That answers "can this
+//      deployment reach my phone" on its own, without the schedule involved.
+//   2. If the test works but reminders do not, the cron is not running.
+//      Vercel invokes cron jobs ONLY on production deployments, never on
+//      previews, and vercel.json must be at the REPOSITORY ROOT — not in /api,
+//      where it is silently ignored. Vercel → Settings → Cron Jobs shows what
+//      is actually registered.
 //
 // SETUP: run sql/setup-task-times.sql, then add a cron in api/vercel.json.
 // Needs CRON_SECRET and TELEGRAM_BOT_TOKEN, both of which already exist.
@@ -195,6 +211,41 @@ export default async function handler(req, res) {
   if (req.method !== "GET") return json(res, 405, { error: "Method not allowed" });
 
   const dry = req.query && (req.query.dry === "1" || req.query.dry === "true");
+  const test = req.query && (req.query.test === "1" || req.query.test === "true");
+
+  /* ---- the test send ------------------------------------------------------
+     Admin only, and it is the one route here that sends without the cron
+     secret — deliberately, because the question it answers is "can this
+     deployment message my phone at all", and that has to be answerable in one
+     click rather than by reading Vercel logs.
+
+     It is safe to open to an admin: it is signed-in-only, it sends one fixed
+     sentence to the ids already on the allowlist, and it can reach no one
+     else. What it buys is a clean split — if this works and the reminders do
+     not, the problem is the cron, not Telegram. */
+  if (test) {
+    if (!isAdmin(auth(req))) return json(res, 403, { error: "Admin only" });
+    const stamp = new Date().toLocaleString("en-US", {
+      timeZone: BUSINESS_TZ, hour: "numeric", minute: "2-digit", timeZoneName: "short",
+    });
+    const r = await telegramNotify(
+      "✅ Test from Crew Call\n\nIf you can read this, notifications are working.\nSent " + stamp + ".");
+    return json(res, 200, {
+      ok: r.sent > 0,
+      sent: r.sent,
+      botTokenSet: r.configured,
+      idsConfigured: r.ids,
+      results: r.results,
+      reason: r.reason,
+      /* Said here rather than left for someone to remember: a working test send
+         alongside silent reminders means the schedule is not running, and on
+         Vercel that is nearly always one of these two. */
+      ifRemindersStillSilent:
+        "Vercel runs cron jobs only on PRODUCTION deployments, never on previews — check " +
+        "Settings → Git that this branch is the Production Branch. And vercel.json must sit at " +
+        "the REPOSITORY ROOT, not in /api. Settings → Cron Jobs lists what is actually registered.",
+    });
+  }
 
   /* Two ways in, and only two. The cron carries the secret; a human has to be
      an admin AND ask for a dry run. There is no path that both sends and skips
