@@ -14,7 +14,15 @@ const verify = (t) => {
   return p && p.scope === "schedulefill" && p.id ? p : null;
 };
 
-const esc = (s) => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/* All five, quotes included. The two that stopped at the angle brackets
+   were safe only because their values land in element text today; the
+   moment one moves into an attribute a name with a quote in it is an
+   injection. Matches onboard.js, crew-docs.js, billing-digest.js,
+   rundown-share.js and availability.js. */
+const esc = (s) =>
+  String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 function j(res, code, obj) {
   res.status(code).setHeader("Content-Type", "application/json").end(JSON.stringify(obj));

@@ -1,7 +1,7 @@
 // POST /api/auth  { mode: "admin" | "show", password }
 // admin  -> token that can list/manage every show
 // show   -> token scoped to the ONE show whose password matches (crew never see others)
-import { json, readBody, hashPassword, signToken, supabaseRest, TOKEN_TTL, env, supabaseUser, supabaseProfile } from "./_lib.js";
+import { json, readBody, hashPassword, signToken, supabaseRest, TOKEN_TTL, env, supabaseUser, supabaseProfile, sameSecret } from "./_lib.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return json(res, 405, { error: "Method not allowed" });
@@ -19,9 +19,16 @@ export default async function handler(req, res) {
 
   try {
     if (mode === "admin") {
+      /* Constant-time, not `===`.
+         A plain comparison returns as soon as two characters differ, so the
+         time it takes leaks how much of the password was right — and this
+         endpoint is public by necessity and has no rate limiting in front of
+         it. `sameSecret` was added to _lib.js for the cron secret during the
+         September audit and this call site was the one left on `===`, because
+         auth.js was not in the file set at the time. */
       const adminOk =
-        password === env.ADMIN_PASSWORD ||
-        (env.ADMIN_PASSWORD_2 && password === env.ADMIN_PASSWORD_2);
+        sameSecret(password, env.ADMIN_PASSWORD) ||
+        (!!env.ADMIN_PASSWORD_2 && sameSecret(password, env.ADMIN_PASSWORD_2));
       if (!adminOk) return json(res, 401, { error: "Wrong admin password" });
       return json(res, 200, { scope: "admin", token: signToken({ scope: "admin", exp: Date.now() + TOKEN_TTL }) });
     }

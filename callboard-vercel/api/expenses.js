@@ -114,8 +114,25 @@ function cleanRow(b, { showId, overhead }) {
 }
 
 
-// Moved to _lib.js when crew documents became the second consumer.
-const EXT_OK = UPLOAD_EXT;
+/* Moved to _lib.js when crew documents became the second consumer — and then
+   widened HERE rather than there, because a receipt and a signed NDA are not
+   the same problem.
+
+   An iPhone photographs in HEIC. Safari usually converts to JPEG on upload,
+   but not always, and when it does not the old list refused the file with
+   "Receipts must be a JPEG, PNG or PDF" — which is true, unhelpful, and
+   impossible for Tyler to act on while standing at a fuel pump. WebP turns up
+   from Android and from anything that has been through a web app.
+
+   Not added to UPLOAD_EXT itself: crew-docs.js signs NDAs and W-9s off that
+   list, and a HEIC W-9 is a different conversation. */
+const EXT_OK = {
+  ...UPLOAD_EXT,
+  "image/jpg": "jpg",            // non-standard, and some browsers send it
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "image/webp": "webp",
+};
 
 /* A show row is permitted by the show. An overhead row has no show to ask, so
    it is admin-only — stated once, here, rather than inferred at four call
@@ -138,7 +155,7 @@ export default async function handler(req, res) {
     if (req.method === "POST" && q.upload) {
       const b = await readBody(req);
       const ext = EXT_OK[String(b && b.contentType || "")];
-      if (!ext) return json(res, 400, { error: "Receipts must be a JPEG, PNG or PDF." });
+      if (!ext) return json(res, 400, { error: "A receipt has to be a photo or a PDF." });
 
       const target = overhead ? null : showId;
       if (overhead ? !isAdmin(p) : !showGate(p, target)) {
