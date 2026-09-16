@@ -170,8 +170,13 @@ async function openItems() {
     });
   }
 
+  /* `shows`, not `events`. api/events.js is the ROUTE name; the TABLE behind
+     it is `shows`, as it is everywhere else in this app. Getting this wrong
+     does not fail at build or lint — PostgREST answers "Could not find the
+     table 'public.events' in the schema cache" at run time, and only once it
+     is deployed. */
   const shows = await supabaseRest(
-    "GET", "/events?select=id,name,data&limit=500", null);
+    "GET", "/shows?select=id,name,data&limit=500", null);
   for (const s of shows || []) {
     const d = (s.data && typeof s.data === "object") ? s.data
       : (() => { try { return JSON.parse(s.data || "{}"); } catch { return {}; } })();
@@ -241,7 +246,7 @@ async function pull(token, settings, report) {
            uses, and the reason event_id is on the link: without it this would
            mean loading every show to find which one owns this id. */
         const rows = await supabaseRest(
-          "GET", "/events?id=eq." + encodeURIComponent(link.event_id) + "&select=id,data&limit=1", null);
+          "GET", "/shows?id=eq." + encodeURIComponent(link.event_id) + "&select=id,data&limit=1", null);
         const row = rows && rows[0];
         if (!row) { report.errors.push("A show behind a Todoist item has gone."); continue; }
         const d = (row.data && typeof row.data === "object") ? row.data : {};
@@ -251,7 +256,7 @@ async function pull(token, settings, report) {
         }
         const next = todos.map((t) =>
           t && String(t.id) === String(link.todo_id) ? { ...t, done: true } : t);
-        await supabaseRest("PATCH", "/events?id=eq." + encodeURIComponent(link.event_id),
+        await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(link.event_id),
           { data: { ...d, todos: next }, updated_at: now });
       }
       await supabaseRest("PATCH", "/todoist_links?todoist_id=eq." + encodeURIComponent(link.todoist_id),
