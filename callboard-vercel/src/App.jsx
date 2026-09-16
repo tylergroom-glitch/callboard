@@ -7090,20 +7090,31 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.45.0";
+const APP_VERSION = "1.46.0";
 
+/* A colour per destination, and every one of them CHECKED against white text
+   rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
+   set had a brighter green at 3.45:1 - it looked right and was not readable -
+   so it is darker here at 4.99:1. The others land between 4.7 and 7.9.
+   Re-measure before changing any of them.
+
+   A colour per destination. Position in a list is a weak thing to navigate by
+   once there are eight of them; a colour is remembered after a day and found
+   without reading. The set is deliberately spread around the wheel so no two
+   neighbours are confusable, and every one of them is dark enough to carry
+   white text — checked, not assumed. */
 const ADM_NAV = [
-  { key: "today", label: "Today" },
-  { key: "todo", label: "To Do" },
-  { key: "shows", label: "Shows" },
-  { key: "pipeline", label: "Pipeline" },
-  { key: "quotes", label: "Quotes" },
-  { key: "billing", label: "Billing" },
+  { key: "today", label: "Today", c: "#10804A" },
+  { key: "todo", label: "To Do", c: "#D6246E" },
+  { key: "shows", label: "Shows", c: "#4338CA" },
+  { key: "pipeline", label: "Pipeline", c: "#0E7490" },
+  { key: "quotes", label: "Quotes", c: "#7C3AED" },
+  { key: "billing", label: "Billing", c: "#9A6B00" },
   /* Next to Billing, not buried in Settings: money out belongs beside money
      in, and the reason to open it — "I have a receipt in my pocket" — is the
      same kind of errand. */
-  { key: "expenses", label: "Expenses" },
-  { key: "catalog", label: "Catalog" },
+  { key: "expenses", label: "Expenses", c: "#B23A0A" },
+  { key: "catalog", label: "Catalog", c: "#1D4ED8" },
 ];
 
 function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
@@ -7117,7 +7128,8 @@ function AdminSidebar({ active, go, onPeople, onLogout, taskCount }) {
       {ADM_NAV.map((n) => (
         <button
           key={n.key}
-          className={"adm-navbtn" + (active === n.key ? " on" : "")}
+          className={"adm-navbtn colour" + (active === n.key ? " on" : "")}
+          style={{ background: n.c }}
           onClick={() => go(n.key)}
         >
           {n.key === "todo" && taskCount > 0 ? <span className="adm-badge">{taskCount > 99 ? "99+" : taskCount}</span> : null}
@@ -7391,11 +7403,11 @@ function TodayScreen({ go, onOpenShow }) {
      only when its number is above zero — a permanent "0 outstanding" is
      furniture, and the point of this panel is that anything in it is work. */
   const attention = [
-    undated.length ? { k: "nd", n: undated.length, t: "tasks have no date", go: () => go("todo"), tone: "warn" } : null,
-    dash.st === "ok" && dash.unfilled ? { k: "un", n: dash.unfilled, t: "crew positions unfilled", go: () => go("shows"), tone: "warn" } : null,
-    docs.st === "ok" && docs.nda ? { k: "nda", n: docs.nda, t: "NDAs outstanding", go: () => go("roster"), tone: "flat" } : null,
-    docs.st === "ok" && docs.w9 ? { k: "w9", n: docs.w9, t: "W-9s outstanding", go: () => go("roster"), tone: "flat" } : null,
-    overdue.length ? { k: "od", n: overdue.length, t: overdue.length === 1 ? "invoice overdue" : "invoices overdue", go: () => go("billing"), tone: "bad" } : null,
+    undated.length ? { k: "nd", n: undated.length, t: "tasks have no date", go: () => go("todo"), tone: "amber", icon: "warn" } : null,
+    dash.st === "ok" && dash.unfilled ? { k: "un", n: dash.unfilled, t: "crew positions unfilled", go: () => go("shows"), tone: "pink", icon: "people" } : null,
+    docs.st === "ok" && docs.nda ? { k: "nda", n: docs.nda, t: "NDAs outstanding", go: () => go("roster"), tone: "blue", icon: "doc" } : null,
+    docs.st === "ok" && docs.w9 ? { k: "w9", n: docs.w9, t: "W-9s outstanding", go: () => go("roster"), tone: "blue", icon: "doc" } : null,
+    overdue.length ? { k: "od", n: overdue.length, t: overdue.length === 1 ? "invoice overdue" : "invoices overdue", go: () => go("billing"), tone: "red", icon: "money" } : null,
   ].filter(Boolean);
 
   return (
@@ -7412,22 +7424,22 @@ function TodayScreen({ go, onOpenShow }) {
       </div>
 
       <div className="dash-tiles">
-        <DashTile tone={overdue.length ? "bad" : "good"} label="Overdue"
+        <DashTile tone={overdue.length ? "bad" : "good"} icon={overdue.length ? "money" : "check"} label="Overdue"
           value={bills.st === "err" ? "—" : bills.st === "load" ? "·" : tdMoney0(overdueSum)}
           sub={bills.st === "err" ? bills.err
             : overdue.length ? overdue.length + (overdue.length === 1 ? " invoice" : " invoices") : "nothing outstanding"}
           onClick={() => go("billing")} />
-        <DashTile tone={dueToday.length ? "warn" : "info"} label="Due Today"
+        <DashTile tone={dueToday.length ? "warn" : "info"} icon="clock" label="Due Today"
           value={tasks.st === "err" ? "—" : tasks.st === "load" ? "·" : dueToday.length + (dueToday.length === 1 ? " task" : " tasks")}
           sub={tasks.st === "err" ? tasks.err
             : undated.length ? undated.length + " with no date" : "nothing due"}
           onClick={() => go("todo")} />
-        <DashTile tone="info" label="Next 14 Days"
+        <DashTile tone="indigo" icon="cal" label="Next 14 Days"
           value={shows.st === "err" ? "—" : shows.st === "load" ? "·" : soon.length + (soon.length === 1 ? " show" : " shows")}
           sub={shows.st === "err" ? shows.err
             : nextUp ? "next show is " + tdWhen(nextUp.startDate, today) : "nothing booked"}
           onClick={() => go("shows")} />
-        <DashTile tone="info" label="Open Pipeline"
+        <DashTile tone="violet" icon="chart" label="Open Pipeline"
           value={dash.st === "err" ? "—" : dash.st === "load" ? "·" : tdMoney0(dash.pipeline.openTotal)}
           sub={dash.st === "err" ? dash.err
             : dash.pipeline.openCount + (dash.pipeline.openCount === 1 ? " opportunity" : " opportunities")}
@@ -7445,8 +7457,10 @@ function TodayScreen({ go, onOpenShow }) {
           {!anyLoading && !attention.length ? <p className="dash-empty">Nothing waiting on you. Genuinely clear.</p> : null}
           {attention.map((a) => (
             <button key={a.k} className="dash-att" onClick={a.go}>
-              <span className={"dash-att-n " + a.tone}>{a.n}</span>
-              <span className="dash-att-t">{a.t}</span>
+              <span className={"dash-att-i " + a.tone}><DashIcon name={a.icon} /></span>
+              {/* The COUNT stays in the sentence, where it is read rather than
+                  decoded. The badge carries the kind, not the number. */}
+              <span className="dash-att-t"><b>{a.n}</b> {a.t}</span>
               <span className="dash-chev">›</span>
             </button>
           ))}
@@ -7581,14 +7595,39 @@ function TodayScreen({ go, onOpenShow }) {
   );
 }
 
-/* One tile. `tone` colours the left edge, never the number — a figure that
-   changes colour is harder to read at a glance than one that does not. */
-function DashTile({ tone, label, value, sub, onClick }) {
+/* Small solid-fill glyphs. Deliberately simple shapes: at 16px a detailed icon
+   is a smudge, and these have to read on a phone in daylight. */
+const DI = {
+  check: "M8 1.2a6.8 6.8 0 100 13.6A6.8 6.8 0 008 1.2zm3.3 5.1l-3.9 4a.8.8 0 01-1.15 0L4.7 8.65a.8.8 0 011.15-1.1l1 1.05 3.3-3.4a.8.8 0 011.15 1.1z",
+  clock: "M8 1.2a6.8 6.8 0 100 13.6A6.8 6.8 0 008 1.2zm.75 3.3v3.2l2.3 1.35a.75.75 0 01-.76 1.3L7.6 8.8a.75.75 0 01-.35-.64V4.5a.75.75 0 011.5 0z",
+  cal: "M5 1.5a.8.8 0 01.8.8v.7h4.4v-.7a.8.8 0 011.6 0v.7h.7c.9 0 1.5.7 1.5 1.5v8c0 .8-.6 1.5-1.5 1.5H3.5c-.9 0-1.5-.7-1.5-1.5v-8c0-.8.6-1.5 1.5-1.5h.7v-.7a.8.8 0 01.8-.8zM3.5 6.5v6h9v-6h-9z",
+  chart: "M3 13.6a.9.9 0 01-.9-.9V9.4a.9.9 0 011.8 0v3.3a.9.9 0 01-.9.9zm4.5 0a.9.9 0 01-.9-.9V5.2a.9.9 0 111.8 0v7.5a.9.9 0 01-.9.9zm4.5 0a.9.9 0 01-.9-.9V7.3a.9.9 0 111.8 0v5.4a.9.9 0 01-.9.9z",
+  warn: "M7.14 2.2a1 1 0 011.72 0l5.1 8.8a1 1 0 01-.86 1.5H2.9a1 1 0 01-.86-1.5zM8 5.4a.75.75 0 00-.75.75v2.3a.75.75 0 001.5 0v-2.3A.75.75 0 008 5.4zm0 5.6a.85.85 0 100-1.7.85.85 0 000 1.7z",
+  people: "M6 7.6a2.55 2.55 0 100-5.1 2.55 2.55 0 000 5.1zm5 .4a2 2 0 100-4 2 2 0 000 4zM6 8.8c-2.3 0-4.5 1.15-4.5 2.6v1.3a.8.8 0 00.8.8h7.4a.8.8 0 00.8-.8v-1.3c0-1.45-2.2-2.6-4.5-2.6zm5.4.5c1.7.35 3.1 1.25 3.1 2.4v1a.8.8 0 01-.8.8h-1.9v-1.7c0-.95-.55-1.8-1.4-2.4z",
+  doc: "M4 1.4h4.3L12.6 5.7v8.1c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V2.4c0-.55.45-1 1-1zm4.1 1.5v3h3l-3-3z",
+  money: "M8 1.2a6.8 6.8 0 100 13.6A6.8 6.8 0 008 1.2zm.7 2.6v.7c1 .15 1.8.75 1.8 1.7a.75.75 0 01-1.5 0c0-.15-.3-.4-.9-.4s-.9.25-.9.45c0 .2.2.4.95.55 1.1.2 2.35.6 2.35 1.95 0 .95-.8 1.6-1.8 1.75v.7a.75.75 0 01-1.5 0v-.7c-1.05-.15-1.85-.8-1.85-1.75a.75.75 0 011.5 0c0 .2.35.45.95.45s.95-.25.95-.45-.2-.4-.95-.55c-1.1-.2-2.35-.6-2.35-1.95 0-.9.75-1.55 1.75-1.7v-.7a.75.75 0 011.5 0z",
+};
+function DashIcon({ name }) {
+  return (
+    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+      <path d={DI[name] || DI.doc} fill="currentColor" />
+    </svg>
+  );
+}
+
+/* One tile. The COLOUR lives on the icon badge and a wash behind the card, not
+   on the number — a figure that changes colour is harder to read at a glance
+   than one that does not, and the tone is already carried by the badge. */
+function DashTile({ tone, icon, label, value, sub, onClick }) {
   return (
     <button className={"dash-tile " + (tone || "info")} onClick={onClick}>
-      <span className="dash-tlabel">{label}</span>
-      <span className="dash-tvalue">{value}</span>
-      <span className="dash-tsub">{sub}</span>
+      <span className="dash-tico"><DashIcon name={icon} /></span>
+      <span className="dash-tbody">
+        <span className="dash-tlabel">{label}</span>
+        <span className="dash-tvalue">{value}</span>
+        <span className="dash-tsub">{sub}</span>
+      </span>
+      <span className="dash-tchev">›</span>
     </button>
   );
 }
@@ -17769,6 +17808,14 @@ const CSS = `
 }
 .cb .adm-navbtn:hover{background:var(--panel2); color:var(--ink);}
 .cb .adm-navbtn.on{background:var(--panel2); color:var(--ink); box-shadow:inset 3px 0 0 var(--amber);}
+/* A coloured rail. The background colour comes from ADM_NAV as an inline
+   style, so these rules only carry what every one of them shares.
+   .colour beats the hover and .on rules above by specificity, which is why
+   those two are restated here rather than left to fight. */
+.cb .adm-navbtn.colour{color:#fff; font-weight:600; opacity:.88;}
+.cb .adm-navbtn.colour:hover{opacity:1; color:#fff;}
+.cb .adm-navbtn.colour.on{opacity:1; color:#fff; box-shadow:0 0 0 2px var(--panel), 0 0 0 3.5px rgba(255,255,255,.55);}
+.cb .adm-navbtn.colour .adm-badge{background:rgba(0,0,0,.35); color:#fff;}
 .cb .adm-navbtn.dim{color:var(--faint); font-weight:500;}
 .cb .adm-div{height:1px; background:var(--line); margin:10px 12px;}
 .cb .adm-spacer{flex:1; min-height:20px;}
@@ -18881,12 +18928,27 @@ const CSS = `
 .cb .dash-quote{color:var(--faint); font-size:13px; font-style:italic; padding-top:8px;}
 
 .cb .dash-tiles{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px;}
-.cb .dash-tile{text-align:left; display:flex; flex-direction:column; gap:3px; background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--line); border-radius:13px; padding:15px 17px; cursor:pointer; font-family:inherit; color:var(--ink);}
-.cb .dash-tile:hover{border-color:var(--amber);}
-.cb .dash-tile.bad{border-left-color:var(--danger);}
-.cb .dash-tile.warn{border-left-color:var(--amber);}
-.cb .dash-tile.good{border-left-color:var(--green);}
-.cb .dash-tile.info{border-left-color:#4EA8DE;}
+/* The tile carries its colour three ways: a filled icon badge, a wash behind
+   the whole card, and a matching border. Never on the number itself - a figure
+   that changes colour is harder to read at a glance, and the tone is already
+   said twice over. */
+.cb .dash-tile{text-align:left; display:flex; align-items:flex-start; gap:12px; background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:15px 17px; cursor:pointer; font-family:inherit; color:var(--ink); transition:border-color .12s;}
+.cb .dash-tile:hover{border-color:var(--t-col, var(--amber));}
+.cb .dash-tbody{display:flex; flex-direction:column; gap:2px; min-width:0; flex:1;}
+.cb .dash-tico{flex:0 0 auto; width:34px; height:34px; border-radius:11px; display:inline-flex; align-items:center; justify-content:center; color:#fff; margin-top:2px;}
+.cb .dash-tchev{color:var(--faint); font-size:17px; align-self:center;}
+.cb .dash-tile.good{--t-col:#10804A; background:linear-gradient(180deg, rgba(16,128,74,.20), rgba(16,128,74,.07)); border-color:rgba(16,128,74,.50);}
+.cb .dash-tile.good .dash-tico{background:#10804A;}
+.cb .dash-tile.bad{--t-col:#DC2626; background:linear-gradient(180deg, rgba(220,38,38,.20), rgba(220,38,38,.07)); border-color:rgba(220,38,38,.50);}
+.cb .dash-tile.bad .dash-tico{background:#DC2626;}
+.cb .dash-tile.warn{--t-col:#B45309; background:linear-gradient(180deg, rgba(217,119,6,.22), rgba(217,119,6,.07)); border-color:rgba(217,119,6,.55);}
+.cb .dash-tile.warn .dash-tico{background:#B45309;}
+.cb .dash-tile.info{--t-col:#1D4ED8; background:linear-gradient(180deg, rgba(29,78,216,.22), rgba(29,78,216,.07)); border-color:rgba(29,78,216,.55);}
+.cb .dash-tile.info .dash-tico{background:#1D4ED8;}
+.cb .dash-tile.indigo{--t-col:#4338CA; background:linear-gradient(180deg, rgba(67,56,202,.24), rgba(67,56,202,.07)); border-color:rgba(67,56,202,.55);}
+.cb .dash-tile.indigo .dash-tico{background:#4338CA;}
+.cb .dash-tile.violet{--t-col:#7C3AED; background:linear-gradient(180deg, rgba(124,58,237,.22), rgba(124,58,237,.07)); border-color:rgba(124,58,237,.55);}
+.cb .dash-tile.violet .dash-tico{background:#7C3AED;}
 .cb .dash-tlabel{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--dim);}
 .cb .dash-tvalue{font-family:'Oswald',sans-serif; font-size:25px; font-weight:600; line-height:1.15;}
 .cb .dash-tsub{font-size:12px; color:var(--faint);}
@@ -18910,11 +18972,13 @@ const CSS = `
 .cb .dash-att{display:flex; align-items:center; gap:11px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:9px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
 .cb .dash-att:last-child{border-bottom:0;}
 .cb .dash-att:hover{background:var(--panel2);}
-.cb .dash-att-n{min-width:26px; height:26px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:700; flex:0 0 auto; padding:0 6px;}
-.cb .dash-att-n.bad{background:rgba(239,68,68,.16); color:var(--danger);}
-.cb .dash-att-n.warn{background:rgba(255,176,32,.16); color:var(--amber);}
-.cb .dash-att-n.flat{background:var(--panel2); color:var(--dim);}
+.cb .dash-att-i{width:28px; height:28px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; color:#fff;}
+.cb .dash-att-i.amber{background:#B45309;}
+.cb .dash-att-i.pink{background:#BE185D;}
+.cb .dash-att-i.blue{background:#1D4ED8;}
+.cb .dash-att-i.red{background:#DC2626;}
 .cb .dash-att-t{flex:1; min-width:0; font-size:13.5px;}
+.cb .dash-att-t b{font-weight:700;}
 .cb .dash-chev{color:var(--faint); font-size:16px;}
 
 .cb .dash-show{display:flex; align-items:stretch; gap:12px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:11px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
@@ -18947,9 +19011,11 @@ const CSS = `
 .cb .dash-prodhead em{font-style:normal; font-size:12px; color:var(--dim);}
 .cb .dash-track{display:flex; gap:6px; flex-wrap:wrap; min-width:0;}
 .cb .dash-stage{font-size:11.5px; padding:5px 10px; border-radius:99px; border:1px solid var(--line); white-space:nowrap;}
-.cb .dash-stage.done{background:rgba(52,199,123,.13); border-color:rgba(52,199,123,.45); color:var(--green);}
-.cb .dash-stage.now{background:rgba(255,176,32,.15); border-color:var(--amber); color:var(--amber); font-weight:700;}
-.cb .dash-stage.todo{color:var(--faint);}
+/* Solid, not tinted. A stage track is scanned at arm's length and the point is
+   to see where the colour stops. The glyphs stay so it reads in greyscale. */
+.cb .dash-stage.done{background:#10804A; border-color:#22B36A; color:#E8FBF1; font-weight:600;}
+.cb .dash-stage.now{background:#B45309; border-color:#F59E0B; color:#FFF8EC; font-weight:700;}
+.cb .dash-stage.todo{color:var(--faint); background:var(--panel2);}
 
 .cb .dash-task{display:flex; align-items:flex-start; gap:10px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:9px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
 .cb .dash-task:last-child{border-bottom:0;}
