@@ -121,6 +121,10 @@ export const deleteInventoryCase = (id) =>
   api("DELETE", "/api/inventory?id=" + encodeURIComponent(id));
 export const getCosting = (id) => api("GET", "/api/costing?id=" + encodeURIComponent(id));
 export const saveCosting = (id, costing) => api("PATCH", "/api/costing?id=" + encodeURIComponent(id), { costing });
+/* Every show's costing in one request, for the company-wide roll-up. The
+   roll-up cannot read these figures off the show record — they have not lived
+   there since costing moved to its own table. */
+export const getAllCosting = () => api("GET", "/api/costing?all=1");
 
 // Import gear from a quote PDF (passes the PDF to the Claude API for extraction).
 export const importQuote = (pdf) => api("POST", "/api/import-quote", { pdf });
@@ -279,8 +283,15 @@ export const deleteQuoteTermsPdf = () => api("DELETE", "/api/quotes?termsPdf=1")
    TASKS — the account-wide to-do list, and the inbox that feeds
    it. Admin-gated on the server, both reading and writing.
    ============================================================ */
-export const listTasks = (status) =>
-  api("GET", "/api/tasks" + (status ? "?status=" + encodeURIComponent(status) : ""));
+/* `owner` is "me", "none", an account id, or nothing for everybody's.
+   "me" needs an ACCOUNT sign-in; with the shared admin password the server
+   answers with noIdentity rather than guessing. */
+export const listTasks = (status, owner) => {
+  const q = [];
+  if (status) q.push("status=" + encodeURIComponent(status));
+  if (owner) q.push("owner=" + encodeURIComponent(owner));
+  return api("GET", "/api/tasks" + (q.length ? "?" + q.join("&") : ""));
+};
 export const createTask = (task) => api("POST", "/api/tasks", { task });
 export const updateTask = (id, patch) =>
   api("PATCH", "/api/tasks?id=" + encodeURIComponent(id), { patch });
@@ -300,6 +311,30 @@ export const listOverheadExpenses = (from, to) =>
     (to ? "&to=" + encodeURIComponent(to) : ""));
 export const listYearExpenses = (year) =>
   api("GET", "/api/expenses?year=" + encodeURIComponent(year));
+/* Thin rows — id, show, amount, category — for every show receipt at once, so
+   the roll-up can fold receipts into each show's actual cost without one
+   request per show. Not summed on the server: a receipt can be excluded from
+   a show's P&L by hand, and that list lives in the show's costing. */
+export const listShowExpenseTotals = () =>
+  api("GET", "/api/expenses?totals=1");
+
+/* Message everyone on a show, with a PDF packet attached.
+
+   `preview` builds the packet and hands it back WITHOUT sending — that is the
+   whole point of the two modes, because the alternative is finding out what
+   the packet looks like at the same moment thirty people do.
+
+   `to` is a filter over the show's own crew list, never an address book: the
+   server drops anything that is not on the show and names it in `rejected`. */
+/* The Today dashboard's one new request: readiness per show, the stage track
+   and the open pipeline total. Everything else on that screen still loads
+   through its own endpoint, so one failure greys one panel. */
+export const getDashboard = () => api("GET", "/api/dashboard");
+
+export const previewShowMessage = (showId, body) =>
+  api("POST", "/api/show-message?preview=1&show=" + encodeURIComponent(showId), body);
+export const sendShowMessage = (showId, body) =>
+  api("POST", "/api/show-message?show=" + encodeURIComponent(showId), body);
 export const createExpenses = (rows, { showId, overhead } = {}) =>
   api("POST", "/api/expenses?" + (overhead ? "overhead=1" : "show=" + encodeURIComponent(showId)), { rows });
 export const updateExpense = (id, patch) =>

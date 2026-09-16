@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { supabase, hasSupabaseConfig } from "./supabase.js";
+/* The pipeline stages and the readiness maths live in api/_pipe.js so the
+   Today dashboard's server-side copy and this screen's client-side one are the
+   SAME code, not two that agree until they don't. Plain ESM with no Node
+   built-ins, deliberately, so Vite bundles it unchanged. */
+import { PIPE_MILESTONES, PIPE_TOTAL, pipeDerive, pipeDone, pipeReady, pipeCurrent } from "../api/_pipe.js";
 import {
   currentAuth,
   logout as dbLogout,
@@ -30,6 +35,11 @@ import {
   deleteTemplate,
   getCosting,
   saveCosting,
+  getAllCosting,
+  listShowExpenseTotals,
+  previewShowMessage,
+  sendShowMessage,
+  getDashboard,
   importQuote,
   listInventory,
   saveInventoryCase,
@@ -1207,11 +1217,35 @@ function Callboard({ auth, onLogout }) {
 
   async function openPnlDashboard() {
     setPnlDashOpen(true); setPnlDashBusy(true); setPnlDashRows([]);
+
+    /* Two bulk reads before the loop, not two more requests per show.
+
+       The costing one is the fix for a real bug: this roll-up called
+       computePnl(full) on the show record alone, and the figures have lived in
+       `show_costing` since they were moved out of reach of crew tokens. Every
+       field it wanted was undefined, so every show reported zero. */
+    let costingById = {}, receiptsByShow = {};
+    try { costingById = (await getAllCosting()).costing || {}; } catch (e) {}
+    try {
+      ((await listShowExpenseTotals()).rows || []).forEach((r) => {
+        if (!r || !r.show_id) return;
+        (receiptsByShow[r.show_id] = receiptsByShow[r.show_id] || []).push(r);
+      });
+    } catch (e) {}
+
     const rows = [];
     for (const ev of events) {
       try {
         const full = normalize(await getEvent(ev.id));
-        rows.push({ id: ev.id, name: full.name || ev.name || "Untitled", client: full.client || "", startDate: full.startDate || "", ...computePnl(full) });
+        /* Costing LAST: it is the authoritative source for every figure it
+           carries, and a show record still holding pre-move leftovers must not
+           win over what the Costing tab has actually saved. */
+        const merged = { ...full, ...(costingById[ev.id] || {}) };
+        rows.push({
+          id: ev.id, name: full.name || ev.name || "Untitled",
+          client: full.client || "", startDate: full.startDate || "",
+          ...computePnl(merged, receiptsByShow[ev.id]),
+        });
       } catch (e) {}
     }
     rows.sort((a, b) => (b.startDate || "").localeCompare(a.startDate || ""));
@@ -1462,7 +1496,7 @@ function Callboard({ auth, onLogout }) {
 
       {/* body: the home board, or a single section page */}
       {tab === "home" ? (
-        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isShowAdmin} isSuperAdmin={isSuperAdmin} canEdit={canEditTabs} />
+        <HomeScreen event={event} update={update} go={setTab} copyBrief={copyBrief} dateRange={dateRange} isAdmin={isShowAdmin} isSuperAdmin={isSuperAdmin} canEdit={canEditTabs} flash={flash} />
       ) : (
         <>
           <div className="pagebar">
@@ -1752,17 +1786,6 @@ function LockWrapper({ canEdit, label, children }) {
   );
 }
 
-const PIPE_MILESTONES = [
-  ["datesHeld", "Dates Held"],
-  ["siteVisit", "Site Visit"],
-  ["prelimQuote", "Prelim Quote"],
-  ["quoteAccepted", "Quote Accepted"],
-  ["crewBooked", "Crew Booked"],
-  ["gearReserved", "Gear Reserved"],
-  ["logistics", "Logistics"],
-  ["show", "Show"],
-  ["finalBilling", "Final Billing"],
-];
 function normPipe(p) {
   const out = { milestones: {}, quotes: [], invoices: [], notes: "" };
   if (p && typeof p === "object") {
@@ -1785,41 +1808,6 @@ function normPipe(p) {
 
    Site Visit is absent on purpose: nothing in the app knows whether you walked
    the room, so guessing at it would be worse than leaving it to you. */
-function pipeDerive(row, quote) {
-  const d = row.data || {};
-  const out = {};
-  const set = (k, why) => { out[k] = why; };
-
-  if (row.start && row.end) set("datesHeld", "Dates are on the show");
-
-  const crew = (d.crew || []).filter((c) => c && String(c.name || "").trim());
-  if (crew.length) set("crewBooked", crew.length + " named on the crew list");
-
-  const pull = d.pull || {};
-  const gear = ((pull.cases || []).reduce((n, c) => n + ((c.items || []).length), 0)) + ((pull.loose || []).length);
-  if (gear) set("gearReserved", gear + " items on the pull list");
-
-  const it = d.itinerary || {};
-  const legs = ((it.stays || []).length) + ((it.flights || []).length);
-  if (String(it.hotelName || "").trim() || legs) {
-    set("logistics", String(it.hotelName || "").trim() ? "Hotel on the itinerary" : legs + " travel legs booked");
-  }
-
-  const today = todayLocal();
-  if (row.end && row.end < today) set("show", "End date has passed");
-
-  // The rest need a quote linked to this show. Shows that predate the quoting
-  // system have no link until you attach one from the quote screen.
-  if (quote) {
-    if (quote.sentAt || quote.status !== "draft") set("prelimQuote", "Quote v" + quote.version + " sent");
-    if (quote.status === "won") set("quoteAccepted", "Quote v" + quote.version + " marked won");
-    const deps = (quote.data && Array.isArray(quote.data.deposits)) ? quote.data.deposits : [];
-    if (quote.status === "won" && deps.length && deps.every((x) => x && x.paid)) {
-      set("finalBilling", "Every payment ticked paid");
-    }
-  }
-  return out;
-}
 
 function PipelineBoard({ onClose, onOpenShow }) {
   const [rows, setRows] = useState(null);
@@ -1895,7 +1883,7 @@ function PipelineBoard({ onClose, onOpenShow }) {
      backed by evidence. Everything below — the count, the stage, the filters —
      reads through here, so an inferred milestone moves a show out of "Leads"
      exactly as a manual tick would. */
-  const derivedFor = (r) => pipeDerive(r, quotes[r.id]);
+  const derivedFor = (r) => pipeDerive(r, quotes[r.id], todayLocal());
   const msDone = (r, k, der) => !!(r.pipe.milestones[k] && r.pipe.milestones[k].done) || !!(der || derivedFor(r))[k];
   const doneCount = (r) => { const der = derivedFor(r); return PIPE_MILESTONES.reduce((n, [k]) => n + (msDone(r, k, der) ? 1 : 0), 0); };
   const stageOf = (r) => { const der = derivedFor(r); if (msDone(r, "finalBilling", der)) return "done"; if (msDone(r, "quoteAccepted", der)) return "confirmed"; return "lead"; };
@@ -2064,7 +2052,52 @@ function PeopleAccess({ events, onClose }) {
     try { setMembers(await listShowMembers(sid)); } catch (e) { setMembers([]); }
     setLoading(false);
   };
-  useEffect(() => { load(showId); }, [showId]);
+
+  /* ---- who has access vs who is actually on the show --------------------
+     These are TWO LISTS and nothing keeps them in step. The crew list on the
+     Brief is the call sheet; access is a row in show_members. Taking somebody
+     off the call sheet does not remove their access — the only thing that ever
+     deletes a membership is the Remove button below. So a person dropped from
+     a show months ago still opens it and still reads everyone's phone numbers.
+
+     This does not remove anybody. It says who is in that state and lets Tyler
+     decide, because auto-removing on a crew-list edit would lock somebody out
+     mid-show over a typo. */
+  const [crewEmails, setCrewEmails] = useState(null);   // Set, or null = unknown
+  const [crewState, setCrewState] = useState("idle");   // idle | loading | error
+
+  const loadCrew = async (sid) => {
+    if (!sid) { setCrewEmails(null); setCrewState("idle"); return; }
+    setCrewState("loading"); setCrewEmails(null);
+    try {
+      const full = await getEvent(sid);
+      const list = (full && Array.isArray(full.crew)) ? full.crew : [];
+      setCrewEmails(new Set(list.map((c) => emailKey(c && c.email)).filter(Boolean)));
+      setCrewState("idle");
+    } catch (e) {
+      /* NOT an empty set. An empty set would mark every single person as "not
+         on the crew list", which is a confident lie that invites Tyler to
+         remove people who belong there. Unknown stays unknown and the column
+         says nothing at all. */
+      setCrewEmails(null);
+      setCrewState("error");
+    }
+  };
+
+  useEffect(() => { load(showId); loadCrew(showId); }, [showId]);
+
+  const onCrewList = (m) => {
+    if (!crewEmails) return null;                       // unknown, not false
+    const k = emailKey(m && m.email);
+    return k ? crewEmails.has(k) : false;
+  };
+  /* Counted for CREW only. A producer or a department editor is somebody given
+     access on purpose who often has no reason to be on a call sheet, so
+     counting them would bury the real signal in noise. Their row still shows
+     the marker. */
+  const strays = crewEmails
+    ? members.filter((m) => m.role === "crew" && onCrewList(m) === false)
+    : [];
   const add = async () => {
     if (!email.trim()) return;
     setErr(""); setNotice(""); setBusy(true);
@@ -2175,14 +2208,37 @@ function PeopleAccess({ events, onClose }) {
         {err ? <div style={{ color: "#f87171", fontSize: 13, marginBottom: 8 }}>{err}</div> : null}
         {notice ? <div style={{ color: "#4ade80", fontSize: 13, marginBottom: 8 }}>{notice}</div> : null}
         <div style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          {!loading && strays.length ? (
+            <div className="pa-drift">
+              <b>{strays.length}</b>{strays.length === 1 ? " person has" : " people have"} access to this show but{strays.length === 1 ? " is" : " are"} not on its crew list.
+              <span className="pa-drift-why">
+                Access is not removed when somebody comes off the crew list \u2014 only the Remove button below does that.
+                Until then they can still open the show and see everyone\u2019s contact details.
+              </span>
+            </div>
+          ) : null}
+          {!loading && crewState === "error" ? (
+            <div className="pa-drift">
+              This show\u2019s crew list could not be loaded, so nothing below is checked against it.
+            </div>
+          ) : null}
           {loading ? <div style={{ color: "var(--dim)", fontSize: 13 }}>{"Loading\u2026"}</div>
             : members.length === 0 ? <div style={{ color: "var(--dim)", fontSize: 13 }}>No one assigned yet.</div>
             : members.map((m) => (
-              <div key={m.userId} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
+              <div key={m.userId} className={onCrewList(m) === false ? "pa-stray" : ""} style={{ padding: "10px 0", borderBottom: "1px solid var(--line)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                   <div style={{ flex: "1 1 220px", minWidth: 150, overflow: "hidden" }}>
                     <div style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.name || m.email || m.userId}</div>
                     {m.email && m.name ? <div style={{ fontSize: 12, color: "var(--dim)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{m.email}</div> : null}
+                    {/* Three states, and the third one has to be silent. A
+                        failed show fetch must not read as "not on the crew
+                        list" — that is the answer that gets someone removed
+                        wrongly. */}
+                    {onCrewList(m) === false
+                      ? <div className="pa-mark off">not on this show’s crew list</div>
+                      : onCrewList(m) === true
+                        ? <div className="pa-mark on">on the crew list</div>
+                        : null}
                   </div>
                   <select style={{ ...sel, width: 165, flexShrink: 0 }} value={m.role} onChange={(e) => changeRole(m, e.target.value)}>
                     <option value="producer">Producer / Lead</option>
@@ -2686,7 +2742,7 @@ async function tkSyncTodoist() {
    Title, date and notes only. Priority, due time, moving a task between shows
    and deleting one are all supported by /api/tasks already — they are left out
    here on purpose rather than for want of a route. */
-function TkEdit({ draft, onChange, busy, onSave, onCancel, where }) {
+function TkEdit({ draft, onChange, busy, onSave, onCancel, where, people, me, canOwn }) {
   const canSave = !!String(draft.title || "").trim();
   const esc = (e) => { if (e.key === "Escape") { e.preventDefault(); onCancel(); } };
   return (
@@ -2723,6 +2779,27 @@ function TkEdit({ draft, onChange, busy, onSave, onCancel, where }) {
               Clear date
             </button>
           ) : null}
+          {/* Only on a real task. A show's to-dos live inside the show record
+              and have no account behind them, so offering the picker there
+              would be offering something that cannot be saved. */}
+          {canOwn && people && people.length ? (
+            <select
+              className="tk-edit-owner" value={draft.ownerId || ""}
+              onChange={(e) => onChange({ ...draft, ownerId: e.target.value })}
+              onKeyDown={esc}
+            >
+              <option value="">Nobody yet</option>
+              {people.map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.id === me ? "Me" : (x.name || x.email || "Someone")}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {/* Said before you press Save, not after the email has gone. */}
+          {canOwn && draft.ownerId && draft.ownerId !== me && draft.ownerId !== draft.wasOwnerId ? (
+            <span className="tk-edit-mail">they&apos;ll get an email</span>
+          ) : null}
           {where ? <span className="tk-edit-where">{where}</span> : null}
           <span className="tk-spacer" />
           <button className="btn ghost" onClick={onCancel} disabled={busy}>Cancel</button>
@@ -2751,6 +2828,11 @@ function TasksScreen({ onClose, onOpenShow }) {
      can share an id, and the merged list is keyed accordingly. */
   const [editKey, setEditKey] = useState("");
   const [draft, setDraft] = useState({ title: "", due: "", notes: "" });
+  /* WHOSE list. "all" is what this screen has always shown and stays the
+     default — the decision was a filter, not a wall. */
+  const [who, setWho] = useState("all");
+  const [me, setMe] = useState(null);
+  const [people, setPeople] = useState([]);
 
   const load = async () => {
     setState("loading"); setErr("");
@@ -2758,6 +2840,14 @@ function TasksScreen({ onClose, onOpenShow }) {
       const [tk, list] = await Promise.all([listTasks(), listEvents()]);
       setTasks(tk.tasks || []);
       setToday(tk.today || "");
+      /* Who the server thinks you are. Null for the shared admin password,
+         which is why "Mine" is hidden rather than shown and broken. */
+      setMe(tk.me || null);
+      /* Only admins can own a to-do, because only admins can read the list.
+         A failure here costs the picker, not the screen. */
+      listProfiles()
+        .then((ps) => setPeople((ps || []).filter((x) => x && x.is_tcg)))
+        .catch(() => setPeople([]));
       // Same fan-out the Pipeline board uses. A show that fails to load is
       // skipped rather than taking the whole screen down with it.
       const full = await Promise.all(
@@ -2811,6 +2901,7 @@ function TasksScreen({ onClose, onOpenShow }) {
       showId: t.event_id || "", showLabel: t.event_id ? showName(t.event_id) : "General",
       due: t.due || "", priority: t.priority || "", tag: TK_KIND[t.kind] || "",
       done: t.status === "done",
+      ownerId: t.owner_id || "", ownerName: t.owner_name || "",
       source: t.source, from: t.source_from, subject: t.source_subject, body: t.source_body,
     }));
   });
@@ -2826,8 +2917,19 @@ function TasksScreen({ onClose, onOpenShow }) {
     });
   });
 
+  /* A show's to-dos live inside the show record and carry a free-text
+     `assignee`, not an account. Matching those to a person by name would be a
+     guess, so a person filter shows tasks only — and the chip says so. */
+  const ownedBy = (r) => {
+    if (who === "all") return true;
+    if (r.kind !== "task") return false;
+    if (who === "none") return !r.ownerId;
+    return r.ownerId === who;
+  };
+
   const visible = rows
     .filter((r) => (showDone ? true : !r.done))
+    .filter(ownedBy)
     .filter((r) => scope === "all" || (scope === "general" ? !r.showId : r.showId === scope))
     .sort((a, b) => {
       if (a.done !== b.done) return a.done ? 1 : -1;
@@ -2872,7 +2974,14 @@ function TasksScreen({ onClose, onOpenShow }) {
     if (busy) return;
     setErr("");
     setEditKey(r.key);
-    setDraft({ title: r.title || "", due: r.due || "", notes: r.notes || "" });
+    setDraft({
+      title: r.title || "", due: r.due || "", notes: r.notes || "",
+      ownerId: r.ownerId || "",
+      /* Remembered so the editor can tell a REASSIGNMENT from simply opening
+         a task that was already someone's — only the first sends an email,
+         and the note under the picker should say so honestly. */
+      wasOwnerId: r.ownerId || "",
+    });
   };
 
   const saveEdit = async (r) => {
@@ -2884,7 +2993,12 @@ function TasksScreen({ onClose, onOpenShow }) {
     setBusy("edit"); setErr("");
     try {
       if (r.kind === "task") {
-        const out = await updateTask(r.id, { title, due: draft.due || null, notes: draft.notes });
+        const patch = { title, due: draft.due || null, notes: draft.notes };
+        /* Sent only when it actually changed. A PATCH that re-states the same
+           owner is a no-op on the server, but sending one on every edit would
+           make any future "tell them again" behaviour fire on a typo fix. */
+        if ((draft.ownerId || "") !== (draft.wasOwnerId || "")) patch.owner_id = draft.ownerId || "";
+        const out = await updateTask(r.id, patch);
         setTasks((prev) => prev.map((t) => (t.id === r.id ? out.task : t)));
       } else {
         const full = await getEvent(r.showId);
@@ -3043,6 +3157,41 @@ function TasksScreen({ onClose, onOpenShow }) {
       </div>
 
       {/* ---- filters ------------------------------------------------------ */}
+      {/* Whose, then which show. Two questions, two rows — collapsing them into
+          one set of chips makes "Hannah" and "Meridian Gala" look like the same
+          kind of thing. */}
+      {(people.length > 1 || me) ? (
+        <div className="tk-filters tk-who">
+          <button className={"tk-chip" + (who === "all" ? " on" : "")} onClick={() => setWho("all")}>
+            Everyone&apos;s
+          </button>
+          {me ? (
+            <button className={"tk-chip" + (who === me ? " on" : "")} onClick={() => setWho(me)}>
+              Mine ({rows.filter((r) => r.kind === "task" && r.ownerId === me && !r.done).length})
+            </button>
+          ) : null}
+          {people.filter((x) => x.id !== me).map((x) => {
+            const n = rows.filter((r) => r.kind === "task" && r.ownerId === x.id && !r.done).length;
+            return (
+              <button key={x.id} className={"tk-chip" + (who === x.id ? " on" : "")} onClick={() => setWho(x.id)}>
+                {(x.name || x.email || "Someone").split(" ")[0]} ({n})
+              </button>
+            );
+          })}
+          <button className={"tk-chip" + (who === "none" ? " on" : "")} onClick={() => setWho("none")}>
+            Nobody&apos;s ({rows.filter((r) => r.kind === "task" && !r.ownerId && !r.done).length})
+          </button>
+          {/* Said once, here, rather than leaving someone to wonder where the
+              show to-dos went. */}
+          {who !== "all" ? <span className="tk-whonote">Show to-dos are not on anyone&apos;s list</span> : null}
+          {!me ? (
+            <span className="tk-whonote">
+              Signed in with the shared admin password — sign in with your own email to have a list of your own
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="tk-filters">
         <button className={"tk-chip" + (scope === "all" ? " on" : "")} onClick={() => setScope("all")}>
           Everything ({rows.filter((r) => !r.done).length})
@@ -3078,6 +3227,7 @@ function TasksScreen({ onClose, onOpenShow }) {
             <TkEdit
               key={r.key} draft={draft} onChange={setDraft} busy={busy === "edit"}
               where={r.showLabel}
+              people={people} me={me} canOwn={r.kind === "task"}
               onSave={() => saveEdit(r)} onCancel={() => setEditKey("")}
             />
           ) : (
@@ -3103,6 +3253,14 @@ function TasksScreen({ onClose, onOpenShow }) {
               </button>
               {r.notes ? <div className="tk-notes">{r.notes}</div> : null}
             </div>
+            {/* Whose it is, on the row. The name is the one stored beside the
+                id when it was assigned, so a tidied-up profile cannot turn a
+                list into a column of uuids. */}
+            {r.ownerName ? (
+              <span className={"tk-owner" + (r.ownerId === me ? " mine" : "")}>
+                {r.ownerId === me ? "me" : r.ownerName.split(" ")[0]}
+              </span>
+            ) : null}
             {r.priority ? <span className="tk-pri" style={{ background: TK_PRI[r.priority] }} title={r.priority} /> : null}
             {r.tag ? <span className="tk-tag">{r.tag}</span> : null}
             {r.source && r.source !== "app"
@@ -6932,7 +7090,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.39.0";
+const APP_VERSION = "1.45.0";
 
 const ADM_NAV = [
   { key: "today", label: "Today" },
@@ -7092,6 +7250,7 @@ function TodayScreen({ go, onOpenShow }) {
      one most likely to be the thing that breaks, and it must not be able to
      take the invoices down with it. */
   const [fresh, setFresh] = useState({ st: "load", rows: [], err: "" });
+  const [dash, setDash] = useState({ st: "load", shows: [], pipeline: { openTotal: 0, openCount: 0 }, unfilled: 0, err: "" });
   const [clearing, setClearing] = useState("");
 
   useEffect(() => {
@@ -7102,6 +7261,16 @@ function TodayScreen({ go, onOpenShow }) {
     listNewCrew().then((r) => alive && setFresh({ st: "ok", rows: (r && r.crew) || [], err: "" })).catch(fail(setFresh));
     listBilling().then((r) => alive && setBills({ st: "ok", rows: Array.isArray(r) ? r : (r && r.rows) || [], err: "" })).catch(fail(setBills));
     listEvents().then((r) => alive && setShows({ st: "ok", rows: Array.isArray(r) ? r : (r && r.events) || [], err: "" })).catch(fail(setShows));
+    /* The sixth loader, and it follows the same rule as the other five: its
+       own state, its own error, its own panel. /api/dashboard is the only new
+       request on this screen — it carries readiness, the stage track and the
+       pipeline total, which are the things Today could not get without one
+       request per show. If it dies, three panels say so and the rest of the
+       page is untouched. */
+    getDashboard()
+      .then((r) => alive && setDash({ st: "ok", shows: (r && r.shows) || [], pipeline: (r && r.pipeline) || { openTotal: 0, openCount: 0 }, unfilled: (r && r.unfilled) || 0, err: "" }))
+      .catch((e) => alive && setDash({ st: "err", shows: [], pipeline: { openTotal: 0, openCount: 0 }, unfilled: 0, err: (e && e.message) || "Couldn't load." }));
+
     getCrewDocStatus()
       .then((r) => {
         if (!alive) return;
@@ -7178,185 +7347,262 @@ function TodayScreen({ go, onOpenShow }) {
 
   const anyLoading = tasks.st === "load" || bills.st === "load" || shows.st === "load";
 
+  /* Readiness and the stage track, keyed by show, from the one new request.
+     `null` when it has not arrived or has failed — NOT an empty object, so a
+     panel can tell "no data yet" from "this show is at 0%". */
+  const dashById = {};
+  (dash.shows || []).forEach((x) => { dashById[x.id] = x; });
+  const readyFor = (id) => (dash.st === "ok" ? (dashById[id] || null) : null);
+
+  /* The BUSINESS timezone, not the browser's and certainly not the server's.
+     Every other date in this app is Pacific; a greeting that reads "Good
+     evening" at 1pm because the machine is on UTC is the same class of bug as
+     a date helper that rolls over at 5pm. */
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    timeZone: BUSINESS_TZ, hour: "numeric", hour12: false,
+  }).format(new Date()));
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+
+  /* Shows that are live work rather than history: not finished, and either
+     under way or coming. Sorted nearest first, capped, because this is a
+     dashboard and a list of forty is a screen nobody reads. */
+  const active = (dash.shows || [])
+    .filter((x) => !x.end || x.end >= today)
+    .sort((a, b) => (a.start || "9999").localeCompare(b.start || "9999"))
+    .slice(0, 4);
+
+  const dueSoon = open
+    .filter((t) => t.due)
+    .sort((a, b) => a.due.localeCompare(b.due))
+    .slice(0, 5);
+
+  const showName = (id) => (shows.rows.find((x) => x.id === id) || {}).name || "";
+
+  const QUICK = [
+    ["Add New Show", "shows"],
+    ["New Task", "todo"],
+    ["New Expense", "expenses"],
+    ["Add Crew Member", "roster"],
+    ["Add Gear Item", "catalog"],
+    ["Create Quote", "quotes"],
+  ];
+
+  /* Everything that wants clearing, with the count beside it. A row is here
+     only when its number is above zero — a permanent "0 outstanding" is
+     furniture, and the point of this panel is that anything in it is work. */
+  const attention = [
+    undated.length ? { k: "nd", n: undated.length, t: "tasks have no date", go: () => go("todo"), tone: "warn" } : null,
+    dash.st === "ok" && dash.unfilled ? { k: "un", n: dash.unfilled, t: "crew positions unfilled", go: () => go("shows"), tone: "warn" } : null,
+    docs.st === "ok" && docs.nda ? { k: "nda", n: docs.nda, t: "NDAs outstanding", go: () => go("roster"), tone: "flat" } : null,
+    docs.st === "ok" && docs.w9 ? { k: "w9", n: docs.w9, t: "W-9s outstanding", go: () => go("roster"), tone: "flat" } : null,
+    overdue.length ? { k: "od", n: overdue.length, t: overdue.length === 1 ? "invoice overdue" : "invoices overdue", go: () => go("billing"), tone: "bad" } : null,
+  ].filter(Boolean);
+
   return (
-    <div className="cal-wrap">
-      <div className="cal-top">
-        <h1 className="cal-h1">
-          {new Date(today + "T12:00:00").toLocaleDateString("en-US",
-            { weekday: "long", day: "numeric", month: "long" })}
-        </h1>
-        <div className="cal-top-actions">
-          {nextUp ? (
-            <span className="td-next">{nextUp.name} starts {tdWhen(nextUp.startDate, today)}</span>
-          ) : null}
+    <div className="dash">
+      <div className="dash-head">
+        <div>
+          <h1 className="dash-date">
+            {new Date(today + "T12:00:00").toLocaleDateString("en-US",
+              { weekday: "long", day: "numeric", month: "long" })}
+          </h1>
+          <div className="dash-hello">{greeting}, Tyler.</div>
         </div>
+        <div className="dash-quote">&ldquo;Great events don&rsquo;t happen by accident.&rdquo;</div>
       </div>
 
-      <div className="td-tiles">
-        <TdTile
-          tone={overdue.length ? "bad" : "flat"} icon={<TdIconLate />} label="Overdue"
+      <div className="dash-tiles">
+        <DashTile tone={overdue.length ? "bad" : "good"} label="Overdue"
           value={bills.st === "err" ? "—" : bills.st === "load" ? "·" : tdMoney0(overdueSum)}
           sub={bills.st === "err" ? bills.err
-            : overdue.length
-            ? overdue.length + (overdue.length === 1 ? " invoice" : " invoices")
-              + (oldestDays > 0 ? ", oldest " + oldestDays + " days" : "")
-            : "nothing outstanding"}
-        />
-        <TdTile
-          tone={dueToday.length ? "warn" : "flat"} icon={<TdIconCheck />} label="Due today"
+            : overdue.length ? overdue.length + (overdue.length === 1 ? " invoice" : " invoices") : "nothing outstanding"}
+          onClick={() => go("billing")} />
+        <DashTile tone={dueToday.length ? "warn" : "info"} label="Due Today"
           value={tasks.st === "err" ? "—" : tasks.st === "load" ? "·" : dueToday.length + (dueToday.length === 1 ? " task" : " tasks")}
           sub={tasks.st === "err" ? tasks.err
-            : timed.length ? timed.length + " with a time on " + (timed.length === 1 ? "it" : "them")
-            : undated.length ? undated.length + " more with no date"
-            : "nothing due"}
-        />
-        <TdTile
-          tone="flat" icon={<TdIconCal />} label="Next 14 days"
+            : undated.length ? undated.length + " with no date" : "nothing due"}
+          onClick={() => go("todo")} />
+        <DashTile tone="info" label="Next 14 Days"
           value={shows.st === "err" ? "—" : shows.st === "load" ? "·" : soon.length + (soon.length === 1 ? " show" : " shows")}
           sub={shows.st === "err" ? shows.err
-            : nextUp ? "next is " + tdWhen(nextUp.startDate, today) : "nothing booked"}
-        />
-        {/* Only when there is someone. A tile permanently reading zero is
-            furniture; one that appears is a notification. */}
-        {fresh.rows.length ? (
-          <TdTile
-            tone="warn" icon={<TdIconPerson />} label="New crew"
-            value={fresh.rows.length + (fresh.rows.length === 1 ? " person" : " people")}
-            sub={"newest joined " + (tdWhen(tdDayOf(fresh.rows[0].joinedAt), today) || "recently")}
-          />
-        ) : null}
+            : nextUp ? "next show is " + tdWhen(nextUp.startDate, today) : "nothing booked"}
+          onClick={() => go("shows")} />
+        <DashTile tone="info" label="Open Pipeline"
+          value={dash.st === "err" ? "—" : dash.st === "load" ? "·" : tdMoney0(dash.pipeline.openTotal)}
+          sub={dash.st === "err" ? dash.err
+            : dash.pipeline.openCount + (dash.pipeline.openCount === 1 ? " opportunity" : " opportunities")}
+          onClick={() => go("pipeline")} />
       </div>
 
-      <div className="td-cols">
-        <div className="td-col">
-          <div className="td-head">
-            <span className="td-sect">Needs you today</span>
-            <button className="btn ghost" onClick={() => go("todo")} style={{ padding: "5px 11px", fontSize: 12 }}>Open To&nbsp;Do</button>
+      <div className="dash-grid">
+        {/* ---- needs attention ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead">
+            <h2>Needs Attention</h2>
+            {attention.length ? <button className="dash-link" onClick={() => go("todo")}>View all ({attention.length})</button> : null}
           </div>
-
-          {anyLoading && !needs.length ? <p style={qtHint}>Loading…</p> : null}
-          {!anyLoading && !needs.length ? (
-            <p style={qtHint}>Nothing due and nothing overdue. Genuinely clear.</p>
-          ) : null}
-
-          {needs.map((n) => (
-            <div key={n.key} className="td-row" onClick={n.go} role="button" tabIndex={0}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); n.go(); } }}>
-              <span className="td-dot" style={{ background: n.tone === "bad" ? "var(--danger)" : "var(--amber)" }} />
-              <span className="td-row-t">{n.text}</span>
-              <span className="td-row-r">{n.right}</span>
-            </div>
+          {anyLoading && !attention.length ? <p className="dash-empty">Loading…</p> : null}
+          {!anyLoading && !attention.length ? <p className="dash-empty">Nothing waiting on you. Genuinely clear.</p> : null}
+          {attention.map((a) => (
+            <button key={a.k} className="dash-att" onClick={a.go}>
+              <span className={"dash-att-n " + a.tone}>{a.n}</span>
+              <span className="dash-att-t">{a.t}</span>
+              <span className="dash-chev">›</span>
+            </button>
           ))}
-          {undated.length ? (
-            <div className="td-more">…and {undated.length} with no date at all</div>
-          ) : null}
-        </div>
+          {/* An honest gap rather than a silently shorter list. */}
+          {docs.st === "err" ? <p className="dash-warn">Paperwork counts unavailable — {docs.err}</p> : null}
+          {dash.st === "err" ? <p className="dash-warn">Crew and pipeline figures unavailable — {dash.err}</p> : null}
+        </section>
 
-        <div className="td-col">
-          {/* Sits above Coming up rather than in the left column: it is not
-              time-critical the way an overdue invoice is, but it does need
-              clearing, and burying it under four shows is how somebody waits a
-              fortnight for a reply. Absent entirely when there is nobody. */}
-          {fresh.st === "err" || fresh.rows.length ? (
-            <>
-              <div className="td-head">
-                <span className="td-sect">New crew</span>
-                <button className="btn ghost" onClick={() => go("roster")} style={{ padding: "5px 11px", fontSize: 12 }}>Crew roster</button>
-              </div>
-              <div className="panel td-list">
-                {/* One place for both reasons a message appears here: the list
-                    would not load at all, or a Reviewed click bounced. */}
-                {fresh.err ? <div className="tk-err">{fresh.err}</div> : null}
-                {fresh.rows.slice(0, 6).map((c, i) => (
-                  <div key={c.id}>
-                    {i ? <div className="td-hr" /> : null}
-                    <div className="td-new">
-                      <div className="td-new-b">
-                        <div className="td-new-n">{c.name || "Unnamed"}</div>
-                        <div className="td-new-s">
-                          {[
-                            c.positions.length ? c.positions.join(", ") : (c.positionSuggest ? "suggested: " + c.positionSuggest : "no position"),
-                            tdAsk(c),
-                            tdWhen(tdDayOf(c.joinedAt), today),
-                          ].filter(Boolean).join(" · ")}
-                        </div>
-                      </div>
-                      <button
-                        className="btn ghost" disabled={clearing === c.id}
-                        onClick={() => review(c.id)}
-                        style={{ padding: "4px 10px", fontSize: 12, flex: "0 0 auto" }}
-                      >
-                        {clearing === c.id ? "…" : "Reviewed"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {fresh.rows.length > 6 ? (
-                  <div className="td-more">…and {fresh.rows.length - 6} more on the crew roster</div>
-                ) : null}
-              </div>
-            </>
-          ) : null}
-
-          <div className="td-head">
-            <span className="td-sect">Coming up</span>
-            <button className="btn ghost" onClick={() => go("shows")} style={{ padding: "5px 11px", fontSize: 12 }}>All shows</button>
+        {/* ---- upcoming shows ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead">
+            <h2>Upcoming Shows</h2>
+            <button className="dash-link" onClick={() => go("shows")}>View all shows →</button>
           </div>
-          <div className="panel td-list">
-            {shows.st === "err" ? <div className="tk-err">{shows.err}</div> : null}
-            {shows.st === "load" ? <p style={{ ...qtHint, margin: 0 }}>Loading…</p> : null}
-            {shows.st === "ok" && !soon.length ? (
-              <p style={{ ...qtHint, margin: 0 }}>Nothing in the next two weeks.</p>
-            ) : null}
-            {soon.slice(0, 4).map((s, i) => (
-              <div key={s.id}>
-                {i ? <div className="td-hr" /> : null}
-                <div className="td-show" onClick={() => onOpenShow && onOpenShow(s.id)} role="button" tabIndex={0}
-                  onKeyDown={(e) => { if (e.key === "Enter") onOpenShow && onOpenShow(s.id); }}>
-                  <div className="td-date">
-                    <div className="td-date-d">{tdDayName(s.startDate)}</div>
-                    <div className="td-date-n">{tdDayNum(s.startDate)}</div>
-                  </div>
-                  <div className="td-show-b">
-                    <div className="td-show-n">{s.name || "Untitled show"}</div>
-                    <div className="td-show-s">
-                      {[s.client, tdWhen(s.startDate, today)].filter(Boolean).join(" · ")}
-                    </div>
-                  </div>
+          {shows.st === "err" ? <p className="dash-warn">{shows.err}</p>
+            : shows.st === "load" ? <p className="dash-empty">Loading…</p>
+            : !soon.length ? <p className="dash-empty">Nothing in the next two weeks.</p>
+            : soon.slice(0, 3).map((sh) => {
+              const d = readyFor(sh.id);
+              return (
+                <button key={sh.id} className="dash-show" onClick={() => onOpenShow && onOpenShow(sh.id)}>
+                  <span className="dash-when">
+                    <b>{new Date(sh.startDate + "T12:00:00").toLocaleDateString("en-US", { month: "short" }).toUpperCase()}</b>
+                    <i>{new Date(sh.startDate + "T12:00:00").getDate()}</i>
+                  </span>
+                  <span className="dash-showmain">
+                    <span className="dash-showname">{sh.name || "Untitled"}</span>
+                    <span className="dash-showsub">
+                      {[sh.client, d && d.venue].filter(Boolean).join("  ·  ") || "—"}
+                    </span>
+                    {/* The bar is only drawn when the figure exists. A bar at
+                        zero because a request failed reads as "this show is not
+                        ready", which is a different and alarming claim. */}
+                    {d ? (
+                      <span className="dash-bar" title={d.ready.done + " of " + d.ready.total + " stages"}>
+                        <span className={"dash-barfill " + (d.ready.pct >= 70 ? "hi" : d.ready.pct >= 40 ? "mid" : "lo")}
+                              style={{ width: d.ready.pct + "%" }} />
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="dash-showright">
+                    <span className="dash-days">{tdWhen(sh.startDate, today)}</span>
+                    {d ? <span className="dash-ready">{d.ready.pct}% ready</span> : null}
+                    {d && d.crew.named ? <span className="dash-crewn">{d.crew.named} crew</span> : null}
+                  </span>
+                </button>
+              );
+            })}
+        </section>
+
+        {/* ---- quick actions ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead"><h2>Quick Actions</h2></div>
+          <div className="dash-quick">
+            {QUICK.map(([label, tab]) => (
+              <button key={label} className="dash-qa" onClick={() => go(tab)}>{label}</button>
+            ))}
+          </div>
+        </section>
+
+        {/* ---- active productions ---- */}
+        <section className="dash-card wide">
+          <div className="dash-cardhead">
+            <h2>Active Productions</h2>
+            <button className="dash-link" onClick={() => go("pipeline")}>View all →</button>
+          </div>
+          {dash.st === "err" ? <p className="dash-warn">{dash.err}</p>
+            : dash.st === "load" ? <p className="dash-empty">Loading…</p>
+            : !active.length ? <p className="dash-empty">No productions under way.</p>
+            : active.map((x) => (
+              <div key={x.id} className="dash-prod">
+                <div className="dash-prodhead">
+                  <b>{x.name}</b>
+                  <em>{[x.client, x.venue, x.start].filter(Boolean).join("  ·  ")}</em>
+                  <span className="dash-spacer" />
+                  <button className="dash-link" onClick={() => onOpenShow && onOpenShow(x.id)}>Open Show →</button>
+                </div>
+                <div className="dash-track">
+                  {PIPE_MILESTONES.map(([k, label]) => (
+                    <span key={k}
+                      className={"dash-stage " + (x.done[k] ? "done" : x.current === k ? "now" : "todo")}>
+                      {x.done[k] ? "✓ " : x.current === k ? "▸ " : "○ "}{label}
+                    </span>
+                  ))}
                 </div>
               </div>
             ))}
-          </div>
+        </section>
 
-          <div className="td-head" style={{ marginTop: 6 }}>
-            <span className="td-sect">Paperwork</span>
+        {/* Their own row. The grid above is three columns because the top row
+            has three cards; these two would otherwise sit in the first two and
+            leave a column of nothing where Recent Activity will eventually go. */}
+        <div className="dash-row2">
+        {/* ---- tasks due soon ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead">
+            <h2>Tasks Due Soon</h2>
+            <button className="dash-link" onClick={() => go("todo")}>View all →</button>
           </div>
-          <div className="panel td-list">
-            {docs.st === "err" ? (
-              <div style={{ ...qtHint, margin: 0 }}>Crew documents aren’t set up yet.</div>
-            ) : (
-              <>
-                <div className="td-paper">
-                  <span className="td-paper-t">NDAs outstanding</span>
-                  <span className="td-paper-n" style={{ color: docs.nda ? "var(--amber)" : "var(--dim)" }}>
-                    {docs.st === "load" ? "·" : docs.nda}
+          {tasks.st === "err" ? <p className="dash-warn">{tasks.err}</p>
+            : tasks.st === "load" ? <p className="dash-empty">Loading…</p>
+            : !dueSoon.length ? <p className="dash-empty">Nothing with a date on it.</p>
+            : dueSoon.map((t) => (
+              <button key={t.id} className="dash-task" onClick={() => go("todo")}>
+                <span className={"dash-tbox" + (t.due <= today ? " late" : "")} />
+                <span className="dash-tmain">
+                  <span className="dash-ttitle">{t.title || "Untitled task"}</span>
+                  <span className="dash-tsub">
+                    {[showName(t.event_id), tdWhen(t.due, today)].filter(Boolean).join("  ·  ")}
                   </span>
-                  <button className="btn ghost" onClick={() => go("settings")} style={{ padding: "4px 10px", fontSize: 12 }}>Ask</button>
-                </div>
-                <div className="td-hr" />
-                <div className="td-paper">
-                  <span className="td-paper-t">W-9s outstanding</span>
-                  <span className="td-paper-n" style={{ color: docs.w9 ? "var(--amber)" : "var(--dim)" }}>
-                    {docs.st === "load" ? "·" : docs.w9}
-                  </span>
-                  <button className="btn ghost" onClick={() => go("settings")} style={{ padding: "4px 10px", fontSize: 12 }}>Ask</button>
-                </div>
-              </>
-            )}
+                </span>
+              </button>
+            ))}
+        </section>
+
+        {/* ---- crew & paperwork ---- */}
+        <section className="dash-card">
+          <div className="dash-cardhead">
+            <h2>Crew &amp; Paperwork</h2>
+            <button className="dash-link" onClick={() => go("roster")}>View all →</button>
           </div>
+          <DashStat label="NDAs outstanding" st={docs.st} err={docs.err} n={docs.nda} onClick={() => go("roster")} />
+          <DashStat label="W-9s outstanding" st={docs.st} err={docs.err} n={docs.w9} onClick={() => go("roster")} />
+          <DashStat label="Crew positions unfilled" st={dash.st} err={dash.err} n={dash.unfilled} onClick={() => go("shows")} />
+          {fresh.rows.length ? (
+            <DashStat label="New crew awaiting review" st={fresh.st} err={fresh.err} n={fresh.rows.length} onClick={() => go("roster")} />
+          ) : null}
+        </section>
         </div>
       </div>
     </div>
+  );
+}
+
+/* One tile. `tone` colours the left edge, never the number — a figure that
+   changes colour is harder to read at a glance than one that does not. */
+function DashTile({ tone, label, value, sub, onClick }) {
+  return (
+    <button className={"dash-tile " + (tone || "info")} onClick={onClick}>
+      <span className="dash-tlabel">{label}</span>
+      <span className="dash-tvalue">{value}</span>
+      <span className="dash-tsub">{sub}</span>
+    </button>
+  );
+}
+
+/* A counted row that knows the difference between "none" and "could not
+   count". Zero reads as a tick; a failure says so. */
+function DashStat({ label, st, err, n, onClick }) {
+  return (
+    <button className="dash-stat" onClick={onClick} title={st === "err" ? err : undefined}>
+      <span className="dash-statlabel">{label}</span>
+      <span className={"dash-statn" + (st === "err" ? " err" : n ? " on" : " zero")}>
+        {st === "err" ? "—" : st === "load" ? "·" : n ? n : "✓"}
+      </span>
+    </button>
   );
 }
 
@@ -8121,8 +8367,9 @@ function ShowsCalendar({ events, isAdmin, onOpen, onNew, onDemo, onPipeline, onP
   );
 }
 
-function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin, canEdit }) {
+function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperAdmin, canEdit, flash }) {
   const [homeGroup, setHomeGroup] = useState(null);
+  const [msgOpen, setMsgOpen] = useState(false);
   return (
     <div className="home">
       <header className="hero">
@@ -8141,8 +8388,14 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
             <span>{event.venue.name || "Venue TBD"}</span>
           </div>
         </div>
-        <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
+        <div className="evt-actions">
+          {/* isAdmin, not canEdit: /api/show-message gates on canManageShow,
+              and a button that always 403s is worse than no button. */}
+          {isAdmin && <button className="btn ghost" onClick={() => setMsgOpen(true)}>Message the crew</button>}
+          <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
+        </div>
       </header>
+      {msgOpen && <MessageCrewModal event={event} flash={flash} onClose={() => setMsgOpen(false)} />}
 
       {homeGroup ? (
         <>
@@ -8582,7 +8835,8 @@ function MyCallTab({ event, showId, update }) {
     return () => { off = true; };
   }, []);
 
-  const emailKey = (v) => String(v || "").trim().toLowerCase();
+  /* emailKey moved to module scope — see the comment on it. The identity
+     match below is unchanged. */
   const mayBrowse = event._role === "tcg" || event._role === "producer";
   const byAccount = emailKey(ident.email)
     // Two guards against "blank matches blank" — which would otherwise hand
@@ -8607,8 +8861,12 @@ function MyCallTab({ event, showId, update }) {
     return <div className="mc-wrap"><div className="mc-empty">Loading…</div></div>;
   }
 
-  const openTasksFor = (name) => (event.todos || []).filter((t) => t.assignee === name && !t.done).length;
-  const overdueFor = (name) => (event.todos || []).filter((t) => t.assignee === name && todoOverdue(t)).length;
+  /* Counted through the same resolution the call sheet uses, or the number
+     beside somebody's name disagrees with the list they actually see. */
+  const openTasksFor = (name) =>
+    (event.todos || []).filter((t) => todoAssigneeLabel(t, event.crew) === name && !t.done).length;
+  const overdueFor = (name) =>
+    (event.todos || []).filter((t) => todoAssigneeLabel(t, event.crew) === name && todoOverdue(t)).length;
   if (!me) {
     return (
       <div className="mc-wrap">
@@ -8644,7 +8902,7 @@ function MyCallTab({ event, showId, update }) {
   };
 
   const myTasks = (event.todos || [])
-    .filter((t) => me && t.assignee === me.name)
+    .filter((t) => todoIsMine(t, me, event.crew))
     .slice()
     .sort((a, b) => {
       if (!!a.done !== !!b.done) return a.done ? 1 : -1;
@@ -11046,6 +11304,52 @@ function RundownTab({ event, update, isAdmin, editor, myDepts, showId }) {
   );
 }
 
+/* One definition, used by the call sheet's identity match AND by the assignee
+   join below. It was a local const inside MyCallTab; two copies of a
+   comparison that decides who sees what is how they drift apart. */
+const emailKey = (v) => String(v || "").trim().toLowerCase();
+
+/* WHO A SHOW TO-DO BELONGS TO.
+
+   The call sheet works out who you are from your ACCOUNT — it matches the
+   email you signed in with against your row in the show's crew list. A to-do
+   has always recorded its assignee as a NAME. So the two stable, id-based ends
+   of this were joined by a string: correct a typo in somebody's crew row and
+   their tasks silently vanished from their call sheet, while still looking
+   assigned on the admin side. Nothing errored. It just stopped being theirs.
+
+   `assigneeId` holds the crew row's id and is written whenever an assignee is
+   picked from now on. The name is still written beside it, because it is what
+   gets displayed and because every to-do assigned before this has only a
+   name. */
+function todoIsMine(t, me, crew) {
+  if (!t || !me) return false;
+  if (t.assigneeId) {
+    const row = (crew || []).find((c) => c.id === t.assigneeId);
+    if (row) {
+      if (row.id === me.id) return true;
+      /* One person can hold two roles on a show — two crew rows, one human.
+         Name matching covered that by accident; this covers it on purpose. */
+      return !!emailKey(row.email) && emailKey(row.email) === emailKey(me.email);
+    }
+    /* The row it pointed at has been deleted. Fall through to the name rather
+       than dropping the task out of everybody's view. */
+  }
+  return !!t.assignee && t.assignee === me.name;
+}
+
+/* What to SHOW as the assignee. Resolved through the id where there is one, so
+   a renamed crew member reads correctly on the admin side too rather than
+   keeping the name they had when the task was handed to them. */
+function todoAssigneeLabel(t, crew) {
+  if (!t) return "";
+  if (t.assigneeId) {
+    const row = (crew || []).find((c) => c.id === t.assigneeId);
+    if (row && row.name) return row.name;
+  }
+  return t.assignee || "";
+}
+
 function todoOverdue(t) {
   if (!t || t.done || !t.due) return false;
   const d = new Date();
@@ -11085,13 +11389,13 @@ function TodoTab({ event, update, isAdmin, editor }) {
   const [who, setWho] = useState("");
   const mut = (fn) => update((ev) => { if (!Array.isArray(ev.todos)) ev.todos = []; fn(ev.todos); });
   const set = (id, k, v) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x[k] = v; });
-  const add = () => mut((t) => t.push({ id: uid(), title: "", assignee: "", due: todoTomorrow(), dueTime: "", priority: "", urgent: false, done: false, notes: "" }));
+  const add = () => mut((t) => t.push({ id: uid(), title: "", assignee: "", assigneeId: "", due: todoTomorrow(), dueTime: "", priority: "", urgent: false, done: false, notes: "" }));
   const remove = (id) => mut((t) => { const i = t.findIndex((z) => z.id === id); if (i >= 0) t.splice(i, 1); });
   const toggle = (id) => mut((t) => { const x = t.find((z) => z.id === id); if (x) x.done = !x.done; });
   const priRank = (k) => (k === "high" ? 0 : k === "med" ? 1 : k === "low" ? 2 : 3);
   const shown = todos
     .filter((t) => (filter === "open" ? !t.done : filter === "done" ? t.done : true))
-    .filter((t) => (who ? t.assignee === who : true))
+    .filter((t) => (who ? todoAssigneeLabel(t, event.crew) === who : true))
     .slice()
     .sort((a, b) => {
       if (!!a.done !== !!b.done) return a.done ? 1 : -1;
@@ -11145,7 +11449,24 @@ function TodoTab({ event, update, isAdmin, editor }) {
                 <span className="todo-ck"><input type="checkbox" checked={!!t.done} disabled={!canEdit} onChange={() => toggle(t.id)} /></span>
                 {canEdit ? <button className={"todo-flag" + (t.urgent ? " on" : "")} title="Flag urgent" onClick={() => set(t.id, "urgent", !t.urgent)}>🚩</button> : <span className="todo-flag-ro">{t.urgent ? "🚩" : ""}</span>}
                 {canEdit ? <input value={t.title || ""} placeholder="What needs doing?" onChange={(e) => set(t.id, "title", e.target.value)} /> : <span>{t.title}</span>}
-                {canEdit ? <CrewSelect crew={event.crew} value={t.assignee} onChange={(e) => set(t.id, "assignee", e.target.value)} /> : <span>{t.assignee || "—"}</span>}
+                {/* Writes BOTH: the crew row's id, which is what the call
+                    sheet now matches on, and the name, which is what gets
+                    displayed and what every to-do assigned before this has. */}
+                {canEdit ? (
+                  <CrewSelect
+                    crew={event.crew} value={todoAssigneeLabel(t, event.crew)}
+                    onChange={(e) => {
+                      const name = e.target.value;
+                      const row = (event.crew || []).find((c) => c.name === name);
+                      mut((list) => {
+                        const x = list.find((z) => z.id === t.id);
+                        if (!x) return;
+                        x.assignee = name;
+                        x.assigneeId = row ? row.id : "";
+                      });
+                    }}
+                  />
+                ) : <span>{todoAssigneeLabel(t, event.crew) || "—"}</span>}
                 {canEdit ? <input type="date" value={t.due || ""} onChange={(e) => set(t.id, "due", e.target.value)} /> : <span className="rd-time">{t.due ? prettyDate(t.due) : "—"}</span>}
                 {canEdit ? <input className="rd-time" value={t.dueTime || ""} placeholder="By" onChange={(e) => set(t.id, "dueTime", e.target.value)} onBlur={(e) => set(t.id, "dueTime", fmtSchedTime(e.target.value))} /> : <span className="rd-time">{t.dueTime || ""}</span>}
                 {canEdit ? (
@@ -14172,6 +14493,11 @@ function normalizeCosting(x) {
     laborExtra: Array.isArray(x.laborExtra) ? x.laborExtra : [],
     vendorExtra: Array.isArray(x.vendorExtra) ? x.vendorExtra : [],
     misc: Array.isArray(x.misc) ? x.misc : [],
+    /* Must be listed here or it is dropped. This function rebuilds the object
+       from named keys, so anything it does not name is deleted on the next
+       save — a receipt ticked off as "already counted" would come back and
+       double the cost again the moment the tab was reopened. */
+    receiptsExcluded: Array.isArray(x.receiptsExcluded) ? x.receiptsExcluded : [],
   };
   // migrate any earlier free-form rows so nothing is lost
   if (Array.isArray(x.labor)) out.laborExtra = out.laborExtra.concat(x.labor);
@@ -14194,8 +14520,18 @@ const pnlNum = (v) => {
   return m ? (parseFloat(m[0]) || 0) : 0;
 };
 const pnlMoney = (n) => (n < 0 ? "−$" : "$") + Math.abs(Math.round(n)).toLocaleString();
-// Standalone P&L totals for one event (mirrors the Costing tab), for the global dashboard.
-function computePnl(c) {
+/* Standalone P&L totals for one event (mirrors the Costing tab), for the
+   global dashboard.
+
+   `c` must be the event record MERGED WITH ITS COSTING. It used to be handed
+   the event record alone, which stopped being right the day the figures moved
+   into `show_costing` — every field read below (crewCost, vendorCost, misc,
+   billableEst…) came back undefined and the roll-up quietly reported zero for
+   every show. The caller now merges; this comment is here so it stays merged.
+
+   `receipts` is that show's live expense rows. Omitted, receipts simply do not
+   contribute — which is what every caller that has no receipts to hand wants. */
+function computePnl(c, receipts) {
   c = c || {};
   const crewRows = (c.crew || []).filter((cm) => cm.name && cm.name.trim());
   const crewCost = c.crewCost || {};
@@ -14232,14 +14568,37 @@ function computePnl(c) {
   const vendEst = vendorNames.reduce((s, v) => s + pnlNum((vendorCost[v] || {}).est), 0) + sum(vendorExtra, "est");
   const vendAct = vendorNames.reduce((s, v) => s + pnlNum((vendorCost[v] || {}).act), 0) + sum(vendorExtra, "act");
   const miscEst = sum(misc, "est"), miscAct = sum(misc, "act");
+  const rcptAct = pnlReceiptTotal(c, receipts);
   const billEst = pnlNum(c.billableEst), billAct = pnlNum(c.billableAct);
   const revenue = billAct || billEst;
-  const cost = laborAct + vendAct + miscAct;
+  const cost = laborAct + vendAct + miscAct + rcptAct;
   const unpaidLabor = crewRows.reduce((sm, cm) => { const cc = crewCost[cm.id] || {}; return sm + (cc.paid ? 0 : crewActualUsed(cm.id)); }, 0) + laborExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
   const unpaidVendor = vendorNames.reduce((sm, v) => { const vc = vendorCost[v] || {}; return sm + (vc.paid ? 0 : owed(pnlNum(vc.act), pnlNum(vc.est))); }, 0) + vendorExtra.reduce((sm, r) => sm + (r.paid ? 0 : owed(pnlNum(r.act), pnlNum(r.est))), 0);
-  return { revEst: billEst, revAct: billAct, costEst: laborEst + vendEst + miscEst, costAct: cost, netEst: billEst - laborEst - vendEst - miscEst, netAct: billAct - cost, unpaid: unpaidLabor + unpaidVendor };
+  return { revEst: billEst, revAct: billAct, costEst: laborEst + vendEst + miscEst, costAct: cost, netEst: billEst - laborEst - vendEst - miscEst, netAct: billAct - cost, unpaid: unpaidLabor + unpaidVendor, rcptAct };
 }
 const pnlPct = (r) => (r * 100).toFixed(1) + "%";
+
+/* ---- receipts as a cost line -------------------------------------------
+   One definition, used by the show's own Costing tab AND by the company-wide
+   roll-up. Two implementations of "what do the receipts add up to" is how the
+   two screens start quoting different numbers for the same show.
+
+   A receipt is an ACTUAL by nature — it is money that has already left. It
+   never touches the estimate column.
+
+   `receiptsExcluded` is the escape hatch, and it earns its place: before this
+   existed, a sub-rental invoice was photographed AND typed into the Gear &
+   Vendors actual by hand. Counting both would overstate the cost silently.
+   Ticking a receipt off says "this one is already in a typed row above" —
+   it stays visible, stays in the tax export, and stops being added twice. */
+function pnlReceiptRows(costing, rows) {
+  const ex = Array.isArray(costing && costing.receiptsExcluded) ? costing.receiptsExcluded : [];
+  return (rows || []).map((r) => ({ ...r, excluded: ex.indexOf(r.id) !== -1 }));
+}
+function pnlReceiptTotal(costing, rows) {
+  return pnlReceiptRows(costing, rows)
+    .reduce((s, r) => (r.excluded ? s : s + pnlNum(r.amount)), 0);
+}
 
 const PNL_VIEWS = [
   { key: "estimate", label: "Estimate" },
@@ -15434,6 +15793,14 @@ function CostingTab({ event }) {
     setDraft(d => { const n = { ...d }; delete n[key]; return n; });
   };
 
+  /* Receipts for this show. A SEPARATE fetch, and a separate failure: a dead
+     expenses endpoint must not blank the P&L, which worked for months before
+     receipts existed. On failure the panel says so and the totals carry on
+     without them, rather than silently reporting a smaller cost. */
+  const [receipts, setReceipts] = useState([]);
+  const [rcptState, setRcptState] = useState("loading"); // loading | idle | error
+  const [rcptErr, setRcptErr] = useState("");
+
   useEffect(() => {
     let alive = true;
     setState("loading");
@@ -15444,11 +15811,41 @@ function CostingTab({ event }) {
         setState("idle");
       })
       .catch(() => alive && setState("error"));
+    setRcptState("loading");
+    listShowExpenses(event.id)
+      .then((r) => { if (!alive) return; setReceipts(r.rows || []); setRcptState("idle"); })
+      .catch(() => alive && setRcptState("error"));
     return () => {
       alive = false;
       clearTimeout(timer.current);
     };
   }, [event.id]);
+
+  /* Open one receipt. The signed URL is minted per click and lives five
+     minutes, so it is fetched now rather than held on the row. */
+  const [rcptOpening, setRcptOpening] = useState("");
+  const openRcpt = async (id) => {
+    setRcptErr(""); setRcptOpening(id);
+    try {
+      const r = await viewReceipt(id);
+      if (r && r.url) window.open(r.url, "_blank", "noopener");
+      else setRcptErr("That receipt could not be opened.");
+    } catch (e) {
+      setRcptErr((e && e.message) || "That receipt could not be opened.");
+    }
+    setRcptOpening("");
+  };
+
+  /* Excluding is a costing edit, so it rides the same debounced save as every
+     other figure on this tab. Stored as a list of ids rather than a flag on
+     the expense row: it is a P&L judgement about this show, not a fact about
+     the receipt, and the tax export must still see every receipt. */
+  const toggleRcpt = (id) => mutate((n) => {
+    const list = Array.isArray(n.receiptsExcluded) ? n.receiptsExcluded : [];
+    const at = list.indexOf(id);
+    if (at === -1) list.push(id); else list.splice(at, 1);
+    n.receiptsExcluded = list;
+  });
 
   const queueSave = (next) => {
     setC(next);
@@ -15583,13 +15980,18 @@ function CostingTab({ event }) {
   const vendEst = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.est), 0) + sum(c.vendorExtra, "est");
   const vendAct = vendorRows.reduce((s, v) => s + pnlNum(c.vendorCost[v.name]?.act), 0) + sum(c.vendorExtra, "act");
   const miscEst = sum(c.misc, "est"), miscAct = sum(c.misc, "act");
+  /* Receipts have no estimate column and never will — a receipt is money that
+     has already gone. Same two functions the roll-up uses, so the two screens
+     cannot quote different numbers for this show. */
+  const rcptRows = pnlReceiptRows(c, receipts);
+  const rcptAct = pnlReceiptTotal(c, receipts);
   const billEst = pnlNum(c.billableEst), billAct = pnlNum(c.billableAct);
   const netEst = billEst - laborEst - vendEst - miscEst;
-  const netAct = billAct - laborAct - vendAct - miscAct;
+  const netAct = billAct - laborAct - vendAct - miscAct - rcptAct;
   // ---- 30% target-margin analysis ----
   const TARGET_MARGIN = 0.30;
   const totalExpEst = laborEst + vendEst + miscEst;
-  const totalExpAct = laborAct + vendAct + miscAct;
+  const totalExpAct = laborAct + vendAct + miscAct + rcptAct;
   const targetNetEst = billEst * TARGET_MARGIN;
   const targetNetAct = billAct * TARGET_MARGIN;
   const targetExpEst = billEst * (1 - TARGET_MARGIN);
@@ -15860,6 +16262,52 @@ function CostingTab({ event }) {
         <div className="pnl-subtotal">Misc subtotal — est {pnlMoney(miscEst)} · actual {pnlMoney(miscAct)}</div>
       </Panel>
 
+      <Panel title="Receipts" sub="Expenses filed against this show. Actual only — a receipt is money already spent. Tick one off if it is already counted in a line above.">
+        {rcptState === "loading" ? <Empty>Loading receipts…</Empty> : null}
+        {rcptState === "error"
+          ? <div className="pnl-rcpt-warn">Receipts could not be loaded, so they are <b>not</b> included in the totals below.</div>
+          : null}
+        {rcptErr ? <div className="pnl-rcpt-warn">{rcptErr}</div> : null}
+        {rcptState === "idle" && !rcptRows.length
+          ? <Empty>No expenses filed against this show yet. Add them on the Expenses screen and they will appear here.</Empty>
+          : null}
+        {rcptState === "idle" && rcptRows.length ? (
+          <div className="tablewrap">
+            <div className="rowhead pnl-rcpt-grid">
+              <span>Date</span><span>Vendor</span><span>Category</span><span>Amount</span><span>Receipt</span><span title="Already counted in a line above">Counted above</span>
+            </div>
+            {rcptRows.map((r) => (
+              <div className={"row pnl-rcpt-grid" + (r.excluded ? " pnl-rcpt-off" : "")} key={r.id}>
+                <span className="pnl-rcpt-date">{r.spent_on || "—"}</span>
+                <span className="pnl-rcpt-vendor">{r.vendor || r.description || "—"}</span>
+                <span className="pnl-rcpt-cat">{exLabel(EX_CATEGORIES, r.category)}</span>
+                <span className="pnl-money pnl-rcpt-amt">{pnlMoney(pnlNum(r.amount))}</span>
+                <span>
+                  {r.receipt_path
+                    ? <button className="ex-rcpt" onClick={() => openRcpt(r.id)} disabled={rcptOpening === r.id}>
+                        {rcptOpening === r.id ? "opening…" : "open"}
+                      </button>
+                    : <span className="ex-norcpt" title="No image or PDF attached">none</span>}
+                </span>
+                <span>
+                  <input type="checkbox" className="pnl-rcpt-x" checked={r.excluded}
+                         title="Tick if this is already entered as a line above, so it is not counted twice"
+                         onChange={() => toggleRcpt(r.id)} />
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {rcptState === "idle" && rcptRows.length ? (
+          <div className="pnl-subtotal">
+            Receipts subtotal — actual {pnlMoney(rcptAct)}
+            {rcptRows.some((r) => r.excluded)
+              ? <span className="pnl-rcpt-note"> · {rcptRows.filter((r) => r.excluded).length} not counted (already entered above)</span>
+              : null}
+          </div>
+        ) : null}
+      </Panel>
+
       <Panel title="Profit & Loss">
         <table className="pnl-summary">
           <thead><tr><th /><th>Estimated</th><th>Actual</th></tr></thead>
@@ -15868,6 +16316,7 @@ function CostingTab({ event }) {
             {row("Labor", laborEst, laborAct, { neg: true })}
             {row("Gear & vendors", vendEst, vendAct, { neg: true })}
             {row("Misc", miscEst, miscAct, { neg: true })}
+            {row("Receipts", 0, rcptAct, { neg: true })}
           </tbody>
           <tfoot>
             <tr className="pnl-net">
@@ -18061,6 +18510,16 @@ const CSS = `
 .cb .mc-ack-tick{font-size:18px; line-height:1;}
 .cb .mc-ack-when{color:var(--dim); font-weight:400;}
 /* Who has confirmed, on the Brief. */
+/* ---- Who a to-do belongs to ------------------------------------------- */
+.cb .tk-who{margin-bottom:6px;}
+.cb .tk-whonote{font-size:11.5px; color:var(--faint); align-self:center; line-height:1.4;}
+.cb .tk-owner{flex:0 0 auto; font-size:11px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.05em; color:var(--dim); background:var(--panel2);
+  border:1px solid var(--line); border-radius:999px; padding:3px 9px; white-space:nowrap;}
+.cb .tk-owner.mine{color:var(--accent); border-color:rgba(255,176,32,.45);}
+.cb .tk-edit-owner{flex:0 0 auto; width:auto; min-width:120px; font-size:12.5px; padding:6px 9px;}
+.cb .tk-edit-mail{font-size:11.5px; color:var(--amber); align-self:center;}
+
 .cb .ack-strip{margin:0 0 12px; padding:11px 13px; border-radius:11px;
   background:var(--panel2); border:1px solid var(--line);}
 .cb .ack-head{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;}
@@ -18361,6 +18820,171 @@ const CSS = `
 .cb .pnl-delta.pos{color:var(--green);}
 .cb .pnl-vendor-grid{grid-template-columns:1fr 1.5fr 84px 84px .9fr 148px 30px;}
 .cb .pnl-misc-grid{grid-template-columns:2fr 92px 92px 28px;}
+.cb .pnl-rcpt-grid{grid-template-columns:96px 1.6fr 1fr 96px 68px 92px;}
+.cb .pnl-rcpt-date{font-variant-numeric:tabular-nums; color:var(--dim); font-size:12.5px; display:flex; align-items:center;}
+.cb .pnl-rcpt-vendor{display:flex; align-items:center; font-weight:600; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .pnl-rcpt-cat{display:flex; align-items:center; color:var(--dim); font-size:12.5px;}
+.cb .pnl-rcpt-amt{display:flex; align-items:center; justify-content:flex-end; font-variant-numeric:tabular-nums; font-weight:600;}
+/* An excluded row stays readable. It is still evidence, still in the tax
+   export, and still openable - it is only out of THIS total. */
+.cb .pnl-rcpt-off .pnl-rcpt-vendor, .cb .pnl-rcpt-off .pnl-rcpt-amt{text-decoration:line-through; color:var(--faint);}
+.cb .pnl-rcpt-off .pnl-rcpt-date, .cb .pnl-rcpt-off .pnl-rcpt-cat{color:var(--faint);}
+/* Explicit size. The global rule above gives every input width:100%, which on
+   a checkbox paints a full-width box with the tick floating in the middle. */
+.cb .pnl-rcpt-x{width:15px; height:15px; flex:0 0 auto; margin:0; padding:0; accent-color:var(--amber); cursor:pointer;}
+.cb .pnl-rcpt-warn{background:rgba(255,176,32,.09); border:1px solid var(--amber); border-radius:8px; padding:9px 12px; font-size:12.5px; color:var(--ink); margin-bottom:10px;}
+.cb .pnl-rcpt-note{color:var(--dim); font-weight:400;}
+/* People & Access - access list vs the show's actual crew list. */
+.cb .pa-mark{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-top:3px;}
+.cb .pa-mark.on{color:var(--dim);}
+.cb .pa-mark.off{color:var(--amber);}
+.cb .pa-stray{background:rgba(255,176,32,.06);}
+.cb .pa-drift{background:rgba(255,176,32,.09); border:1px solid var(--amber); border-radius:8px; padding:10px 12px; font-size:13px; margin:10px 0;}
+.cb .pa-drift b{font-weight:700;}
+.cb .pa-drift .pa-drift-why{display:block; color:var(--dim); font-size:12px; margin-top:4px; font-weight:400;}
+/* Message the crew. */
+.cb .evt-actions{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+.cb .mc-modal{max-width:620px; max-height:86vh; overflow-y:auto;}
+.cb .mc-field{display:block; margin-bottom:12px;}
+.cb .mc-field > span{display:block; font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin-bottom:5px;}
+.cb .mc-field textarea{resize:vertical; min-height:74px; line-height:1.5;}
+.cb .mc-block{border-top:1px solid var(--line); padding-top:12px; margin-bottom:12px;}
+.cb .mc-blockhead{font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin-bottom:8px; display:flex; align-items:center; gap:8px;}
+.cb .mc-all{background:none; border:0; color:var(--amber); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; cursor:pointer; padding:0;}
+.cb .mc-chips{display:flex; flex-wrap:wrap; gap:7px;}
+.cb .mc-chip{display:inline-flex; align-items:center; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer; user-select:none;}
+.cb .mc-chip.on{border-color:var(--amber); background:rgba(255,176,32,.10);}
+.cb .mc-people{display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; margin-bottom:8px;}
+.cb .mc-person{display:flex; align-items:center; gap:9px; padding:6px 4px; border-radius:7px; cursor:pointer; font-size:13.5px;}
+.cb .mc-person:hover{background:var(--panel2);}
+.cb .mc-person b{font-weight:600;}
+.cb .mc-person em{font-style:normal; color:var(--dim); font-size:12px;}
+.cb .mc-person .mc-email{margin-left:auto; color:var(--faint); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .mc-person:not(.on) b, .cb .mc-person:not(.on) em{color:var(--faint);}
+/* Explicit size. The global .cb input rule sets width:100%, which on a
+   checkbox paints a full-width box with the tick floating in the middle of it.
+   That shipped once on the expenses form and once nearly shipped on the P&L.
+   NOTE: no backticks anywhere in this stylesheet - the whole thing lives
+   inside a JS template literal and one backtick ends it. */
+.cb .mc-cbx{width:15px; height:15px; flex:0 0 auto; margin:0; padding:0; accent-color:var(--amber); cursor:pointer;}
+.cb .mc-warn{background:rgba(255,176,32,.09); border:1px solid var(--amber); border-radius:8px; padding:9px 12px; font-size:12.5px; margin-top:8px;}
+.cb .mc-warn .mc-why{display:block; color:var(--dim); font-size:11.5px; margin-top:3px;}
+.cb .mc-sent{font-size:15px; margin:4px 0 6px;}
+
+/* ---------- Today dashboard ----------
+   No backticks anywhere in this stylesheet: the whole thing is inside a JS
+   template literal and one backtick ends it. */
+.cb .dash{padding:4px 0 40px;}
+.cb .dash-head{display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:18px;}
+.cb .dash-date{font-family:'Oswald',sans-serif; font-size:30px; font-weight:600; margin:0; letter-spacing:.01em;}
+.cb .dash-hello{color:var(--dim); font-size:14.5px; margin-top:2px;}
+.cb .dash-quote{color:var(--faint); font-size:13px; font-style:italic; padding-top:8px;}
+
+.cb .dash-tiles{display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px;}
+.cb .dash-tile{text-align:left; display:flex; flex-direction:column; gap:3px; background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--line); border-radius:13px; padding:15px 17px; cursor:pointer; font-family:inherit; color:var(--ink);}
+.cb .dash-tile:hover{border-color:var(--amber);}
+.cb .dash-tile.bad{border-left-color:var(--danger);}
+.cb .dash-tile.warn{border-left-color:var(--amber);}
+.cb .dash-tile.good{border-left-color:var(--green);}
+.cb .dash-tile.info{border-left-color:#4EA8DE;}
+.cb .dash-tlabel{font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--dim);}
+.cb .dash-tvalue{font-family:'Oswald',sans-serif; font-size:25px; font-weight:600; line-height:1.15;}
+.cb .dash-tsub{font-size:12px; color:var(--faint);}
+
+.cb .dash-grid{display:grid; grid-template-columns:1fr 1.35fr 0.85fr; gap:14px; align-items:start;}
+.cb .dash-card{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:15px 17px; min-width:0;}
+/* min-width:0 is load-bearing, not tidiness. A grid item defaults to
+   min-width:auto, so it cannot shrink below its content's intrinsic width -
+   the nowrap stage track inside pushed every card to 996px on a 390px phone
+   and the whole page scrolled sideways. Same reason on the flex rows below. */
+.cb .dash-card.wide{grid-column:1 / -1;}
+.cb .dash-row2{grid-column:1 / -1; display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start; min-width:0;}
+.cb .dash-cardhead{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px; min-width:0;}
+.cb .dash-cardhead h2{font-size:15px; margin:0; font-weight:700; min-width:0; overflow:hidden; text-overflow:ellipsis;}
+.cb .dash-link{background:none; border:0; color:var(--amber); font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer; padding:0; white-space:nowrap;}
+.cb .dash-link:hover{text-decoration:underline;}
+.cb .dash-empty{color:var(--faint); font-size:13px; margin:6px 0;}
+.cb .dash-warn{color:var(--amber); font-size:12.5px; margin:6px 0;}
+.cb .dash-spacer{flex:1;}
+
+.cb .dash-att{display:flex; align-items:center; gap:11px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:9px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
+.cb .dash-att:last-child{border-bottom:0;}
+.cb .dash-att:hover{background:var(--panel2);}
+.cb .dash-att-n{min-width:26px; height:26px; border-radius:8px; display:inline-flex; align-items:center; justify-content:center; font-size:12.5px; font-weight:700; flex:0 0 auto; padding:0 6px;}
+.cb .dash-att-n.bad{background:rgba(239,68,68,.16); color:var(--danger);}
+.cb .dash-att-n.warn{background:rgba(255,176,32,.16); color:var(--amber);}
+.cb .dash-att-n.flat{background:var(--panel2); color:var(--dim);}
+.cb .dash-att-t{flex:1; min-width:0; font-size:13.5px;}
+.cb .dash-chev{color:var(--faint); font-size:16px;}
+
+.cb .dash-show{display:flex; align-items:stretch; gap:12px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:11px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
+.cb .dash-show:last-child{border-bottom:0;}
+.cb .dash-show:hover{background:var(--panel2);}
+.cb .dash-when{flex:0 0 auto; width:46px; background:var(--panel2); border-radius:9px; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:5px 0;}
+.cb .dash-when b{font-size:10px; letter-spacing:.06em; color:var(--dim); font-weight:700;}
+.cb .dash-when i{font-style:normal; font-family:'Oswald',sans-serif; font-size:19px; font-weight:600;}
+.cb .dash-showmain{flex:1; min-width:0; display:flex; flex-direction:column; gap:3px; justify-content:center;}
+.cb .dash-showname{font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .dash-showsub{font-size:12px; color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .dash-bar{display:block; height:6px; border-radius:99px; background:var(--panel2); overflow:hidden; margin-top:3px;}
+.cb .dash-barfill{display:block; height:100%; border-radius:99px;}
+.cb .dash-barfill.hi{background:var(--green);}
+.cb .dash-barfill.mid{background:var(--amber);}
+.cb .dash-barfill.lo{background:var(--danger);}
+.cb .dash-showright{flex:0 0 auto; display:flex; flex-direction:column; align-items:flex-end; justify-content:center; gap:2px;}
+.cb .dash-days{font-size:12.5px; font-weight:700;}
+.cb .dash-ready{font-size:11.5px; color:var(--dim);}
+.cb .dash-crewn{font-size:11.5px; color:var(--faint);}
+
+.cb .dash-quick{display:flex; flex-direction:column; gap:7px;}
+.cb .dash-qa{text-align:left; background:var(--panel2); border:1px solid var(--line); border-radius:9px; padding:10px 13px; font-family:inherit; font-size:13.5px; color:var(--ink); cursor:pointer;}
+.cb .dash-qa:hover{border-color:var(--amber); color:var(--amber);}
+
+.cb .dash-prod{border-bottom:1px solid var(--line); padding:11px 0;}
+.cb .dash-prod:last-child{border-bottom:0;}
+.cb .dash-prodhead{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; min-width:0;}
+.cb .dash-prodhead b{font-size:14.5px;}
+.cb .dash-prodhead em{font-style:normal; font-size:12px; color:var(--dim);}
+.cb .dash-track{display:flex; gap:6px; flex-wrap:wrap; min-width:0;}
+.cb .dash-stage{font-size:11.5px; padding:5px 10px; border-radius:99px; border:1px solid var(--line); white-space:nowrap;}
+.cb .dash-stage.done{background:rgba(52,199,123,.13); border-color:rgba(52,199,123,.45); color:var(--green);}
+.cb .dash-stage.now{background:rgba(255,176,32,.15); border-color:var(--amber); color:var(--amber); font-weight:700;}
+.cb .dash-stage.todo{color:var(--faint);}
+
+.cb .dash-task{display:flex; align-items:flex-start; gap:10px; width:100%; text-align:left; background:none; border:0; border-bottom:1px solid var(--line); padding:9px 2px; cursor:pointer; font-family:inherit; color:var(--ink);}
+.cb .dash-task:last-child{border-bottom:0;}
+.cb .dash-task:hover{background:var(--panel2);}
+.cb .dash-tbox{flex:0 0 auto; width:15px; height:15px; border-radius:4px; border:1.5px solid var(--line); margin-top:2px;}
+.cb .dash-tbox.late{border-color:var(--danger);}
+.cb .dash-tmain{flex:1; min-width:0; display:flex; flex-direction:column; gap:2px;}
+.cb .dash-stat{min-width:0;}
+.cb .dash-statlabel{min-width:0; overflow:hidden; text-overflow:ellipsis;}
+.cb .dash-ttitle{font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .dash-tsub{font-size:11.5px; color:var(--dim);}
+
+.cb .dash-stat{display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; background:none; border:0; border-bottom:1px solid var(--line); padding:10px 2px; cursor:pointer; font-family:inherit; color:var(--ink); text-align:left;}
+.cb .dash-stat:last-child{border-bottom:0;}
+.cb .dash-stat:hover{background:var(--panel2);}
+.cb .dash-statlabel{font-size:13.5px;}
+.cb .dash-statn{font-family:'Oswald',sans-serif; font-size:19px; font-weight:600;}
+.cb .dash-statn.on{color:var(--amber);}
+.cb .dash-statn.zero{color:var(--green); font-size:16px;}
+.cb .dash-statn.err{color:var(--faint);}
+
+@media (max-width: 1100px){
+  .cb .dash-grid{grid-template-columns:1fr 1fr;}
+  .cb .dash-tiles{grid-template-columns:repeat(2,1fr);}
+}
+@media (max-width: 760px){
+  .cb .dash-grid{grid-template-columns:1fr;}
+  .cb .dash-row2{grid-template-columns:1fr;}
+  .cb .dash-tiles{grid-template-columns:1fr 1fr;}
+  .cb .dash-date{font-size:24px;}
+  .cb .dash-quote{display:none;}
+  /* The stage track scrolls sideways rather than wrapping into six rows and
+     pushing everything else off a phone screen. */
+  .cb .dash-track{flex-wrap:nowrap; overflow-x:auto; padding-bottom:4px;}
+}
 .cb .pnl-pdbar{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--line);}
 .cb .pnl-pdlabel{font-family:'Oswald'; font-size:11px; letter-spacing:.05em; text-transform:uppercase; color:var(--dim);}
 .cb .pnl-pdbar .pnl-money{width:80px;}
@@ -19383,6 +20007,188 @@ const CSS = `
    login path issued anything above crew level, so setting them appeared to work
    and did nothing. Editing rights and P&L access now come from a person's account
    role, so the tiers have been removed rather than repaired. */
+/* ============================================================
+   MESSAGE THE CREW — a note to everyone on a show, with a PDF packet.
+
+   Two things this screen is built to prevent:
+
+   1. SENDING BEFORE LOOKING. Preview builds the exact bytes that would be
+      attached and hands them back without sending. Nothing goes out until
+      Tyler has had the chance to open it.
+   2. "SENT" MEANING LESS THAN IT SAYS. Somebody on the call sheet with no
+      email address is named on screen, before and after, because "sent to 9"
+      next to a crew of 12 is the number that matters.
+   ============================================================ */
+const MSG_SECTIONS = [
+  { key: "brief",    label: "Crew Brief" },
+  { key: "schedule", label: "Schedule" },
+  { key: "rundown",  label: "Run of Show" },
+  { key: "audio",    label: "Audio I/O" },
+  { key: "video",    label: "Video I/O" },
+  { key: "pull",     label: "Pull List" },
+];
+
+function MessageCrewModal({ event, onClose, flash }) {
+  const [subject, setSubject] = useState(event.name ? event.name + " — call sheet" : "");
+  const [message, setMessage] = useState("");
+  const [picked, setPicked] = useState(() => new Set(["brief", "schedule"]));
+  const [busy, setBusy] = useState("");          // "" | "preview" | "send"
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState(null);
+
+  /* The audience is computed here for display only. The SERVER decides who is
+     actually emailed, from the show, and drops anything not on it — this list
+     is what Tyler ticks, not what he can reach. */
+  const crew = (event.crew || []).filter((c) => c && String(c.name || "").trim());
+  const roster = [];
+  const noEmail = [];
+  const seen = new Set();
+  for (const c of crew) {
+    const k = emailKey(c.email);
+    if (!k) { noEmail.push(c.name); continue; }
+    if (seen.has(k)) continue;           // one human, two positions
+    seen.add(k);
+    roster.push({ email: k, name: c.name, position: c.position || "" });
+  }
+  const [to, setTo] = useState(() => new Set(roster.map((r) => r.email)));
+
+  const toggle = (setter) => (key) => setter((prev) => {
+    const n = new Set(prev); n.has(key) ? n.delete(key) : n.add(key); return n;
+  });
+  const sections = MSG_SECTIONS.filter((s) => picked.has(s.key)).map((s) => s.key);
+  const recipients = roster.filter((r) => to.has(r.email));
+  const canSend = !!subject.trim() && recipients.length > 0 && (sections.length > 0 || !!message.trim());
+
+  const body = () => ({ subject: subject.trim(), message, sections, to: recipients.map((r) => r.email) });
+
+  const preview = async () => {
+    setErr(""); setBusy("preview");
+    try {
+      const r = await previewShowMessage(event.id, body());
+      if (!r.pdf) throw new Error("Nothing was attached — tick a section first.");
+      /* Opened, not downloaded: the point is to LOOK at it. */
+      const bin = atob(r.pdf);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/pdf" }));
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+    } catch (e) { setErr((e && e.message) || "Could not build the preview."); }
+    setBusy("");
+  };
+
+  const send = async () => {
+    setErr(""); setBusy("send");
+    try {
+      const r = await sendShowMessage(event.id, body());
+      setDone(r);
+      if (flash) flash("Sent to " + r.sent + (r.sent === 1 ? " person" : " people"));
+    } catch (e) { setErr((e && e.message) || "Could not send."); }
+    setBusy("");
+  };
+
+  if (done) {
+    return (
+      <div className="sa-overlay" onClick={onClose}>
+        <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
+          <div className="sa-title">Sent</div>
+          <p className="mc-sent"><b>{done.sent}</b> {done.sent === 1 ? "person" : "people"} emailed
+            {done.pages ? <> · a {done.pages}-page packet attached</> : null}.</p>
+          {done.sections && done.sections.length
+            ? <p className="sa-hint">{done.sections.join(" · ")}</p> : null}
+          {/* Every way this could have reached fewer people than expected,
+              said out loud rather than left to be noticed on site. */}
+          {done.failed && done.failed.length
+            ? <div className="mc-warn"><b>{done.failed.length} did not go through:</b> {done.failed.join(", ")}</div> : null}
+          {done.noEmail && done.noEmail.length
+            ? <div className="mc-warn"><b>No email address on the crew list:</b> {done.noEmail.join(", ")}
+                <span className="mc-why">They were not emailed. Add an address on the Brief.</span></div> : null}
+          {done.rejected && done.rejected.length
+            ? <div className="mc-warn"><b>Not on this show, so not emailed:</b> {done.rejected.join(", ")}</div> : null}
+          <div className="sa-actions"><button className="btn" onClick={onClose}>Close</button></div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="sa-overlay" onClick={onClose}>
+      <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sa-title">Message the crew — {event.name || "this show"}</div>
+
+        <label className="mc-field">
+          <span>Subject</span>
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Call sheet is up" />
+        </label>
+        <label className="mc-field">
+          <span>Message</span>
+          <textarea rows={4} value={message} onChange={(e) => setMessage(e.target.value)}
+                    placeholder="Anything they need to know. Leave blank to send just the packet." />
+        </label>
+
+        <div className="mc-block">
+          <div className="mc-blockhead">Attach as a PDF</div>
+          <div className="mc-chips">
+            {MSG_SECTIONS.map((s) => (
+              <label key={s.key} className={"mc-chip" + (picked.has(s.key) ? " on" : "")}>
+                <input type="checkbox" className="mc-cbx" checked={picked.has(s.key)}
+                       onChange={() => toggle(setPicked)(s.key)} />
+                {s.label}
+              </label>
+            ))}
+          </div>
+          <div className="sa-hint">
+            One PDF, in this order, stamped with the time it was built so a forwarded copy
+            cannot be mistaken for the current one. Rates and hours are never included.
+          </div>
+        </div>
+
+        <div className="mc-block">
+          <div className="mc-blockhead">
+            To — {recipients.length} of {roster.length}
+            {roster.length ? (
+              <button className="mc-all" onClick={() => setTo(to.size === roster.length ? new Set() : new Set(roster.map((r) => r.email)))}>
+                {to.size === roster.length ? "none" : "all"}
+              </button>
+            ) : null}
+          </div>
+          {roster.length ? (
+            <div className="mc-people">
+              {roster.map((r) => (
+                <label key={r.email} className={"mc-person" + (to.has(r.email) ? " on" : "")}>
+                  <input type="checkbox" className="mc-cbx" checked={to.has(r.email)}
+                         onChange={() => toggle(setTo)(r.email)} />
+                  <b>{r.name}</b>
+                  {r.position ? <em>{r.position}</em> : null}
+                  <span className="mc-email">{r.email}</span>
+                </label>
+              ))}
+            </div>
+          ) : <div className="mc-warn">Nobody on this show's crew list has an email address.</div>}
+          {noEmail.length ? (
+            <div className="mc-warn">
+              <b>No email address:</b> {noEmail.join(", ")}
+              <span className="mc-why">They cannot be emailed. Add an address on the Brief.</span>
+            </div>
+          ) : null}
+        </div>
+
+        {err ? <div className="sa-err">{err}</div> : null}
+        <div className="sa-actions">
+          <button className="btn ghost" onClick={onClose} disabled={!!busy}>Cancel</button>
+          <span className="tk-spacer" />
+          <button className="btn ghost" onClick={preview} disabled={!!busy || !sections.length}>
+            {busy === "preview" ? "Building…" : "Preview the PDF"}
+          </button>
+          <button className="btn" onClick={send} disabled={!!busy || !canSend}>
+            {busy === "send" ? "Sending…" : "Send to " + recipients.length}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ShowAccessModal({ show, currentId, onClose, onSaved }) {
   const [crew, setCrew] = useState("");
   const [clearCrew, setClearCrew] = useState(false);
