@@ -208,9 +208,16 @@ export const saveQuoteTerms = (text) => api("POST", "/api/quotes?terms=1", { tex
    the second one acting on a stale picture. */
 export const previewJobImport = (text) =>
   api("POST", "/api/import-jobs?preview=1", { text });
-export const commitJobImport = (rows, note) =>
-  api("POST", "/api/import-jobs?commit=1", { rows, note });
+export const commitJobImport = (rows, note, source) =>
+  api("POST", "/api/import-jobs?commit=1", { rows, note, source });
 export const listJobImports = () => api("GET", "/api/import-jobs");
+
+/* Read ONE quote PDF. Writes nothing — not a show, not a quote, not a client.
+   It hands back what the PDF says plus which directory rows look like a match,
+   and the browser calls it once per file so a bad ninth PDF is a row on the
+   review screen rather than a failed batch of twenty-five. */
+export const readQuotePdf = (pdf, fileName) =>
+  api("POST", "/api/import-pdf", { pdf, fileName });
 /* Takes an import back out — but only the jobs that have had nothing hung on
    them since. Anything with receipts, tasks, invoices or crew is kept and
    named in the response. */

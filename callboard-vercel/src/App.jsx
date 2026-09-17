@@ -85,6 +85,7 @@ import {
   getQuoteTermsPdfMeta,
   previewJobImport,
   commitJobImport,
+  readQuotePdf,
   listJobImports,
   undoJobImport,
   getYearRevenue,
@@ -7036,15 +7037,124 @@ function ijRange(start, end) {
   return ijDate(start) + " – " + ijDate(end);
 }
 
-function ImportJobsModal({ onClose, onImported }) {
+/* One PDF, as base64, without loading the whole file into a string twice.
+   Rejected rather than thrown so one unreadable file is a row with a reason on
+   it instead of the end of the batch. */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(String(fr.result || "").split(",")[1] || "");
+    fr.onerror = () => reject(new Error("Couldn't read that file off the disk."));
+    fr.readAsDataURL(file);
+  });
+}
+
+/* What /api/import-pdf hands back, in the shape the review table already
+   understands, so ONE table renders both importers. The alternative is a
+   second review screen that looks nearly the same and drifts — which is how
+   "the paste one warns about duplicates and the PDF one doesn't" happens. */
+function pdfToRow(r, i) {
+  const base = { line: i + 1, fileName: r.fileName || "", source: "pdf" };
+  if (r.error || !r.ok) {
+    return {
+      ...base, ok: false,
+      error: r.error || (r.warnings && r.warnings[0]) || "Couldn't read that quote.",
+      raw: { name: r.name || "", total: r.total == null ? "" : String(r.total), startDate: r.startDate || "" },
+      dup: "", dupNote: "", action: "skip",
+    };
+  }
+  return {
+    ...base,
+    ok: true, error: "",
+    name: r.name,
+    client: (r.client && r.client.name) || "",
+    startDate: r.startDate,
+    endDate: r.endDate,
+    total: r.total,
+    status: "won",
+    quoteNumber: r.quoteNumber || "",
+    note: "",
+    invoiceNo: "",
+    dup: r.dup || "",
+    dupNote: r.dupNote || "",
+    action: r.dup ? "skip" : "create",
+    clientInfo: r.client || null,
+    venueInfo: r.venue || null,
+    categories: r.categories || [],
+    lines: r.lines || [],
+    check: r.check || null,
+    warnings: r.warnings || [],
+    /* What the pickers start on: the directory row the server thinks it is,
+       when it is sure. Anything less than sure starts on "create new", because
+       a wrong auto-match is a silent merge and a spare company is not. */
+    clientPick: r.client && r.client.match && r.client.match.exact ? r.client.match.id : "",
+    venuePick: r.venue && r.venue.match && r.venue.match.exact ? r.venue.match.id : "",
+  };
+}
+
+/* The venue a row will end up with, whichever way it was chosen. Shown on the
+   review screen AND written onto the show's Brief, so the two cannot say
+   different things. */
+function venueLabel(r, venues) {
+  if (r.venuePick) {
+    const v = (venues || []).find((x) => x.id === r.venuePick);
+    return v ? v.name : "";
+  }
+  return (r.venueInfo && r.venueInfo.name) || "";
+}
+function venueAddr(r, venues) {
+  if (r.venuePick) {
+    const v = (venues || []).find((x) => x.id === r.venuePick);
+    return v ? [v.address, [v.city, v.state].filter(Boolean).join(" "), v.zip].filter(Boolean).join(", ") : "";
+  }
+  const i = r.venueInfo;
+  return i ? [i.address, [i.city, i.state].filter(Boolean).join(" "), i.zip].filter(Boolean).join(", ") : "";
+}
+
+/* Pick a company or a venue for one imported job: one of the ones already in
+   the directory, or a new one made from what the PDF says.
+
+   NOTHING IS EVER MATCHED BEHIND TYLER'S BACK, which is what he asked for. The
+   server proposes; this control starts on that proposal ONLY when the names
+   are identical, and every other case starts on "add it as new" — because a
+   wrong match silently merges two companies and is a nuisance to unpick, while
+   a spare company is a nuisance to look at. When there is a near-match it is
+   named underneath, so choosing it is one click and not a search. */
+function DirPick({ rows, value, proposed, match, detail, onChange }) {
+  const list = (rows || []).filter((r) => r && !r.parentId);
+  return (
+    <div className="ij-pick">
+      <select className="ij-picksel" value={value || ""} onChange={(e) => onChange(e.target.value)}>
+        <option value="">+ Add &ldquo;{proposed || "unnamed"}&rdquo;</option>
+        {list.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+      </select>
+      {!value && detail ? <span className="ij-pickdetail">{detail}</span> : null}
+      {!value && match && !match.exact ? (
+        <button className="ij-picksug" onClick={() => onChange(match.id)}>
+          Close to <b>{match.name}</b> — use that instead?
+        </button>
+      ) : null}
+      {value && match && match.id === value && match.exact ? (
+        <span className="ij-pickdetail">Already in the app.</span>
+      ) : null}
+    </div>
+  );
+}
+
+function ImportJobsModal({ onClose, onImported, clients, venues }) {
+  /* PDFs first: it is what Tyler asked for and what he has twenty-five of.
+     The paste table stays for jobs whose quote never became a PDF. */
+  const [mode, setMode] = useState("pdf");         // "pdf" | "paste"
   const [text, setText] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState("");            // "" | "read" | "import" | "undo"
+  const [progress, setProgress] = useState("");
   const [err, setErr] = useState("");
   const [prev, setPrev] = useState(null);          // { rows, summary, headers, unknown }
   const [pick, setPick] = useState(() => new Set());
   const [done, setDone] = useState(null);
   const [past, setPast] = useState({ st: "load", rows: [], err: "" });
+  const fileRef = useRef(null);
 
   const loadPast = async () => {
     try { setPast({ st: "ok", rows: await listJobImports(), err: "" }); }
@@ -7065,13 +7175,57 @@ function ImportJobsModal({ onClose, onImported }) {
     setBusy("");
   };
 
+  /* The PDF side. One request per file, in order, so the count on screen is
+     honest and a failure is attached to the file that caused it. */
+  const readPdfs = async (files) => {
+    const list = Array.from(files || []).filter((f) => f && /\.pdf$/i.test(f.name));
+    if (!list.length) { setErr("Those don't look like PDFs."); return; }
+    if (list.length > 25) { setErr("Twenty-five at a time, so the review screen stays readable."); return; }
+    setBusy("read"); setErr(""); setDone(null);
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      setProgress("Reading " + (i + 1) + " of " + list.length + "…");
+      try {
+        const b64 = await fileToBase64(list[i]);
+        out.push(pdfToRow(await readQuotePdf(b64, list[i].name), i));
+      } catch (e) {
+        /* A file that could not be read is a ROW, not the end of the run. The
+           other twenty-four are still perfectly good. */
+        out.push(pdfToRow({ fileName: list[i].name, ok: false,
+                            error: (e && e.message) || "Couldn't read that one." }, i));
+      }
+    }
+    setProgress("");
+    const creating = out.filter((r) => r.action === "create");
+    setPrev({
+      rows: out, headers: [], unknown: [],
+      summary: {
+        read: out.length, creating: creating.length,
+        gross: creating.reduce((t, r) => t + (r.status === "won" ? Number(r.total) || 0 : 0), 0),
+        duplicates: out.filter((r) => r.dup).length,
+        problems: out.filter((r) => !r.ok).length,
+        offBalance: out.filter((r) => r.ok && r.check && !r.check.balances).length,
+      },
+    });
+    setPick(new Set(creating.map((r) => r.line)));
+    setBusy("");
+  };
+
   const toggle = (line) => setPick((s) => {
     const n = new Set(s);
     if (n.has(line)) n.delete(line); else n.add(line);
     return n;
   });
 
+  /* Which directory row a PDF row is pointed at. "" means create a new one
+     from what the PDF says. */
+  const setPickField = (line, field, value) => setPrev((p) => ({
+    ...p,
+    rows: p.rows.map((r) => (r.line === line ? { ...r, [field]: value } : r)),
+  }));
+
   const rows = (prev && prev.rows) || [];
+  const isPdf = rows.some((r) => r.source === "pdf");
   const chosen = rows.filter((r) => r.ok && pick.has(r.line));
   const chosenGross = chosen.reduce((t, r) => t + (r.status === "won" ? Number(r.total) || 0 : 0), 0);
 
@@ -7086,7 +7240,24 @@ function ImportJobsModal({ onClose, onImported }) {
            the override. Everything else is checked against the database again
            on the way in and skipped if it has appeared since. */
         force: !!x.dup,
-      })), note);
+        /* The PDF half. An id means "use the one I picked"; no id plus a
+           newClient means "make this one". The server treats an id as final,
+           so a stale proposal left alongside it cannot create a second
+           company beside the one that was chosen. */
+        ...(x.source === "pdf" ? {
+          quoteNumber: x.quoteNumber,
+          lines: x.lines,
+          clientId: x.clientPick || "",
+          newClient: x.clientPick ? null : (x.clientInfo && x.clientInfo.name
+            ? { name: x.clientInfo.name, address: x.clientInfo.address } : null),
+          venueId: x.venuePick || "",
+          newVenue: x.venuePick ? null : (x.venueInfo && x.venueInfo.name
+            ? { name: x.venueInfo.name, address: x.venueInfo.address,
+                city: x.venueInfo.city, state: x.venueInfo.state, zip: x.venueInfo.zip } : null),
+          venueName: venueLabel(x, venues),
+          venueAddress: venueAddr(x, venues),
+        } : {}),
+      })), note, isPdf ? "pdf" : "paste");
       setDone(r); setPrev(null); setText("");
       await loadPast();
       if (onImported) onImported();
@@ -7114,13 +7285,26 @@ function ImportJobsModal({ onClose, onImported }) {
       <div className="sa-modal ij-modal" onClick={(e) => e.stopPropagation()}>
         <div className="sa-title">Import past jobs</div>
         <div className="sa-hint">
-          Paste a table of jobs you have already done — straight out of a spreadsheet is
-          fine. Each one becomes a show with a won quote on it, so the year has a revenue
-          figure and there is somewhere to attach the receipts. Nothing is created until
-          you have looked at the list.
+          Each one becomes a show with a won quote on it, so the year has a revenue figure
+          and there is somewhere to attach the receipts. Nothing is created until you have
+          looked at the list.
         </div>
 
+        {!prev && !done ? (
+          <div className="ij-modes">
+            <button className={"ij-mode" + (mode === "pdf" ? " on" : "")}
+                    onClick={() => { setMode("pdf"); setErr(""); }}>
+              Upload quote PDFs
+            </button>
+            <button className={"ij-mode" + (mode === "paste" ? " on" : "")}
+                    onClick={() => { setMode("paste"); setErr(""); }}>
+              Paste a table
+            </button>
+          </div>
+        ) : null}
+
         {err ? <div className="sa-err">{err}</div> : null}
+        {progress ? <div className="ij-progress">{progress}</div> : null}
 
         {/* ---- what just happened ---- */}
         {done ? (
@@ -7160,8 +7344,34 @@ function ImportJobsModal({ onClose, onImported }) {
                     <span className="ij-suml">couldn&rsquo;t be read</span>
                   </div>
                 ) : null}
+                {done.lines ? (
+                  <div className="ij-sumcell">
+                    <span className="ij-sumn">{done.lines}</span>
+                    <span className="ij-suml">line items</span>
+                  </div>
+                ) : null}
               </div>
             )}
+            {/* Directory rows an import brought into being are named, always.
+                They live in the app for ever and nothing else will ever tell
+                him they appeared. */}
+            {done.clients && done.clients.length ? (
+              <div className="sa-hint">
+                <b>New client{done.clients.length === 1 ? "" : "s"} added:</b> {done.clients.join(", ")}
+              </div>
+            ) : null}
+            {done.venues && done.venues.length ? (
+              <div className="sa-hint">
+                <b>New venue{done.venues.length === 1 ? "" : "s"} added:</b> {done.venues.join(", ")}
+              </div>
+            ) : null}
+            {done.dirKept ? (
+              <div className="sa-hint">
+                {done.dirKept} client{done.dirKept === 1 ? "" : "s"} or venue
+                {done.dirKept === 1 ? "" : "s"} from that import stayed, because
+                they are used elsewhere now.
+              </div>
+            ) : null}
             {done.message ? <div className="sa-hint">{done.message}</div> : null}
             {/* Named, not counted. Which ones were skipped is the thing
                 somebody actually needs to see. */}
@@ -7186,8 +7396,33 @@ function ImportJobsModal({ onClose, onImported }) {
           </div>
         ) : null}
 
+        {/* ---- upload PDFs ---- */}
+        {!prev && mode === "pdf" ? (
+          <div>
+            <input ref={fileRef} type="file" accept="application/pdf,.pdf" multiple
+                   style={{ display: "none" }}
+                   onChange={(e) => { readPdfs(e.target.files); e.target.value = ""; }} />
+            <button className="ij-drop" disabled={busy === "read"}
+                    onClick={() => fileRef.current && fileRef.current.click()}>
+              <b>Choose your quote PDFs</b>
+              <span>Up to 25 at a time. Touchstone quotes, with a Quote Number on them.</span>
+            </button>
+            <div className="sa-hint" style={{ marginTop: 12 }}>
+              Each one is read for the client and its address, the venue and its address,
+              the load-in and load-out dates, the grand total and every category amount
+              under it. A client or venue that isn&rsquo;t in the app yet is offered as a new
+              one on the next screen — you choose, nothing is matched behind your back.
+            </div>
+            <div className="sa-hint">
+              The figures are <b>read off the page</b>, not guessed at: the category amounts
+              have to add up to the printed grand total, and any quote where they don&rsquo;t is
+              flagged rather than imported quietly.
+            </div>
+          </div>
+        ) : null}
+
         {/* ---- paste ---- */}
-        {!prev ? (
+        {!prev && mode === "paste" ? (
           <div>
             <textarea
               className="ij-paste"
@@ -7233,6 +7468,12 @@ function ImportJobsModal({ onClose, onImported }) {
                   <span className="ij-suml">couldn&rsquo;t be read</span>
                 </div>
               ) : null}
+              {sum && sum.offBalance ? (
+                <div className="ij-sumcell">
+                  <span className="ij-sumn bad">{sum.offBalance}</span>
+                  <span className="ij-suml">don&rsquo;t add up</span>
+                </div>
+              ) : null}
             </div>
 
             {/* Which columns were actually found, green for yes.
@@ -7240,15 +7481,21 @@ function ImportJobsModal({ onClose, onImported }) {
                 by being looked at: the End date chip is grey, so that column
                 was not recognised, and the unrecognised names are listed
                 underneath. Without this the screen just quietly shows
-                one-day jobs. */}
-            <div className="ij-cols" style={{ margin: "0 0 12px" }}>
-              {IJ_COLUMNS.map(([k, label]) => (
-                <span key={k}
-                      className={"ij-col" + ((prev.headers || []).indexOf(k) >= 0 ? " on" : "")}>
-                  {label}
-                </span>
-              ))}
-            </div>
+                one-day jobs.
+
+                Paste only. A PDF has no columns to recognise, and a row of
+                grey chips over a PDF review reads as eight things that went
+                wrong. */}
+            {!isPdf ? (
+              <div className="ij-cols" style={{ margin: "0 0 12px" }}>
+                {IJ_COLUMNS.map(([k, label]) => (
+                  <span key={k}
+                        className={"ij-col" + ((prev.headers || []).indexOf(k) >= 0 ? " on" : "")}>
+                    {label}
+                  </span>
+                ))}
+              </div>
+            ) : null}
             {prev.unknown && prev.unknown.length ? (
               <div className="sa-hint">
                 Columns I didn&rsquo;t recognise, so they were ignored:{" "}
@@ -7261,7 +7508,9 @@ function ImportJobsModal({ onClose, onImported }) {
                 <thead>
                   <tr>
                     <th className="tick" />
-                    <th>Job</th><th>Client</th><th>Dates</th>
+                    <th>Job</th><th>Client</th>
+                    {isPdf ? <th>Venue</th> : null}
+                    <th>Dates</th>
                     <th style={{ textAlign: "right" }}>Amount</th><th>Status</th>
                   </tr>
                 </thead>
@@ -7277,11 +7526,56 @@ function ImportJobsModal({ onClose, onImported }) {
                       </td>
                       <td>
                         <div>{r.ok ? r.name : (r.raw && r.raw.name) || "(no name)"}</div>
-                        <span className="ij-line">row {r.line}</span>
+                        <span className="ij-line">
+                          {r.fileName ? r.fileName : "row " + r.line}
+                          {r.ok && r.quoteNumber ? " · " + r.quoteNumber : ""}
+                          {r.ok && r.categories && r.categories.length
+                            ? " · " + r.categories.length + " categories, " +
+                              r.categories.reduce((t, c) => t + (c.items || []).length, 0) + " items"
+                            : ""}
+                        </span>
                         {!r.ok ? <span className="ij-why red">{r.error}</span> : null}
                         {r.ok && r.dup ? <span className="ij-why amber">{r.dupNote}</span> : null}
+                        {/* The arithmetic check, said in words. A quote whose
+                            parts and whole disagree is the one row on this
+                            screen that has to be looked at, so it is not left
+                            to a colour. */}
+                        {r.ok && r.check && !r.check.balances ? (
+                          <span className="ij-why red">
+                            The categories come to {qtMoney0(r.check.categoriesTotal)} but the
+                            grand total says {qtMoney0(r.total)}. Check this one against the PDF.
+                          </span>
+                        ) : null}
+                        {r.ok && (r.warnings || []).length ? (
+                          <span className="ij-why amber">{r.warnings.join(" ")}</span>
+                        ) : null}
                       </td>
-                      <td>{r.ok ? r.client : (r.raw && r.raw.client) || ""}</td>
+                      <td>
+                        {!r.ok ? ((r.raw && r.raw.client) || "") : !isPdf ? r.client : (
+                          <DirPick
+                            rows={clients}
+                            value={r.clientPick}
+                            proposed={(r.clientInfo && r.clientInfo.name) || ""}
+                            match={r.clientInfo && r.clientInfo.match}
+                            detail={(r.clientInfo && r.clientInfo.address) || ""}
+                            onChange={(v) => setPickField(r.line, "clientPick", v)}
+                          />
+                        )}
+                      </td>
+                      {isPdf ? (
+                        <td>
+                          {!r.ok ? "" : (
+                            <DirPick
+                              rows={venues}
+                              value={r.venuePick}
+                              proposed={(r.venueInfo && r.venueInfo.name) || ""}
+                              match={r.venueInfo && r.venueInfo.match}
+                              detail={venueAddr(r, venues)}
+                              onChange={(v) => setPickField(r.line, "venuePick", v)}
+                            />
+                          )}
+                        </td>
+                      ) : null}
                       <td>
                         {r.ok ? ijRange(r.startDate, r.endDate) : (r.raw && r.raw.startDate) || ""}
                       </td>
@@ -7312,6 +7606,8 @@ function ImportJobsModal({ onClose, onImported }) {
                   : "Import " + chosen.length + " job" + (chosen.length === 1 ? "" : "s")}
               </button>
             </>
+          ) : mode === "pdf" ? (
+            <button className="btn ghost" onClick={onClose}>Close</button>
           ) : (
             <>
               <button className="btn ghost" onClick={onClose}>Close</button>
@@ -7532,8 +7828,16 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
 
       {importing ? (
         <ImportJobsModal
+          clients={clients}
+          venues={venues}
           onClose={() => setImporting(false)}
-          onImported={() => { loadList(); setMoneyKey((n) => n + 1); if (onShowCreated) onShowCreated(); }}
+          onImported={() => {
+            loadList(); setMoneyKey((n) => n + 1);
+            /* An import can create companies and venues, so the pickers this
+               screen already holds are out of date the moment it finishes. */
+            loadRefs();
+            if (onShowCreated) onShowCreated();
+          }}
         />
       ) : null}
 
@@ -20193,6 +20497,20 @@ const CSS = `
 .cb .ij-why.amber{color:#f4c76b;}
 .cb .ij-why.red{color:#f87171;}
 .cb .ij-line{color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums;}
+.cb .ij-modes{display:flex; gap:8px; margin:0 0 14px;}
+.cb .ij-mode{flex:1; background:var(--panel2); border:1px solid var(--line); color:var(--dim); border-radius:10px; padding:9px 12px; font-family:inherit; font-size:13.5px; font-weight:700; cursor:pointer;}
+.cb .ij-mode.on{background:var(--green); border-color:var(--green); color:#0B1220;}
+.cb .ij-progress{font-size:13px; color:var(--amber); font-weight:700; margin:0 0 12px;}
+.cb .ij-drop{width:100%; display:flex; flex-direction:column; gap:5px; align-items:center; justify-content:center; padding:34px 18px; background:var(--panel2); border:2px dashed var(--line); border-radius:14px; color:var(--ink); font-family:inherit; cursor:pointer;}
+.cb .ij-drop:hover{border-color:var(--green);}
+.cb .ij-drop:disabled{opacity:.5; cursor:default;}
+.cb .ij-drop b{font-size:15px;}
+.cb .ij-drop span{font-size:12.5px; color:var(--faint);}
+.cb .ij-pick{display:flex; flex-direction:column; gap:3px; min-width:150px;}
+.cb .ij-picksel{width:100%; max-width:210px; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:7px; padding:4px 6px; font-family:inherit; font-size:12.5px;}
+.cb .ij-pickdetail{font-size:11px; color:var(--faint); line-height:1.35;}
+.cb .ij-picksug{text-align:left; background:none; border:0; padding:0; color:#f4c76b; font-family:inherit; font-size:11px; cursor:pointer; line-height:1.35;}
+.cb .ij-picksug:hover{text-decoration:underline;}
 .cb .ij-past{margin-top:18px; border-top:1px solid var(--line); padding-top:14px;}
 .cb .ij-pastrow{display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:7px 0; font-size:13px; border-bottom:1px solid var(--line);}
 .cb .ij-pastrow:last-child{border-bottom:none;}
