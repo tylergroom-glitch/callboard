@@ -29,6 +29,81 @@ import { syncQuoteItems } from "./_items.js";
 const WON = "status=eq.won";
 const QCOLS = "id,family_id,version,status,event_id,client_id,start_date,end_date,total,data";
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * THE PERIOD WINDOW
+ *
+ * Every figure in the Reports tab hangs off these two dates, so a window that
+ * is off by one day does not produce an error — it quietly moves a job from
+ * one month into another and both months are wrong.
+ *
+ * PACIFIC, NOT UTC, AND THIS IS THE WHOLE REASON IT IS A FUNCTION.
+ *   The serverless container runs in UTC. On the evening of the 31st, Pacific
+ *   is still the 31st and UTC is already the 1st — so `new Date()` on the
+ *   server says next month while Tyler's screen says this one. "September" at
+ *   5pm on the 30th would report October's figures, every time, and only in
+ *   the evenings. Every date this app decides is decided in BUSINESS_TZ.
+ *
+ * All dates are plain YYYY-MM-DD strings, compared as strings, never Date
+ * objects — the same rule the importer's date parsing follows, and for the
+ * same reason: a Date is a moment in time, and a show date is not.
+ * ───────────────────────────────────────────────────────────────────────────── */
+export const BUSINESS_TZ = "America/Los_Angeles";
+
+/* Today where Tyler is, as YYYY-MM-DD. en-CA because it formats that way.
+ *
+ * `now` is for tests and nothing else. Without it the only assertion possible
+ * was `todayLocal() === todayLocal()`, which is true however this is written —
+ * a mutant swapping Pacific for the container's UTC survived a full mutation
+ * run against it. With an instant passed in, the seven hours a day where the
+ * two disagree can be pinned exactly. */
+export const todayLocal = (now) =>
+  new Date(now === undefined ? Date.now() : now)
+    .toLocaleDateString("en-CA", { timeZone: BUSINESS_TZ });
+
+/* The last day of a month, without constructing a Date and hoping.
+   Day 0 of the NEXT month is the last day of this one, and Date.UTC keeps the
+   arithmetic out of the container's timezone entirely. */
+function lastDayOf(year, month) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/* `now` threads through to todayLocal, and exists for the same reason: without
+   it the year-to-date window can only be checked against whatever today
+   happens to be, which is true however the timezone is handled. */
+export function windowFor(period, anchor, now) {
+  const today = todayLocal(now);
+  /* An anchor that is not a date falls back to today rather than throwing:
+     the screen always sends one, and a report that refuses to load because a
+     query string was odd is worse than one that shows the current month. */
+  const a = /^\d{4}-\d{2}-\d{2}$/.test(String(anchor || "")) ? String(anchor) : today;
+  const y = Number(a.slice(0, 4));
+  const m = Number(a.slice(5, 7));
+  const pad = (n) => String(n).padStart(2, "0");
+
+  if (period === "month") {
+    return {
+      period: "month",
+      from: y + "-" + pad(m) + "-01",
+      to: y + "-" + pad(m) + "-" + pad(lastDayOf(y, m)),
+      label: new Date(Date.UTC(y, m - 1, 1))
+        .toLocaleDateString("en-US", { timeZone: "UTC", month: "long", year: "numeric" }),
+    };
+  }
+
+  if (period === "ytd") {
+    /* Year to date means to TODAY, not to the end of the anchor's month — and
+       for a past year it means the whole year, because "2025 to date" ended
+       some time ago. Without that, picking last year in the YTD view would
+       show a window ending on today's date in a year that is over, which is a
+       figure that looks precise and means nothing. */
+    const end = y === Number(today.slice(0, 4)) ? today : y + "-12-31";
+    return { period: "ytd", from: y + "-01-01", to: end,
+             label: y + " to date" + (y === Number(today.slice(0, 4)) ? "" : " (full year)") };
+  }
+
+  return { period: "year", from: y + "-01-01", to: y + "-12-31", label: String(y) };
+}
+
 export default async function handler(req, res) {
   const p = auth(req);
   if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
@@ -124,6 +199,273 @@ export default async function handler(req, res) {
           revenue: Math.round(items.reduce((t, i) => t + i.revenue, 0) * 100) / 100,
           distinctItems: items.length,
           notInCatalog: items.filter((i) => !i.inCatalog).length,
+        },
+      });
+    }
+
+    /* ═══════════════════════════════════════════════════════════════════════
+       THE REPORTS TAB
+       GET /api/reporting?report=1&period=month|year|ytd&anchor=YYYY-MM-DD
+
+       Total income, total expenses, income by client, income by department —
+       for a month, a year, or a year to date.
+
+       ───────────────────────────────────────────────────────────────────────
+       TWO INCOMES, SHOWN TOGETHER, BECAUSE THE GAP IS THE POINT
+
+       WON is the value of the jobs booked, counted in the period the job RAN.
+       INVOICED is what actually went out, counted when the invoice was sent.
+
+       They are different numbers about different things and they are supposed
+       to disagree: a December show invoiced in January sits in December on one
+       and January on the other. Showing one alone invites reading it as the
+       other. Showing both makes the interesting question visible — work that
+       was done and never billed shows up as a gap that does not close.
+
+       Neither is the books. Billing carries QuickBooks numbers and links;
+       QuickBooks is the record. What this screen knows that QuickBooks does
+       not is WHAT THE MONEY WAS FOR — which client, which department — because
+       QuickBooks has never heard of the catalog.
+
+       ───────────────────────────────────────────────────────────────────────
+       EVERY BREAKDOWN ADDS UP TO ITS HEADLINE, OR SAYS WHY NOT
+
+       A breakdown that quietly covers three quarters of the money is the one
+       failure this design is against: it looks complete, it is read as a
+       total, and every decision after that is made on a number that is wrong
+       by an unknown amount.
+
+       So each split carries its own remainder as a named line. Client splits
+       carry "(no client)". The department split carries an explicit
+       `noLineDetail` figure — the won money on jobs with no line items at all,
+       which is every historical import and any job quoted as a lump sum. The
+       parts always sum to the headline; the only question is how much of it
+       has a label.
+       ═══════════════════════════════════════════════════════════════════════ */
+    if (req.method === "GET" && q.report) {
+      const win = windowFor(String(q.period || "month"), q.anchor);
+      const { from, to } = win;
+
+      const [quotes, shows, invoices, expenses] = await Promise.all([
+        /* version.desc so the first row seen for a family is its newest won
+           version — the fold below depends on this ordering. */
+        supabaseRest("GET", "/quotes?" + WON +
+          "&select=id,family_id,version,name,client_id,event_id,start_date,total,data" +
+          "&order=version.desc&limit=5000", null),
+        supabaseRest("GET", "/shows?select=id,name,client&limit=5000", null),
+        supabaseRest("GET", "/billing_invoices?select=id,event_id,scheduled_amount," +
+          "actual_amount,actual_invoice_date,sent_at,void_at,payments&limit=5000", null),
+        supabaseRest("GET", "/expenses?deleted_at=is.null" +
+          "&select=id,show_id,spent_on,amount,category" +
+          "&spent_on=gte." + from + "&spent_on=lte." + to + "&limit=20000", null),
+      ]);
+
+      let clients = [];
+      try { clients = await supabaseRest("GET", "/clients?select=id,name&limit=5000", null) || []; }
+      catch (e) { /* names are a nicety; the totals are not */ }
+      const clientName = new Map();
+      for (const c of clients) clientName.set(c.id, String(c.name || ""));
+      const showClient = new Map();
+      for (const s of shows || []) showClient.set(s.id, String(s.client || ""));
+
+      /* ---- fold to one row per job ---------------------------------------
+         Summing quote ROWS reported a 60,000 job as 165,000 on the dashboard
+         once. The fallback key matters: a quote made before families existed
+         has a null family_id, and keying all of those under "null" would
+         collapse every one of them into a single job. */
+      const newest = {};
+      for (const qq of quotes || []) {
+        if (!qq) continue;
+        const key = qq.family_id || ("solo:" + qq.id);
+        if (!(key in newest)) newest[key] = qq;
+      }
+
+      const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+      const bump = (map, key, label, field, amount) => {
+        const e = map.get(key) || { key, label, won: 0, invoiced: 0, jobs: 0 };
+        e[field] += amount;
+        map.set(key, e);
+      };
+
+      const byClient = new Map();
+      /* The quote ids that count. The department split below MUST use this
+         exact set: show_items are stored per quote VERSION, so grouping them
+         without folding first is the same double-count one table over — and
+         the two figures would disagree with nothing on screen to say why. */
+      const countedQuoteIds = new Set();
+
+      let won = 0, wonJobs = 0, undatedJobs = 0, undatedWon = 0;
+
+      for (const key of Object.keys(newest)) {
+        const qq = newest[key];
+        const d = String(qq.start_date || "");
+        const amount = Number(qq.total) || 0;
+        if (!d) {
+          /* Counted OUT and reported, never dropped. A figure that is silently
+             missing is worse than one that is visibly missing. */
+          undatedJobs += 1; undatedWon += amount; continue;
+        }
+        if (d < from || d > to) continue;
+
+        won += amount; wonJobs += 1;
+        countedQuoteIds.add(qq.id);
+
+        const cname = (qq.client_id && clientName.get(qq.client_id)) ||
+                      showClient.get(qq.event_id) || "";
+        const ck = cname || "(no client)";
+        bump(byClient, ck, ck, "won", amount);
+        const ce = byClient.get(ck); ce.jobs += 1;
+      }
+
+      /* ---- invoiced -------------------------------------------------------
+         SENT, not scheduled: an invoice that exists in the plan and has not
+         gone out has not been invoiced, and counting it would make the gap
+         against `won` close on paper while nothing had happened.
+
+         Dated by actual_invoice_date, falling back to the date it was sent —
+         an invoice raised in QuickBooks and marked sent here may never get the
+         explicit date filled in, and dropping those would understate the
+         figure silently. */
+      let invoiced = 0, invoicedCount = 0, collected = 0;
+      const showOf = new Map();
+      for (const s of shows || []) showOf.set(s.id, s);
+
+      for (const inv of invoices || []) {
+        if (!inv || inv.void_at) continue;
+        if (!inv.sent_at) continue;
+        const d = String(inv.actual_invoice_date || String(inv.sent_at).slice(0, 10) || "");
+        if (!d || d < from || d > to) continue;
+
+        /* The real figure when there is one, the plan when there is not. */
+        const amount = inv.actual_amount == null
+          ? Number(inv.scheduled_amount) || 0
+          : Number(inv.actual_amount) || 0;
+
+        invoiced += amount; invoicedCount += 1;
+        const pays = Array.isArray(inv.payments) ? inv.payments : [];
+        collected += pays.reduce((t, x) => t + (Number(x && x.amount) || 0), 0);
+
+        const s = showOf.get(inv.event_id);
+        const cname = (s && String(s.client || "")) || "";
+        const ck = cname || "(no client)";
+        bump(byClient, ck, ck, "invoiced", amount);
+      }
+
+      /* ---- expenses -------------------------------------------------------
+         deleted_at is null is not optional: expenses are soft-deleted, so
+         without it a receipt Tyler removed still counts against the month. */
+      let expTotal = 0, expShow = 0, expOverhead = 0;
+      const byCategory = new Map();
+      for (const e of expenses || []) {
+        const amount = Number(e.amount) || 0;
+        expTotal += amount;
+        if (e.show_id) expShow += amount; else expOverhead += amount;
+        const c = String(e.category || "") || "(uncategorised)";
+        byCategory.set(c, (byCategory.get(c) || 0) + amount);
+      }
+
+      /* ---- by department, with the items inside it ------------------------ */
+      let items = [];
+      if (countedQuoteIds.size) {
+        /* Fetched by the folded quote ids rather than by date. show_items
+           carry a denormalised start_date, but filtering on it would quietly
+           include lines from a superseded version of the same job. */
+        const ids = [...countedQuoteIds];
+        items = [];
+        for (let i = 0; i < ids.length; i += 100) {
+          const chunk = ids.slice(i, i + 100);
+          const got = await supabaseRest(
+            "GET", "/show_items?quote_id=in.(" + chunk.join(",") + ")" +
+              "&select=quote_id,catalog_id,name,department,kind,extended&limit=20000", null);
+          items = items.concat(got || []);
+        }
+      }
+
+      const byDept = new Map();
+      let attributed = 0;
+      const quotesWithLines = new Set();
+      for (const it of items) {
+        /* Sections and headings carry no money and would show up as a
+           department full of zeroes. */
+        if (it.kind === "section" || it.kind === "note" || it.kind === "heading") continue;
+        const amount = Number(it.extended) || 0;
+        const dept = String(it.department || "") || "Unassigned";
+        const d = byDept.get(dept) || { department: dept, amount: 0, items: new Map() };
+        d.amount += amount;
+        const ik = it.catalog_id || ("free:" + String(it.name || "").toLowerCase());
+        const ie = d.items.get(ik) || { key: ik, name: String(it.name || "Unnamed"), amount: 0, count: 0 };
+        ie.amount += amount; ie.count += 1;
+        d.items.set(ik, ie);
+        byDept.set(dept, d);
+        attributed += amount;
+        quotesWithLines.add(it.quote_id);
+      }
+
+      /* THE RECONCILING LINE. Won money on jobs that have no line detail at
+         all — every historical import, and anything quoted as a lump sum. It
+         is reported whether or not it is zero, because "the breakdown covers
+         everything" and "the breakdown covers what it covers" must look
+         different on screen. */
+      let noLineDetail = 0, jobsWithoutLines = 0;
+      for (const key of Object.keys(newest)) {
+        const qq = newest[key];
+        if (!countedQuoteIds.has(qq.id)) continue;
+        if (quotesWithLines.has(qq.id)) continue;
+        noLineDetail += Number(qq.total) || 0;
+        jobsWithoutLines += 1;
+      }
+
+      /* And the difference between what the lines add up to and what the jobs
+         carrying those lines were won at — discounts, rounding, a total edited
+         after the lines were set. Named rather than absorbed, so the column
+         still sums to the headline. */
+      let linedJobsWon = 0;
+      for (const key of Object.keys(newest)) {
+        const qq = newest[key];
+        if (quotesWithLines.has(qq.id)) linedJobsWon += Number(qq.total) || 0;
+      }
+      const lineVariance = round2(linedJobsWon - attributed);
+
+      return json(res, 200, {
+        ok: true,
+        window: win,
+        income: {
+          won: round2(won), jobs: wonJobs,
+          invoiced: round2(invoiced), invoices: invoicedCount,
+          collected: round2(collected),
+          /* Work done in this window that has not been billed in it. Not a
+             debt figure — the two are dated differently on purpose — but the
+             number worth looking at twice. */
+          gap: round2(won - invoiced),
+          undatedJobs, undatedWon: round2(undatedWon),
+        },
+        expenses: {
+          total: round2(expTotal), onShows: round2(expShow), overhead: round2(expOverhead),
+          byCategory: [...byCategory.entries()]
+            .map(([category, amount]) => ({ category, amount: round2(amount) }))
+            .sort((a, b) => b.amount - a.amount),
+        },
+        net: round2(won - expTotal),
+        byClient: [...byClient.values()]
+          .map((c) => ({ ...c, won: round2(c.won), invoiced: round2(c.invoiced) }))
+          .sort((a, b) => b.won - a.won || b.invoiced - a.invoiced),
+        byDepartment: [...byDept.values()]
+          .map((d) => ({
+            department: d.department,
+            amount: round2(d.amount),
+            items: [...d.items.values()]
+              .map((i) => ({ ...i, amount: round2(i.amount) }))
+              .sort((a, b) => b.amount - a.amount),
+          }))
+          .sort((a, b) => b.amount - a.amount),
+        /* What the department split does NOT cover, so the two can be read
+           together and always add to `income.won`. */
+        coverage: {
+          attributed: round2(attributed),
+          lineVariance,
+          noLineDetail: round2(noLineDetail),
+          jobsWithoutLines,
+          jobsWithLines: quotesWithLines.size,
         },
       });
     }

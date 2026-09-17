@@ -23,6 +23,7 @@
 //   what it looks like it means.
 import { supabaseRest, sendBrevoBatch, logActivity } from "./_lib.js";
 import { buildPacket, SECTION_KEYS } from "./_packet.js";
+import { ackLink, APP_ORIGIN } from "./_call.js";
 
 /* Brevo takes 20MB per request INCLUDING the base64 attachment, which is
    about a third bigger than the bytes. Vercel caps a function response at
@@ -75,7 +76,11 @@ export function audience(showData) {
        look broken. */
     if (seen.has(key)) continue;
     seen.add(key);
-    withEmail.push({ email: key, name: str(c.name, 200), position: str(c.position, 120) });
+    /* `id` rides along now because each person's "Got it" link is signed for
+       their crew id. Note it is the FIRST of their rows that wins: one human
+       holding two positions gets one email and confirms once, which is what
+       the dedupe above already decided. */
+    withEmail.push({ id: str(c.id, 100), email: key, name: str(c.name, 200), position: str(c.position, 120) });
   }
   return { withEmail, withoutEmail };
 }
@@ -90,7 +95,10 @@ export function applyFilter(withEmail, requested) {
   };
 }
 
-export function bodyHtml({ showName, message, sections, stamp, pages }) {
+/* `ackUrl` is one person's signed "Got it" link, so this is now built PER
+   RECIPIENT rather than once for the batch. Everything else in it is the same
+   for everybody; only the button differs. */
+export function bodyHtml({ showName, message, sections, stamp, pages, ackUrl }) {
   const lines = String(message || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
   const paras = lines.length
     ? lines.map((p) => '<p style="font-size:15px;line-height:1.6;margin:0 0 14px">' +
@@ -107,9 +115,22 @@ export function bodyHtml({ showName, message, sections, stamp, pages }) {
       ? '<p style="font-size:14px;margin:0 0 6px;color:#444"><b>Attached (' + pages +
         " page" + (pages === 1 ? "" : "s") + "):</b></p>" + list
       : "") +
+    /* THE CONFIRMATION BUTTON.
+       A link, not a form — an email client will not post one. It lands on a
+       page that shows their call and has the actual button on it, because a
+       scanner that pre-fetches this URL must not be able to confirm anything.
+       See the block comment in api/call-ack.js. */
+    (ackUrl
+      ? '<div style="margin:22px 0 4px"><a href="' + esc(ackUrl) + '" ' +
+        'style="display:inline-block;background:#111;color:#fff;text-decoration:none;' +
+        'font-size:16px;font-weight:600;padding:13px 26px;border-radius:9px">Got it</a>' +
+        '<p style="font-size:12px;color:#888;margin:8px 0 0">' +
+        "Tap to confirm you've seen your call.</p></div>"
+      : "") +
     '<p style="font-size:12px;color:#777;margin:18px 0 0;border-top:1px solid #e5e5e5;padding-top:12px">' +
     "This packet is a snapshot as of " + esc(stamp) +
-    ". Open Crew Call for the current version.</p></div>";
+    '. Open <a href="' + esc(APP_ORIGIN) + '" style="color:#555">Touchstone Command</a> ' +
+    "for the latest and greatest.</p></div>";
 }
 
 /* A packet-build failure, named.
@@ -184,14 +205,23 @@ export async function deliverMessage({ show, data, subject, message, sections, r
   const base64 = packet ? Buffer.from(packet.bytes).toString("base64") : null;
   const fileName = packetFileName(showName);
 
-  const html = bodyHtml({
+  /* ONE BODY PER PERSON, because the "Got it" button is signed for one crew
+     id. sendBrevoBatch already sends a messageVersion per recipient, each with
+     its own htmlContent, so this costs nothing extra on the wire — the packet
+     still uploads once, at the top level, for the whole batch.
+
+     Somebody with no crew id on their row gets the email without a button
+     rather than a button that cannot work. That happens on old shows whose
+     crew rows predate ids. */
+  const bodyFor = (c) => bodyHtml({
     showName, message,
     sections: packet ? packet.sections : [],
     stamp, pages: packet ? packet.pages : 0,
+    ackUrl: c.id ? ackLink(show.id, c.id) : "",
   });
 
   const { sent, failed, reason } = await sendBrevoBatch(
-    chosen.map((c) => ({ to: c.email, toName: c.name, subject, html })),
+    chosen.map((c) => ({ to: c.email, toName: c.name, subject, html: bodyFor(c) })),
     packet ? { attachment: [{ content: base64, name: fileName }] } : {},
   );
 
