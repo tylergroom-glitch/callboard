@@ -20,13 +20,24 @@
 //   an "as of" stamp on every page so a packet forwarded three days later
 //   cannot be mistaken for current.
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { BRAND, LOGO_PNG_B64 } from "./_brand.js";
 
 export const PAGE = { w: 612, h: 792 };          // US Letter, in points
 const M = { top: 54, bottom: 52, left: 46, right: 46 };
 const INK = rgb(0.09, 0.10, 0.13);
 const DIM = rgb(0.42, 0.45, 0.52);
 const RULE = rgb(0.80, 0.82, 0.86);
-const BAND = rgb(0.95, 0.96, 0.97);
+
+/* Brand colours, from api/_brand.js, which records the measured contrast of
+   each against white. The short version: BRAND_RULE is the logo blue and is
+   never allowed to carry words. */
+const BRAND_INK = rgb(BRAND.ink.r, BRAND.ink.g, BRAND.ink.b);
+const BRAND_MID = rgb(BRAND.mid.r, BRAND.mid.g, BRAND.mid.b);
+const BRAND_RULE = rgb(BRAND.rule.r, BRAND.rule.g, BRAND.rule.b);
+const BAND = rgb(BRAND.tint.r, BRAND.tint.g, BRAND.tint.b);
+
+/* The mark, and the space it occupies in the header. */
+const LOGO_H = 24;
 
 /* WinAnsi is what the standard fonts can encode. A smart quote pasted out of
    Word, an en dash, an emoji in a note — pdf-lib THROWS on any of them rather
@@ -51,10 +62,23 @@ export async function newDoc() {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
-  return { doc, font, bold };
+
+  /* The logo is embedded ONCE per document — pdf-lib reuses the same image
+     object on every page, so a ten-page packet carries 10 KB of logo, not 100.
+     
+     And it is allowed to fail. If the bytes are ever corrupted by an edit to
+     _brand.js, the packet still builds with the wordmark alone. Losing a
+     picture is a cosmetic problem; a send that 500s over one is not. */
+  let logo = null;
+  try {
+    logo = await doc.embedPng(Buffer.from(LOGO_PNG_B64, "base64"));
+  } catch (e) {
+    console.log("[pdf] logo not embedded: " + ((e && e.message) || e));
+  }
+  return { doc, font, bold, logo };
 }
 
-export function makeWriter({ doc, font, bold }, { title, subtitle, stamp }) {
+export function makeWriter({ doc, font, bold, logo }, { title, subtitle, stamp }) {
   const st = { page: null, y: 0, pages: 0, section: "" };
 
   const width = (t, size, f) => f.widthOfTextAtSize(ascii(t), size);
@@ -66,23 +90,65 @@ export function makeWriter({ doc, font, bold }, { title, subtitle, stamp }) {
     drawPageHead();
   }
 
+  /* The masthead, on every page.
+   *
+   *     [mark]  TOUCHSTONE CREATIVE GROUP          Crew Brief
+   *             Patient Square Annual Summit
+   *             Event Guild  |  Salt Palace
+   *     ================================================  (brand rule)
+   *
+   * WHY IT IS ON EVERY PAGE AND NOT JUST THE FIRST
+   *   This document is read on a phone, scrolled to somewhere in the middle,
+   *   and forwarded. Any page of it should say who sent it and what show it
+   *   is for without scrolling back. The same reasoning already put the "as
+   *   of" stamp on every page.
+   *
+   * The wordmark is letterspaced by hand — pdf-lib has no tracking control, so
+   * each character is drawn at a computed x. It is four words at 6.5pt once
+   * per page; the cost is nothing and it is the difference between a logo
+   * with text next to it and something that looks like a letterhead. */
+  function drawWordmark(p, x, y) {
+    const size = 6.5;
+    const track = 1.15;
+    let cx = x;
+    for (const ch of ascii(BRAND.short)) {
+      p.drawText(ch, { x: cx, y, size, font: bold, color: BRAND_MID });
+      cx += bold.widthOfTextAtSize(ch, size) + track;
+    }
+    return cx - x;
+  }
+
   function drawPageHead() {
     const p = st.page;
-    p.drawText(ascii(title), { x: M.left, y: st.y, size: 13, font: bold, color: INK });
-    if (subtitle) {
-      p.drawText(ascii(subtitle), {
-        x: M.left, y: st.y - 14, size: 9, font, color: DIM,
-      });
+    const top = st.y;
+    let textX = M.left;
+
+    if (logo) {
+      const w = (logo.width / logo.height) * LOGO_H;
+      p.drawImage(logo, { x: M.left, y: top - LOGO_H + 4, width: w, height: LOGO_H });
+      textX = M.left + w + 9;
     }
+
+    drawWordmark(p, textX, top - 4);
+    p.drawText(ascii(title), { x: textX, y: top - 18, size: 12.5, font: bold, color: INK });
+    if (subtitle) {
+      p.drawText(ascii(subtitle), { x: textX, y: top - 30, size: 8.5, font, color: DIM });
+    }
+
     /* The section name rides the top-right of every page, so a page torn off
        or scrolled to on a phone still says what it is. */
     if (st.section) {
       const w = width(st.section, 9, bold);
-      p.drawText(ascii(st.section), { x: PAGE.w - M.right - w, y: st.y, size: 9, font: bold, color: DIM });
+      p.drawText(ascii(st.section), { x: PAGE.w - M.right - w, y: top - 4, size: 9, font: bold, color: BRAND_INK });
     }
-    st.y -= 26;
-    p.drawLine({ start: { x: M.left, y: st.y }, end: { x: PAGE.w - M.right, y: st.y }, thickness: 0.8, color: RULE });
-    st.y -= 16;
+
+    st.y = top - 40;
+    /* Two rules, one heavy and brand-coloured over one hairline. Reads as a
+       deliberate letterhead edge rather than a table border, and both survive
+       greyscale as two different greys. */
+    p.drawLine({ start: { x: M.left, y: st.y }, end: { x: PAGE.w - M.right, y: st.y }, thickness: 2, color: BRAND_RULE });
+    p.drawLine({ start: { x: M.left, y: st.y - 2.6 }, end: { x: PAGE.w - M.right, y: st.y - 2.6 }, thickness: 0.5, color: RULE });
+    st.y -= 18;
   }
 
   const room = (need) => st.y - need >= M.bottom;
@@ -117,13 +183,17 @@ export function makeWriter({ doc, font, bold }, { title, subtitle, stamp }) {
 
   function heading(text) {
     ensure(34);
-    st.page.drawText(ascii(text), { x: M.left, y: st.y - 11, size: 12, font: bold, color: INK });
+    st.page.drawText(ascii(text), { x: M.left, y: st.y - 11, size: 12, font: bold, color: BRAND_INK });
     st.y -= 22;
   }
 
+  /* Brand blue rather than grey. The old grey subheading sat at the same
+     visual weight as the table header band right beneath it, so "Venue",
+     "Contacts" and "Crew" did not read as the structure of the page — they
+     read as more table furniture. */
   function subheading(text) {
     ensure(24);
-    st.page.drawText(ascii(text), { x: M.left, y: st.y - 9, size: 10, font: bold, color: DIM });
+    st.page.drawText(ascii(text), { x: M.left, y: st.y - 9, size: 10, font: bold, color: BRAND_MID });
     st.y -= 18;
   }
 
@@ -165,7 +235,7 @@ export function makeWriter({ doc, font, bold }, { title, subtitle, stamp }) {
       st.page.drawRectangle({ x: M.left, y: st.y - h, width: avail, height: h, color: BAND });
       let x = M.left;
       cols.forEach((c, i) => {
-        st.page.drawText(ascii(c.label), { x: x + pad, y: st.y - h + pad + 1, size, font: bold, color: INK });
+        st.page.drawText(ascii(c.label), { x: x + pad, y: st.y - h + pad + 1, size, font: bold, color: BRAND_INK });
         x += widths[i];
       });
       st.y -= h;
@@ -211,10 +281,23 @@ export function makeWriter({ doc, font, bold }, { title, subtitle, stamp }) {
      must not read as Thursday's packet. */
   function finish() {
     const pages = doc.getPages();
+    const y = M.bottom - 24;
     pages.forEach((p, i) => {
-      const line = ascii(stamp + "   ·   page " + (i + 1) + " of " + pages.length);
-      const w = font.widthOfTextAtSize(line, 8);
-      p.drawText(line, { x: (PAGE.w - w) / 2, y: M.bottom - 24, size: 8, font, color: DIM });
+      /* A hairline above the footer so it reads as furniture, not as the last
+         line of the content. */
+      p.drawLine({ start: { x: M.left, y: y + 12 }, end: { x: PAGE.w - M.right, y: y + 12 },
+                   thickness: 0.5, color: RULE });
+      /* Who sent it, left. */
+      p.drawText(ascii(BRAND.name), { x: M.left, y, size: 8, font: bold, color: BRAND_MID });
+      /* WHEN it was true, centre. On every page on purpose: a packet forwarded
+         on Thursday must not read as Thursday's packet. */
+      const mid = ascii(stamp);
+      const mw = font.widthOfTextAtSize(mid, 8);
+      p.drawText(mid, { x: (PAGE.w - mw) / 2, y, size: 8, font, color: DIM });
+      /* Where you are, right. */
+      const right = ascii("page " + (i + 1) + " of " + pages.length);
+      const rw = font.widthOfTextAtSize(right, 8);
+      p.drawText(right, { x: PAGE.w - M.right - rw, y, size: 8, font, color: DIM });
     });
   }
 
