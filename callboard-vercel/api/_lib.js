@@ -433,6 +433,21 @@ export async function sendBrevoBatch(messages, opts = {}) {
         headers: { "api-key": BREVO_API_KEY, "Content-Type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           sender: { email: senderEmail, name: senderName },
+          /* TOP-LEVEL subject AND htmlContent ARE NOT OPTIONAL.
+             Brevo's reference says both are "Required when templateId is not
+             provided" — at the TOP level — and the per-version copies only
+             OVERRIDE them. This payload had them inside the versions and
+             nowhere else, so Brevo refused the whole request at validation.
+             The refusal never became a message, which is why nothing appeared
+             in the Brevo logs, why it was always 0 sent and never a partial,
+             and why every other email in the app worked: sendBrevoEmail below
+             sends a single recipient with both fields at the top level.
+             Taken from the first message because every version in a crew send
+             carries the same subject and body; the per-version copies stay so
+             that stops being true safely. */
+          subject: chunk[0].subject,
+          htmlContent: chunk[0].html,
+          ...(chunk[0].text ? { textContent: chunk[0].text } : {}),
           ...(attachment ? { attachment } : {}),
           // A version per person: own recipient, own subject, own body.
           messageVersions: chunk.map((m) => ({
