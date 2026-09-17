@@ -47,6 +47,29 @@ const nonEmpty = (row, keys) => keys.some((k) => s(row[k]));
  * So: not an array -> empty. Entries that are not objects -> dropped. */
 const rowsOf = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
 
+/* "2026-09-24" -> "Thu 24 Sep".
+ *
+ * Built from the STRING's own parts, never by parsing it with Date(). Passing
+ * "2026-09-24" to the Date constructor makes it midnight UTC, which on a
+ * server west of Greenwich is the evening BEFORE — so a check-in date would
+ * print one day early for half the world and be right in testing. Constructing
+ * from components is local-time by definition and cannot slip.
+ *
+ * An unparseable value comes back unchanged rather than as "Invalid Date":
+ * a date somebody typed oddly should still show what they typed. */
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtDay(v) {
+  const t = s(v);
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(t);
+  if (!m) return t;
+  const y = +m[1], mo = +m[2], d = +m[3];
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return t;
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getMonth() !== mo - 1) return t;   // 31 Feb and friends
+  return DOW[dt.getDay()] + " " + d + " " + MON[mo - 1];
+}
+
 /* Days are sorted by DATE where there is one and by their stored order where
    there is not. A packet whose schedule is out of order is worse than no
    packet — somebody turns up on the wrong day. */
@@ -69,7 +92,68 @@ function brief(w, ev) {
     w.gap(6);
   }
 
-  const contacts = rowsOf(ev.contacts).filter((c) => nonEmpty(c, ["name", "role", "phone", "email"]));
+  /* ---- where everyone is sleeping ----
+     Directly under the venue, because the two addresses somebody needs before
+     they need anything else are where the show is and where their bed is.
+
+     WHAT IS DELIBERATELY NOT HERE: flight confirmation numbers.
+     A record locator plus a surname is enough to view, change or cancel
+     somebody's flight on most airline sites — and this document goes to the
+     whole crew and gets forwarded from there. The flight table below carries
+     the airline, the number and the times, which is everything you need to
+     meet someone off a plane, and nothing that lets a stranger rebook them.
+     Hotel confirmations DO appear: they are what a front desk asks for, and
+     the blast radius of one is a room, not a journey. Each person's own
+     flight locator is on their My Call screen, which shows them theirs and
+     nobody else's. */
+  const it = (ev.itinerary && typeof ev.itinerary === "object") ? ev.itinerary : {};
+  const stays = rowsOf(it.stays).filter((r) => nonEmpty(r, ["crewName", "checkIn", "checkOut", "confirmation"]));
+  const flights = rowsOf(it.flights).filter((r) => nonEmpty(r, ["crewName", "date", "airport", "flightNo"]));
+  const hasHotel = s(it.hotelName) || s(it.hotelAddress);
+
+  if (hasHotel || stays.length || flights.length) {
+    w.subheading("Hotel");
+    if (s(it.hotelName)) w.para(it.hotelName, { bold: true, gap: 2 });
+    if (s(it.hotelAddress)) w.para(it.hotelAddress, { gap: 2 });
+    if (!hasHotel) w.note("No hotel has been named on the itinerary.");
+    w.gap(6);
+
+    if (stays.length) {
+      w.table(
+        [{ label: "Name", key: "name", w: 2.4 }, { label: "Check in", key: "in", w: 1.5 },
+         { label: "Check out", key: "out", w: 1.5 }, { label: "Confirmation", key: "conf", w: 1.6 },
+         { label: "Notes", key: "notes", w: 2.4, dim: true }],
+        stays.map((r) => ({
+          name: s(r.crewName), in: fmtDay(r.checkIn), out: fmtDay(r.checkOut),
+          conf: s(r.confirmation), notes: s(r.notes),
+        })),
+      );
+    }
+
+    if (flights.length) {
+      w.para("Flights", { size: 9, bold: true, gap: 2 });
+      w.table(
+        [{ label: "Name", key: "name", w: 2.2 }, { label: "Date", key: "date", w: 1.4 },
+         { label: "Route", key: "route", w: 1.6 }, { label: "Flight", key: "no", w: 1.1 },
+         { label: "Dep", key: "dep", w: 0.9 }, { label: "Arr", key: "arr", w: 0.9 },
+         { label: "Notes", key: "notes", w: 1.9, dim: true }],
+        flights.map((r) => ({
+          name: s(r.crewName), date: fmtDay(r.date), route: s(r.airport),
+          no: s(r.flightNo), dep: s(r.depart), arr: s(r.arrive), notes: s(r.notes),
+        })),
+      );
+    }
+  }
+
+  /* A row needs someone IN it, not just a job title.
+     Every new show is created with three placeholder contacts — Production
+     Manager, Venue CSM, Client — with the role filled in and the name, phone
+     and email blank, waiting to be completed. The old filter accepted a row
+     with any of the four fields set, so those placeholders rendered as three
+     lines of nothing but a role: worse than an absent Contacts section,
+     because it looks like the information was supposed to be there and got
+     lost. A contact you cannot contact is not a contact. */
+  const contacts = rowsOf(ev.contacts).filter((c) => nonEmpty(c, ["name", "phone", "email"]));
   if (contacts.length) {
     w.subheading("Contacts");
     w.table(
@@ -114,7 +198,8 @@ function brief(w, ev) {
     );
   }
 
-  if (!contacts.length && !crew.length && !s(venue.name) && !s(venue.address)) {
+  if (!contacts.length && !crew.length && !s(venue.name) && !s(venue.address)
+      && !hasHotel && !stays.length && !flights.length) {
     w.note("Nothing has been filled in on the Brief yet.");
   }
 }
