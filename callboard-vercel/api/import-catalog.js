@@ -74,7 +74,7 @@ export default async function handler(req, res) {
     const parsed = await claudeExtract({ content: [
       { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.pdf } },
       { type: "text", text: PROMPT },
-    ], maxTokens: 8192, what: "that price list" });
+    ], what: "that price list" });
 
     if (!Array.isArray(parsed.items))
       return json(res, 502, { error: "Unexpected response from the AI. Try again." });

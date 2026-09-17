@@ -447,3 +447,67 @@ export function readTable(text) {
 
   return { jobs, headers: Object.keys(map), unknown };
 }
+
+/* ---------------------------------------------------------------------------
+   Matching a name against the directory.
+
+   These live HERE, beside dupKey, rather than in the route that uses them:
+   api/import-jobs.js needs them too, and one serverless route importing
+   another is how you end up with two copies of a handler in a bundle. Same
+   reason api/_items.js exists.
+
+   nameKey is NOT normName above, and they must not be merged. normName is
+   job identity, where every word counts. nameKey is company identity, where
+   the legal suffix does not: "TPG Global, Inc." and "TPG Global" are one
+   company. Applying nameKey to a job name would strip a literal "Co" out of
+   a title and quietly make two different jobs look like one.
+   --------------------------------------------------------------------------- */
+/* Names, for comparing. Case, punctuation and the legal suffix all go: "TPG
+   Global, Inc." and "TPG Global" are one company, and a directory with both in
+   it is a directory that reports half the year's revenue twice. */
+const LEGAL = /\b(inc|inc\.|incorporated|llc|l\.l\.c|ltd|limited|corp|corporation|co|company|lp|llp|plc|gmbh)\b/g;
+export function nameKey(v) {
+  return String(v == null ? "" : v)
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(LEGAL, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+const tokens = (v) => nameKey(v).split(" ").filter((t) => t.length > 1);
+
+/* How alike two names are, 0..1. Not a fuzzy string distance — token overlap,
+   which is what actually distinguishes "Four Seasons San Francisco" from "Four
+   Seasons Palo Alto" (0.75, so a suggestion) and from "Hilton Union Square"
+   (0, so no suggestion at all). A character-level distance rates the two Four
+   Seasons far closer than they deserve and would happily merge them. */
+export function similarity(a, b) {
+  const A = tokens(a), B = tokens(b);
+  if (!A.length || !B.length) return 0;
+  const setB = new Set(B);
+  const shared = A.filter((t) => setB.has(t)).length;
+  return shared / Math.max(A.length, B.length);
+}
+
+/* The best candidate in a directory, with how confident it is.
+   NOTHING IS EVER MATCHED AUTOMATICALLY — this only decides which row the
+   review screen offers first, and Tyler says yes or no to every one. The
+   threshold is therefore about not wasting his attention, not about safety. */
+export function bestMatch(name, rows) {
+  const key = nameKey(name);
+  if (!key) return null;
+  let best = null;
+  for (const r of rows || []) {
+    const s = nameKey(r.name) === key ? 1 : similarity(name, r.name);
+    if (s > 0 && (!best || s > best.score)) best = { id: r.id, name: r.name || "", score: s };
+  }
+  if (!best || best.score < 0.5) return null;
+  return {
+    ...best,
+    /* Said in words, because "0.67" on a screen is not a reason to click yes. */
+    why: best.score === 1 ? "Same name." : "Close to this one.",
+    exact: best.score === 1,
+  };
+}
+

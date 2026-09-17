@@ -42,7 +42,8 @@
 //   times because nothing folded the versions — arriving by a different road.
 import crypto from "node:crypto";
 import { json, readBody, auth, isAdmin, supabaseRest, supabaseProfile, logActivity } from "./_lib.js";
-import { readTable, cleanJob, dupKey, money, MAX_ROWS } from "./_jobs.js";
+import { readTable, cleanJob, dupKey, nameKey, money, MAX_ROWS } from "./_jobs.js";
+import { rowsForQuote } from "./_items.js";
 
 const BATCHES = "/import_batches";
 
@@ -137,12 +138,58 @@ function summarise(rows) {
    can be lost halfway through a function that times out, and then there are
    rows nothing knows how to take back. Asking the database what it holds
    cannot go stale. */
-const stamp = (batchId, who) => ({
+const stamp = (batchId, who, source) => ({
   batch: batchId,
   at: new Date().toISOString(),
   by: who || null,
-  source: "paste",
+  source: source === "pdf" ? "pdf" : "paste",
 });
+
+const str = (v, n) => String(v == null ? "" : v).trim().slice(0, n);
+
+/* A client or venue the caller wants created. Only the fields the directory
+   tables actually have, and only when there is a name — a nameless directory
+   row is a row nobody can ever find again. */
+function dirRow(v) {
+  if (!v || typeof v !== "object") return null;
+  const name = str(v.name, 200);
+  if (!name) return null;
+  return {
+    name,
+    address: str(v.address, 300),
+    city: str(v.city, 120),
+    state: str(v.state, 40),
+    zip: str(v.zip, 20),
+  };
+}
+
+/* Quote lines off a read PDF.
+ *
+ * THE TOTAL IS NOT TAKEN FROM THESE. It is the grand total printed on the
+ * quote, which is what the client agreed to. The lines are detail hung
+ * underneath it, and if they disagree the review screen says so rather than
+ * either one silently winning. So nothing here can change a job's money. */
+function cleanLines(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const l of v.slice(0, 400)) {
+    if (!l || typeof l !== "object") continue;
+    const name = str(l.name, 300);
+    if (!name) continue;
+    const kind = str(l.kind, 20) === "category" ? "category" : "item";
+    out.push({
+      id: str(l.id, 40) || ("l" + (out.length + 1)),
+      kind,
+      name,
+      department: str(l.department, 60) || "Misc",
+      qty: Number(l.qty) > 0 ? Math.round(Number(l.qty) * 100) / 100 : 1,
+      days: Number(l.days) > 0 ? Math.round(Number(l.days) * 100) / 100 : 1,
+      rate: Number.isFinite(Number(l.rate)) ? money(Number(l.rate)) : 0,
+      discount: 0,
+    });
+  }
+  return out;
+}
 
 export default async function handler(req, res) {
   const p = auth(req);
@@ -221,7 +268,22 @@ export default async function handler(req, res) {
         /* `ok` is what markDuplicates reads to decide a row is worth checking.
            cleanJob does not set it — it returns a job or a reason — so it is
            set here, at the one place that knows the row survived validation. */
-        cleaned.push({ ...out.job, ok: true, force: r && r.force === true, line: (r && r.line) || 0 });
+        cleaned.push({
+          ...out.job, ok: true, force: r && r.force === true, line: (r && r.line) || 0,
+          /* Carried through untouched by cleanJob, which is about the job's own
+             fields. Each is validated where it is used, below. */
+          clientId: str(r && r.clientId, 60),
+          venueId: str(r && r.venueId, 60),
+          newClient: dirRow(r && r.newClient),
+          newVenue: dirRow(r && r.newVenue),
+          lines: cleanLines(r && r.lines),
+          quoteNumber: str(r && r.quoteNumber, 60),
+          /* Sent for display whether the venue is an existing one or a new
+             one, so the show's Brief panel is filled either way. The id is
+             what links; these two are what a person reads. */
+          venueName: str(r && r.venueName, 200),
+          venueAddress: str(r && r.venueAddress, 300),
+        });
       }
       if (!cleaned.length)
         return json(res, 400, { error: "None of those rows could be read.", rejected });
@@ -249,7 +311,71 @@ export default async function handler(req, res) {
 
       const batchId = crypto.randomUUID();
       const who = await actorName(p);
-      const mark = stamp(batchId, who);
+      const mark = stamp(batchId, who, b && b.source);
+
+      /* ---- directory rows the jobs are about to point at ------------------
+         Created BEFORE the shows, because a quote carries client_id and
+         venue_id and there is no second pass to come back and fill them in.
+
+         DEDUPED WITHIN THE BATCH BY NAME. Twelve PDFs for the same new client
+         are one client — importing twelve identical companies and leaving
+         Tyler to merge them by hand is the precise failure that made him ask
+         for "if client is not in the system, add new client" in the first
+         place. The key is the same one the review screen matched on, so what
+         is created agrees with what he was shown. */
+      const madeClients = [];
+      const madeVenues = [];
+      const newBy = (list, row, table, shape) => {
+        const k = nameKey(row.name);
+        const hit = list.find((x) => x.key === k);
+        if (hit) return hit.id;
+        const id = crypto.randomUUID();
+        list.push({ key: k, id, row: { id, ...shape(row) } });
+        return id;
+      };
+      for (const j of going) {
+        if (!j.clientId && j.newClient) {
+          j.clientId = newBy(madeClients, j.newClient, "clients", (r) => ({
+            name: r.name,
+            billing_address: [r.address, [r.city, r.state].filter(Boolean).join(" "), r.zip]
+              .filter(Boolean).join(", ") || null,
+          }));
+        }
+        if (!j.venueId && j.newVenue) {
+          j.venueId = newBy(madeVenues, j.newVenue, "venues", (r) => ({
+            name: r.name,
+            address: r.address || null,
+            city: r.city || null,
+            state: r.state || null,
+            zip: r.zip || null,
+          }));
+        }
+      }
+      if (madeClients.length) {
+        try { await supabaseRest("POST", "/clients", madeClients.map((x) => x.row), "return=minimal"); }
+        catch (e) {
+          return json(res, 500, {
+            error: "The new clients couldn't be saved, so nothing was added. " + ((e && e.message) || ""),
+          });
+        }
+      }
+      if (madeVenues.length) {
+        try { await supabaseRest("POST", "/venues", madeVenues.map((x) => x.row), "return=minimal"); }
+        catch (e) {
+          /* Undo the clients: they were minted seconds ago and nothing has
+             seen them. Leaving them would give Tyler a directory full of
+             companies with no jobs against them and no explanation. */
+          if (madeClients.length) {
+            try {
+              await supabaseRest("DELETE",
+                "/clients?id=in.(" + madeClients.map((x) => x.id).join(",") + ")", null);
+            } catch (e2) { /* reported either way */ }
+          }
+          return json(res, 500, {
+            error: "The new venues couldn't be saved, so nothing was added. " + ((e && e.message) || ""),
+          });
+        }
+      }
 
       /* Ids are generated HERE rather than read back from the insert.
          Two bulk inserts instead of two-per-job is the difference between a
@@ -273,7 +399,14 @@ export default async function handler(req, res) {
         category: "tcg",
         data: {
           client: job.client,
-          _import: { ...mark, invoiceNo: job.invoiceNo || null },
+          /* The shape the Brief and the crew packet already read. Filling it
+             from the PDF means an imported job opens with its venue on the
+             brief rather than an empty panel — and it costs nothing, because
+             the address was read anyway. */
+          ...(job.venueName
+            ? { venue: { name: job.venueName, address: job.venueAddress, mapLink: "" } }
+            : {}),
+          _import: { ...mark, invoiceNo: job.invoiceNo || job.quoteNumber || null },
         },
       }));
 
@@ -290,18 +423,29 @@ export default async function handler(req, res) {
         name: job.name,
         start_date: job.startDate,
         end_date: job.endDate,
+        /* THE TOTAL IS THE ONE PRINTED ON THE QUOTE, always — never a sum of
+           the lines. The grand total is what the client agreed to; the lines
+           are detail read off the same page. When they disagree the review
+           screen has already said so, and importing the sum instead would
+           quietly replace an agreed figure with a derived one. */
         total: job.total,
         event_id: showId,
+        client_id: job.clientId || null,
+        venue_id: job.venueId || null,
         data: {
-          lines: [],
+          lines: job.lines,
           groups: [],
           deposits: [],
           /* Said in words on the quote itself, because somebody will open one
-             in two years and wonder why it has no line items. */
+             in two years and wonder where it came from. */
           notes: (job.note ? job.note + "\n" : "") +
-                 "Imported past job - total only, no line detail." +
+                 (job.lines.length
+                   ? "Imported from the quote PDF. Category amounts carry the money; " +
+                     "the gear under them is recorded at zero because the PDF does not price it."
+                   : "Imported past job - total only, no line detail.") +
+                 (job.quoteNumber ? " Quote " + job.quoteNumber + "." : "") +
                  (job.invoiceNo ? " Invoice " + job.invoiceNo + "." : ""),
-          _import: { ...mark, invoiceNo: job.invoiceNo || null },
+          _import: { ...mark, invoiceNo: job.invoiceNo || job.quoteNumber || null },
         },
       }));
 
@@ -322,6 +466,41 @@ export default async function handler(req, res) {
         });
       }
 
+      /* ---- the reporting rows ---------------------------------------------
+         A won quote's lines belong in show_items, which is what makes "how
+         often did we send out a 12K projector" a GROUP BY instead of a scan
+         over every quote blob.
+
+         rowsForQuote is api/quotes.js's own flattener, imported rather than
+         re-implemented, so an imported job and a hand-built one produce the
+         same rows. Built in memory and inserted ONCE: syncQuoteItems is a
+         delete plus an insert per quote, which is fifty round trips for
+         twenty-five jobs, and these quotes are seconds old so there is nothing
+         to delete.
+
+         Best-effort, deliberately. show_items is DERIVED — it can be rebuilt
+         from the quotes at any time with ?backfill=1 — so failing to write it
+         must never be the thing that loses an import. */
+      const itemRows = [];
+      for (const { job, quoteId, familyId, showId } of pairs) {
+        if (job.status !== "won" || !job.lines.length) continue;
+        itemRows.push(...rowsForQuote({
+          id: quoteId, family_id: familyId, version: 1, status: "won",
+          event_id: showId, client_id: job.clientId || null,
+          start_date: job.startDate, end_date: job.endDate,
+          data: { lines: job.lines },
+        }));
+      }
+      let lineCount = 0;
+      if (itemRows.length) {
+        try {
+          await supabaseRest("POST", "/show_items", itemRows, "return=minimal");
+          lineCount = itemRows.length;
+        } catch (e) {
+          console.log("[import-jobs] show_items not written: " + ((e && e.message) || e));
+        }
+      }
+
       const gross = money(going.reduce((t, j) => t + (j.status === "won" ? j.total : 0), 0));
       try {
         await supabaseRest("POST", BATCHES, {
@@ -332,6 +511,14 @@ export default async function handler(req, res) {
           rows_created: going.length,
           gross,
           status: "done",
+          /* The directory rows this import brought into being.
+             These CANNOT be stamped the way a show or a quote is — the clients
+             and venues tables have no jsonb column to stamp — so the ids are
+             kept here, and this is the one place in this feature where a list
+             stands in for asking the database. The failure mode is the safe
+             one: lose the list and a spare company stays in the directory,
+             which is untidy, rather than a job going missing. */
+          created: { clients: madeClients.map((x) => x.id), venues: madeVenues.map((x) => x.id) },
         }, "return=minimal");
       } catch (e) {
         /* The jobs are in. A missing audit row is worth saying out loud and
@@ -354,6 +541,9 @@ export default async function handler(req, res) {
         gross,
         skipped,
         rejected,
+        clients: madeClients.map((x) => x.row.name),
+        venues: madeVenues.map((x) => x.row.name),
+        lines: lineCount,
       });
     }
 
@@ -378,7 +568,7 @@ export default async function handler(req, res) {
             supabaseRest("GET", "/expenses?show_id=in." + inList + "&deleted_at=is.null&select=show_id", null),
             supabaseRest("GET", "/tasks?event_id=in." + inList + "&select=event_id", null),
             supabaseRest("GET", "/billing_invoices?event_id=in." + inList + "&select=event_id", null),
-            supabaseRest("GET", "/show_items?show_id=in." + inList + "&select=show_id", null),
+            supabaseRest("GET", "/show_items?show_id=in." + inList + "&select=show_id,quote_id", null),
           ])
         : [[], [], [], []];
 
@@ -387,7 +577,23 @@ export default async function handler(req, res) {
       (expenses || []).forEach((r) => note(r.show_id, "expenses have been attached to it"));
       (tasks || []).forEach((r) => note(r.event_id, "it has tasks on it"));
       (invoices || []).forEach((r) => note(r.event_id, "it has been invoiced"));
-      (items || []).forEach((r) => note(r.show_id, "it has line items"));
+      /* LINE ITEMS THIS IMPORT PUT THERE ITSELF DO NOT COUNT.
+       *
+       *   This guard was written when the importer created no line items at
+       *   all, so any show_item on an imported show had to have come from
+       *   somewhere else and was a good reason to leave the job alone. Then
+       *   the PDF importer started writing 35 of them per job — and every
+       *   PDF-imported job became permanently un-undoable, held in place by
+       *   rows the same import had just created.
+       *
+       *   A guard is about what SOMEBODY ELSE has done to the row since. So
+       *   the batch's own quotes are excluded, and what is left is the honest
+       *   question: has anything outside this import attached itself here. */
+      const ownQuotes = new Set((quotes || []).map((qq) => qq.id));
+      (items || []).forEach((r) => {
+        if (r.quote_id && ownQuotes.has(r.quote_id)) return;
+        note(r.show_id, "it has line items");
+      });
       (shows || []).forEach((s) => {
         const d = (s.data && typeof s.data === "object") ? s.data : {};
         const crew = Array.isArray(d.crew) ? d.crew.filter((c) => c && c.name) : [];
@@ -406,10 +612,60 @@ export default async function handler(req, res) {
       const goingQuotes = (quotes || []).filter(
         (qq) => qq.event_id && removable.indexOf(qq.event_id) >= 0).map((qq) => qq.id);
 
-      if (goingQuotes.length)
+      if (goingQuotes.length) {
+        /* The derived rows go FIRST, and by quote rather than by show.
+           show_items has no foreign key to anything — it is rebuildable from
+           the quotes, which is the whole reason it can be dropped safely — so
+           deleting a quote leaves its rows behind, pointing at a show that no
+           longer exists and quietly inflating every item report. */
+        try {
+          await supabaseRest("DELETE", "/show_items?quote_id=in.(" + goingQuotes.join(",") + ")", null);
+        } catch (e) {
+          console.log("[import-jobs] show_items not cleared: " + ((e && e.message) || e));
+        }
         await supabaseRest("DELETE", "/quotes?id=in.(" + goingQuotes.join(",") + ")", null);
+      }
       if (removable.length)
         await supabaseRest("DELETE", "/shows?id=in.(" + removable.join(",") + ")", null);
+
+      /* ---- and the clients and venues it created -------------------------
+         Only the ones nothing points at any more. A company this import
+         invented, that Tyler has since used on a real quote, is his company
+         now — undoing an import is not a reason to take it off that quote.
+
+         Read AFTER the shows and quotes above were deleted, so a directory row
+         used only by this import already looks unreferenced by the time it is
+         asked about. */
+      const rec = await supabaseRest(
+        "GET", BATCHES + "?id=eq." + encodeURIComponent(batchId) + "&select=created", null);
+      const made = (rec && rec[0] && rec[0].created) || {};
+      const madeClients = Array.isArray(made.clients) ? made.clients : [];
+      const madeVenues = Array.isArray(made.venues) ? made.venues : [];
+      const dirKept = [];
+      if (madeClients.length || madeVenues.length) {
+        const inC = madeClients.length ? "(" + madeClients.join(",") + ")" : "";
+        const inV = madeVenues.length ? "(" + madeVenues.join(",") + ")" : "";
+        const [qByClient, qByVenue, contacts] = await Promise.all([
+          inC ? supabaseRest("GET", "/quotes?client_id=in." + inC + "&select=client_id", null) : [],
+          inV ? supabaseRest("GET", "/quotes?venue_id=in." + inV + "&select=venue_id", null) : [],
+          inC ? supabaseRest("GET", "/clients?parent_id=in." + inC + "&select=parent_id", null) : [],
+        ]);
+        const usedC = new Set([...(qByClient || []).map((r) => r.client_id),
+                               ...(contacts || []).map((r) => r.parent_id)].filter(Boolean));
+        const usedV = new Set((qByVenue || []).map((r) => r.venue_id).filter(Boolean));
+        const dropC = madeClients.filter((id) => !usedC.has(id));
+        const dropV = madeVenues.filter((id) => !usedV.has(id));
+        madeClients.filter((id) => usedC.has(id)).forEach(() => dirKept.push("client"));
+        madeVenues.filter((id) => usedV.has(id)).forEach(() => dirKept.push("venue"));
+        try {
+          if (dropC.length) await supabaseRest("DELETE", "/clients?id=in.(" + dropC.join(",") + ")", null);
+          if (dropV.length) await supabaseRest("DELETE", "/venues?id=in.(" + dropV.join(",") + ")", null);
+        } catch (e) {
+          /* A directory row that will not delete is untidy, not broken, and
+             the jobs are already gone. Say it in the log and carry on. */
+          console.log("[import-jobs] directory rows not removed: " + ((e && e.message) || e));
+        }
+      }
 
       try {
         await supabaseRest("PATCH", BATCHES + "?id=eq." + encodeURIComponent(batchId), {
@@ -424,7 +680,7 @@ export default async function handler(req, res) {
         (kept.length ? ", kept " + kept.length + " that had work on them" : ""),
         { actorName: await actorName(p), meta: { batchId, removed: removable.length, kept: kept.length } });
 
-      return json(res, 200, { ok: true, removed: removable.length, kept });
+      return json(res, 200, { ok: true, removed: removable.length, kept, dirKept: dirKept.length });
     }
 
     return json(res, 400, { error: "Say what to do: preview, commit or undo." });

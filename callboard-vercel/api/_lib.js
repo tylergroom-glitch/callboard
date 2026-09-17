@@ -968,11 +968,28 @@ export const EXTRACT_MODEL = process.env.EXTRACT_MODEL || "claude-sonnet-5";
    page the browser cannot read. */
 export const EXTRACT_DEADLINE_MS = Number(process.env.EXTRACT_DEADLINE_MS) || 110000;
 
+/* How much room the answer gets. A day-by-day schedule off a real agenda runs
+   to a few thousand tokens, and the first version allowed 4096 - enough until
+   it was not, at which point the reply stopped mid-string and the app said
+   "the answer wasn't usable", which is exactly the wrong diagnosis. Tunable
+   for the same reason as the model: a document longer than anything seen so
+   far should be a settings change, not an upload. */
+export const EXTRACT_MAX_TOKENS = Number(process.env.EXTRACT_MAX_TOKENS) || 8192;
+
+/* Said again, outside the prompt each route writes.
+   The prompts all say "return ONLY JSON" and mostly get it. A system line is
+   the cheaper half of the fix - it makes a preamble less likely - and
+   extractJson below is the half that does not depend on being obeyed. */
+const EXTRACT_SYSTEM =
+  "You output raw JSON and nothing else: no preamble, no commentary, " +
+  "no markdown code fences, no trailing remarks. The first character of your " +
+  "reply is { or [ and the last is } or ].";
+
 /* Ask Claude for JSON and give back the parsed object.
    Throws an Error carrying `.status`, already worded for a person to read:
    every return path here ends up in front of somebody who is trying to import
    a document and wants to know why it did not work. */
-export async function claudeExtract({ content, maxTokens = 4096, what = "that file" }) {
+export async function claudeExtract({ content, maxTokens = EXTRACT_MAX_TOKENS, what = "that file" }) {
   if (!process.env.ANTHROPIC_API_KEY) {
     const e = new Error("ANTHROPIC_API_KEY is not set. Add it in Vercel under " +
                         "Settings > Environment Variables, then redeploy.");
@@ -996,6 +1013,7 @@ export async function claudeExtract({ content, maxTokens = 4096, what = "that fi
       body: JSON.stringify({
         model: EXTRACT_MODEL,
         max_tokens: maxTokens,
+        system: EXTRACT_SYSTEM,
         messages: [{ role: "user", content }],
       }),
       signal: ctrl.signal,
@@ -1040,16 +1058,81 @@ export async function claudeExtract({ content, maxTokens = 4096, what = "that fi
     .filter((b) => b.type === "text")
     .map((b) => b.text)
     .join("")
-    .replace(/```json\s*/g, "")
-    .replace(/```\s*/g, "")
     .trim();
 
-  try {
-    return JSON.parse(text);
-  } catch (err) {
-    console.log("[extract] unparseable reply: " + text.slice(0, 200));
-    const e = new Error("Claude read " + what + " but the answer wasn't usable. Try again.");
+  /* RAN OUT OF ROOM, which is not the same as a bad answer and must not be
+     reported as one. A long agenda generates a long JSON object, and when it
+     hits max_tokens the reply stops mid-string — perfectly good JSON with the
+     end missing. "Try again" is useless advice for that; it will do the same
+     thing again. */
+  if (data.stop_reason === "max_tokens") {
+    console.log("[extract] truncated at max_tokens (" + maxTokens + ")");
+    const e = new Error("That was too long to read in one go - the answer was cut off at " +
+                        maxTokens + " tokens. Import it in smaller pieces (a day or a " +
+                        "section at a time).");
     e.status = 502;
     throw e;
   }
+
+  const parsed = extractJson(text);
+  if (parsed === undefined) {
+    /* The first 300 characters of what actually came back, in the log AND in
+       the message. Without it "the answer wasn't usable" sends somebody to the
+       Vercel logs to find out what happened, and most of the time nobody goes.
+       With it, the reply is on the screen that has the problem. */
+    console.log("[extract] unparseable reply: " + text.slice(0, 600));
+    const e = new Error("Claude read " + what + " but didn't answer with usable data. " +
+                        "It said: " + (text.slice(0, 300) || "(nothing at all)"));
+    e.status = 502;
+    throw e;
+  }
+  return parsed;
+}
+
+/* ---------------------------------------------------------------------------
+   Finding the JSON in a reply that was asked for JSON.
+
+   WHY THIS IS NOT JSON.parse(text)
+
+     It was, and the importers came back with "the answer wasn't usable". Asking
+     for "ONLY a valid JSON object - no markdown fences, no explanation" is an
+     instruction, not a guarantee, and the ways it is not followed are all
+     ordinary: a sentence of preamble, a closing "Let me know if...", fences
+     with a language tag, fences without one, or fences the old strip mangled
+     because it deleted every ``` in the file including ones inside a string.
+
+   So this stops trying to clean the text up and looks for the JSON instead:
+   the first { or [ , then a scan to its matching close, respecting strings and
+   escapes so a brace inside "Load-in {main room}" cannot end the object early.
+
+   Returns undefined when there is no JSON in there at all — `undefined` rather
+   than null because null is a legitimate thing for JSON to contain, and a
+   parser that cannot tell "it said null" from "it said nothing" is one more
+   thing to get wrong later.
+   --------------------------------------------------------------------------- */
+export function extractJson(text) {
+  const s = String(text == null ? "" : text);
+
+  /* The whole thing first: the normal case, and it costs one try. */
+  try { return JSON.parse(s.trim()); } catch (e) { /* fall through */ }
+
+  const open = s.search(/[[{]/);
+  if (open < 0) return undefined;
+
+  let depth = 0, inStr = false, esc = false;
+  for (let i = open; i < s.length; i++) {
+    const c = s[i];
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "{" || c === "[") depth++;
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(s.slice(open, i + 1)); } catch (e) { return undefined; }
+      }
+    }
+  }
+  return undefined;                       // opened and never closed: truncated
 }
