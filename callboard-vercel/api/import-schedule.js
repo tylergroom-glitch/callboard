@@ -3,8 +3,10 @@
 // Passes it to the Claude API, which returns a structured daily schedule:
 //   { days: [ { label, date, items: [ { time, activity } ] } ] }
 //
-// Reuses ANTHROPIC_API_KEY (already set for the quote importer). No new env vars.
-import { json, readBody, auth } from "./_lib.js";
+// Reuses ANTHROPIC_API_KEY. The model is EXTRACT_MODEL (optional, defaults in
+// _lib.js), and maxDuration for this route is set in vercel.json - without it
+// the platform kills the call mid-flight and the app can only say "504".
+import { json, readBody, auth, claudeExtract } from "./_lib.js";
 
 const PROMPT = `You are parsing an event agenda / run-of-show into a structured daily schedule for an AV production team.
 
@@ -36,11 +38,6 @@ export default async function handler(req, res) {
   const p = auth(req);
   if (!p) return json(res, 401, { error: "Not signed in" });
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return json(res, 500, {
-      error: "ANTHROPIC_API_KEY is not set. Add it to your Vercel environment variables.",
-    });
-  }
 
   let body;
   try {
@@ -61,43 +58,10 @@ export default async function handler(req, res) {
     : [{ type: "text", text: PROMPT + "\n\n═══ AGENDA ═══\n" + body.text.slice(0, 40000) }];
 
   try {
-    const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-6",
-        max_tokens: 4096,
-        messages: [{ role: "user", content }],
-      }),
-    });
-
-    if (!apiRes.ok) {
-      const err = await apiRes.json().catch(() => ({}));
-      return json(res, 502, { error: "Claude API error: " + (err?.error?.message || apiRes.status) });
-    }
-
-    const data = await apiRes.json();
-    const text = (data.content || [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("")
-      .replace(/```json\s*/g, "")
-      .replace(/```\s*/g, "")
-      .trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return json(res, 502, { error: "Could not parse the agenda. Try cleaning it up or pasting plain text." });
-    }
+    const parsed = await claudeExtract({ content, what: "that agenda" });
 
     if (!Array.isArray(parsed.days)) {
-      return json(res, 502, { error: "Unexpected response structure. Try again." });
+      return json(res, 502, { error: "That didn't come back as a schedule. Try again." });
     }
 
     // sanitize
@@ -116,6 +80,10 @@ export default async function handler(req, res) {
 
     return json(res, 200, { days });
   } catch (e) {
-    return json(res, 500, { error: e.message || "Server error" });
+    /* e.status, not a flat 500. claudeExtract words its own failures and
+       carries the right code with them - a timeout is a 504 and a rejected
+       model is a 502, and flattening both to 500 throws away the only clue
+       anybody reading the screen has. */
+    return json(res, e.status || 500, { error: e.message || "Server error" });
   }
 }

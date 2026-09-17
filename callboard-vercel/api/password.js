@@ -15,24 +15,25 @@ export default async function handler(req, res) {
   }
   if (!b.id) return json(res, 400, { error: "id required" });
 
-  // Each level is optional. A key that is ABSENT is left unchanged; a key set to an
-  // empty string removes that level's password; any other value sets it. Legacy
-  // callers that send { password } set the crew password.
+  // A key that is ABSENT is left unchanged; an empty string removes the password;
+  // any other value sets it. Legacy callers that send { password } still work.
+  //
+  // editorPassword / adminPassword used to be accepted here and hashed into
+  // EditorHash / AdminHash. Nothing ever stored those columns and no login path
+  // issued a token above crew level, so they were silently discarded while the
+  // API reported success. Edit rights and P&L access come from account roles now,
+  // so those keys are ignored rather than pretending to work.
   const fields = {};
   const crew = b.crewPassword !== undefined ? b.crewPassword : b.password;
   if (crew !== undefined) fields.PassHash = crew ? hashPassword(crew) : "";
-  if (b.editorPassword !== undefined) fields.EditorHash = b.editorPassword ? hashPassword(b.editorPassword) : "";
-  if (b.adminPassword !== undefined) fields.AdminHash = b.adminPassword ? hashPassword(b.adminPassword) : "";
 
-  if (!Object.keys(fields).length) return json(res, 400, { error: "No passwords provided" });
+  if (!Object.keys(fields).length) return json(res, 400, { error: "No password provided" });
 
   try {
     await airtable("PATCH", "/" + b.id, { fields });
     return json(res, 200, {
       ok: true,
       hasPassword: fields.PassHash !== undefined ? !!fields.PassHash : undefined,
-      hasEditor: fields.EditorHash !== undefined ? !!fields.EditorHash : undefined,
-      hasAdmin: fields.AdminHash !== undefined ? !!fields.AdminHash : undefined,
     });
   } catch (e) {
     return json(res, e.status || 500, { error: e.message || "Server error" });

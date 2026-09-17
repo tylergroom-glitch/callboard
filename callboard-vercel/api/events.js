@@ -1,10 +1,43 @@
-// /api/events  — all reads/writes go through here so the Airtable key stays server-side.
-// GET            list summaries (admin only)
-// GET ?id=       full show JSON (admin, or the show's own token)
-// POST           create show (admin only)      body: { name, client, startDate, endDate, data, password }
-// PATCH ?id=     update show (admin, or the show's own token)  body: { data, name, client, startDate, endDate }
-// DELETE ?id=    delete show (admin only)
-import { json, readBody, auth, isAdmin, canAccessShow, airtable, summary, hashPassword } from "./_lib.js";
+// /api/events — Supabase `shows` with per-account role enforcement.
+// TCG + producers: full edit. Department editors: edit only fields owned by tabs
+// tagged to their department(s) (enforced server-side). Crew + others: read only.
+import { json, readBody, auth, isAdmin, memberRole, memberShowIds, supabaseRest, hashPassword, scopedSave, stripShowForRole, restoreHidden, canSeeCrewPay, hiddenShowFields } from "./_lib.js";
+
+const summary = (row) => ({
+  id: row.id,
+  name: row.name || "",
+  client: row.client || "",
+  startDate: row.start_date || "",
+  endDate: row.end_date || "",
+  hasPassword: !!row.pass_hash,
+  category: row.category === "freelance" ? "freelance" : "tcg",
+});
+
+// Returns { role, depts } for the caller on a show. role: tcg|producer|dept_editor|crew|null
+async function effective(p, id) {
+  if (isAdmin(p)) return { role: "tcg", depts: [] };
+  if (p && p.scope === "show" && p.id === id) {
+    const lvl = p.level === "admin" ? "producer" : p.level === "editor" ? "dept_editor" : "crew";
+    return { role: lvl, depts: [] };
+  }
+  if (p && p.sub) {
+    const m = await memberRole(p, id);
+    if (m) return { role: m.role, depts: (m.areas && Array.isArray(m.areas.depts)) ? m.areas.depts : [] };
+  }
+  return { role: null, depts: [] };
+}
+
+/* Does this role have anything hidden from it? A TCG admin does not, so the
+   write paths skip the extra read entirely. */
+function needsRestore(role) {
+  return !canSeeCrewPay(role) || hiddenShowFields(role).length > 0;
+}
+
+async function storedShowData(id) {
+  const rows = await supabaseRest(
+    "GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=data", null);
+  return (rows && rows[0] && rows[0].data && typeof rows[0].data === "object") ? rows[0].data : {};
+}
 
 export default async function handler(req, res) {
   const p = auth(req);
@@ -14,67 +47,105 @@ export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
       if (id) {
-        if (!canAccessShow(p, id)) return json(res, 403, { error: "No access to this show" });
-        const rec = await airtable("GET", "/" + id);
-        const f = rec.fields || {};
-        let data = {};
-        try {
-          data = f.Data ? JSON.parse(f.Data) : {};
-        } catch {
-          data = {};
-        }
-        data.id = rec.id;
-        data.name = f.Name ?? data.name ?? "";
-        data.client = f.Client ?? data.client ?? "";
-        data.startDate = f.StartDate ?? data.startDate ?? "";
-        data.endDate = f.EndDate ?? data.endDate ?? "";
-        return json(res, 200, data);
+        const { role, depts } = await effective(p, id);
+        if (!role) return json(res, 403, { error: "No access to this show" });
+        const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(id) + "&select=*", null);
+        const row = rows && rows[0];
+        if (!row) return json(res, 404, { error: "Show not found" });
+        const data = row.data && typeof row.data === "object" ? row.data : {};
+        data.id = row.id;
+        data.name = row.name ?? "";
+        data.client = row.client ?? "";
+        data.startDate = row.start_date ?? "";
+        data.endDate = row.end_date ?? "";
+        data.category = row.category === "freelance" ? "freelance" : "tcg";
+        data._role = role;
+        if (role === "dept_editor") data._depts = depts;
+        /* Everything this role may not see, removed in one pass: crew rates
+           (roster data that lives on the show because picking someone copies
+           it here) and the timesheet. restoreHidden() is the exact inverse and
+           runs on every write path, so a client that was never shown a field
+           can neither set it nor delete it by sending back what it was given. */
+        return json(res, 200, stripShowForRole(data, role));
       }
-      if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
-      const out = [];
-      let offset;
-      do {
-        const d = await airtable("GET", offset ? `?offset=${offset}` : "");
-        for (const r of d.records) out.push(summary(r));
-        offset = d.offset;
-      } while (offset);
-      return json(res, 200, out);
+      if (isAdmin(p)) {
+        const rows = await supabaseRest("GET", "/shows?select=id,name,client,start_date,end_date,pass_hash,category&order=start_date.asc.nullslast", null);
+        return json(res, 200, (rows || []).map(summary));
+      }
+      if (p.scope === "show" && p.id) {
+        const rows = await supabaseRest("GET", "/shows?id=eq." + encodeURIComponent(p.id) + "&select=id,name,client,start_date,end_date,pass_hash,category", null);
+        return json(res, 200, (rows || []).map(summary));
+      }
+      if (p.sub) {
+        const ids = await memberShowIds(p);
+        if (!ids.length) return json(res, 200, []);
+        const inList = ids.map(encodeURIComponent).join(",");
+        const rows = await supabaseRest("GET", "/shows?id=in.(" + inList + ")&select=id,name,client,start_date,end_date,pass_hash,category&order=start_date.asc.nullslast", null);
+        return json(res, 200, (rows || []).map(summary));
+      }
+      return json(res, 200, []);
     }
 
     if (req.method === "POST") {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       const b = await readBody(req);
-      const fields = {
-        Name: b.name || "New Event",
-        Client: b.client || "",
-        StartDate: b.startDate || "",
-        EndDate: b.endDate || "",
-        Data: JSON.stringify(b.data || {}),
-        UpdatedAt: new Date().toISOString(),
-      };
-      if (b.password) fields.PassHash = hashPassword(b.password);
-      const rec = await airtable("POST", "", { fields });
-      return json(res, 200, summary(rec));
+      const rec = { name: b.name || "New Event", client: b.client || "", start_date: b.startDate || null, end_date: b.endDate || null, data: b.data || {} };
+      if (b.category === "freelance") rec.category = "freelance";
+      if (b.password) rec.pass_hash = hashPassword(b.password);
+      const rows = await supabaseRest("POST", "/shows", rec, "return=representation");
+      return json(res, 200, summary(rows[0]));
     }
 
     if (req.method === "PATCH") {
       if (!id) return json(res, 400, { error: "id required" });
-      if (!canAccessShow(p, id)) return json(res, 403, { error: "No access to this show" });
-      const b = await readBody(req);
-      const fields = { UpdatedAt: new Date().toISOString() };
-      if (b.data !== undefined) fields.Data = JSON.stringify(b.data);
-      if (b.name !== undefined) fields.Name = b.name;
-      if (b.client !== undefined) fields.Client = b.client;
-      if (b.startDate !== undefined) fields.StartDate = b.startDate;
-      if (b.endDate !== undefined) fields.EndDate = b.endDate;
-      await airtable("PATCH", "/" + id, { fields });
-      return json(res, 200, { ok: true });
+      const { role, depts } = await effective(p, id);
+      const fullEdit = role === "tcg" || role === "producer";
+
+      if (fullEdit) {
+        const b = await readBody(req);
+        const patch = { updated_at: new Date().toISOString() };
+        if (b.data !== undefined) patch.data = b.data;
+        /* A producer has fullEdit — this path writes `data` WHOLESALE and never
+           reaches scopedSave — but is not shown crew rates. Writing their
+           payload as-is would delete every rate on the show on their first
+           save. Anything they were not shown is put back from what is stored.
+           A TCG admin is shown everything, so hiddenShowFields is empty for
+           them and this costs one branch and no query. */
+        if (b.data !== undefined && needsRestore(role)) {
+          const storedData = await storedShowData(id);
+          patch.data = restoreHidden(storedData, b.data, role);
+        }
+        if (b.name !== undefined) patch.name = b.name;
+        if (b.client !== undefined) patch.client = b.client;
+        if (b.startDate !== undefined) patch.start_date = b.startDate || null;
+        if (b.endDate !== undefined) patch.end_date = b.endDate || null;
+        if (b.category !== undefined) patch.category = b.category === "freelance" ? "freelance" : "tcg";
+        await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), patch);
+        return json(res, 200, { ok: true });
+      }
+
+      if (role === "dept_editor") {
+        if (!depts.length) return json(res, 403, { error: "No department assigned to you for this show." });
+        const b = await readBody(req);
+        const stored = await storedShowData(id);
+        /* BEFORE the diff, not after. A department editor is not shown the
+           timesheet, so their payload has no `time` key — and scopedSave would
+           read that as an attempted change to a field they may not touch and
+           refuse the ENTIRE save. Putting it back first means they can save
+           their own areas normally and still cannot alter it. */
+        const result = scopedSave(stored, restoreHidden(stored, b.data || {}, role), depts);
+        if (!result.ok) return json(res, 403, { error: "You can only edit your department's areas. Blocked changes to: " + result.bad.join(", ") });
+        await supabaseRest("PATCH", "/shows?id=eq." + encodeURIComponent(id), { data: result.data, updated_at: new Date().toISOString() });
+        return json(res, 200, { ok: true });
+      }
+
+      return json(res, 403, { error: "You don't have edit access to this show" });
     }
 
     if (req.method === "DELETE") {
       if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
       if (!id) return json(res, 400, { error: "id required" });
-      await airtable("DELETE", "/" + id);
+      await supabaseRest("DELETE", "/shows?id=eq." + encodeURIComponent(id), null);
       return json(res, 200, { ok: true });
     }
 

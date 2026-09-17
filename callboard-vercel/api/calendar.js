@@ -3,7 +3,7 @@
 // GET ?token=xxx   -> returns an iCalendar (.ics) feed of every show, each event carrying the full brief
 //
 // Signed with APP_SECRET; the token authorizes read access to the shows calendar. Valid 1 year.
-import { auth, isAdmin, airtable, signToken, verifyToken, json } from "./_lib.js";
+import { auth, isAdmin, canManageShow, airtable, signToken, verifyToken, json } from "./_lib.js";
 
 const DURATION = 1000 * 60 * 60 * 24 * 365;
 
@@ -80,19 +80,19 @@ function briefText(f, data, host) {
     });
   }
   L.push("");
-  L.push("Open in Callboard: https://" + host + "/");
+  L.push("Open in Crew Call: https://" + host + "/");
   return L.join("\n");
 }
 
-function buildICS(records, host) {
+function buildICS(records, host, calName) {
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Touchstone Creative Group//Callboard//EN",
+    "PRODID:-//Touchstone Creative Group//Crew Call//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:Callboard Shows",
-    "NAME:Callboard Shows",
+    "X-WR-CALNAME:" + (calName || "Crew Call Shows"),
+    "NAME:" + (calName || "Crew Call Shows"),
     "X-WR-CALDESC:Production briefs for all Touchstone shows",
     "REFRESH-INTERVAL;VALUE=DURATION:PT1H",
     "X-PUBLISHED-TTL:PT1H",
@@ -127,8 +127,13 @@ export default async function handler(req, res) {
   if (q.generate) {
     if (req.method !== "GET") { res.status(405).end(); return; }
     const p = auth(req);
-    if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
-    const t = signToken({ scope: "calendar", exp: Date.now() + DURATION });
+    const id = q.id;
+    if (id) {
+      if (!canManageShow(p, id)) return json(res, 403, { error: "Admin only" });
+    } else {
+      if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
+    }
+    const t = signToken(id ? { scope: "calendar", id, exp: Date.now() + DURATION } : { scope: "calendar", exp: Date.now() + DURATION });
     const host = req.headers.host || "";
     const protocol = host.startsWith("localhost") ? "http" : "https";
     return json(res, 200, {
@@ -142,9 +147,14 @@ export default async function handler(req, res) {
   if (req.method !== "GET") { res.status(405).end(); return; }
 
   let records = [];
-  try { records = await allEvents(); } catch (e) { records = []; }
+  if (p.id) {
+    try { records = [await airtable("GET", "/" + p.id)]; } catch (e) { records = []; }
+  } else {
+    try { records = await allEvents(); } catch (e) { records = []; }
+  }
   const host = req.headers.host || "";
-  const ics = buildICS(records, host);
+  const calName = p.id && records[0] ? (records[0].fields && records[0].fields.Name) || "Show" : "Crew Call Shows";
+  const ics = buildICS(records, host, calName);
   res.status(200);
   res.setHeader("Content-Type", "text/calendar; charset=utf-8");
   res.setHeader("Content-Disposition", 'inline; filename="callboard-shows.ics"');
