@@ -20,9 +20,11 @@
 // SETUP: pdfjs-dist must be in callboard-vercel/package.json. No new env vars
 // — and specifically NOT ANTHROPIC_API_KEY. See the note at the top of
 // api/_quotepdf.js for why this reads the PDF rather than asking an AI about
-// it.
+// it, and api/_pdftext.js for why getting text out of a PDF in a serverless
+// function is not the one-liner it looks like.
 import { json, readBody, auth, isAdmin, supabaseRest } from "./_lib.js";
 import { parseQuotePdf, linesFor } from "./_quotepdf.js";
+import { pdfToPages } from "./_pdftext.js";
 import { dupKey, parseDate, money, bestMatch } from "./_jobs.js";
 
 /* Base64 is about a third larger than the bytes, and Vercel's request cap is
@@ -46,31 +48,11 @@ export default async function handler(req, res) {
 
   let pages;
   try {
-    /* Imported HERE rather than at the top of the file. pdfjs is several
-       megabytes and every other route in this app is a cold start away from
-       being slower for no reason; only this one needs it. */
-    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    const doc = await pdfjs.getDocument({
-      data: new Uint8Array(Buffer.from(b64, "base64")),
-      /* Text only. Nothing here rasterises a page, so font programs, eval and
-         the font-face machinery are all switched off — less to load, less to
-         go wrong, and nothing in the PDF gets executed. */
-      useSystemFonts: false,
-      disableFontFace: true,
-      isEvalSupported: false,
-    }).promise;
-
-    pages = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const tc = await (await doc.getPage(i)).getTextContent();
-      pages.push(tc.items
-        .filter((it) => it && it.str && it.str.trim())
-        .map((it) => ({ str: it.str, x: it.transform[4], y: it.transform[5] })));
-    }
+    pages = await pdfToPages(Buffer.from(b64, "base64"));
   } catch (e) {
     return json(res, 422, {
       error: "That file could not be opened as a PDF." +
-             (e && e.message ? " (" + String(e.message).slice(0, 120) + ")" : ""),
+             (e && e.message ? " (" + String(e.message).slice(0, 160) + ")" : ""),
       fileName,
     });
   }
@@ -146,6 +128,14 @@ export default async function handler(req, res) {
        importer built against that same total. Either being false is a reason
        to look at the PDF, and a reason NOT to quietly import it. */
     check: { ...parsed.check, linesTotal, linesBalance: Math.abs(linesTotal - (parsed.total || 0)) < 0.005 },
+
+    /* A SHOW THIS JOB COULD ATTACH TO INSTEAD OF CREATING ONE.
+       `alreadyShow` above is an EXACT name-and-date match, which catches the
+       easy case and misses the common one: the show Tyler built at the time is
+       called "Ridgeline Summit 2026" and the PDF says "2026 Ridgeline Summit".
+       Same matcher as the client and venue lookups, so a near miss is offered
+       rather than silently becoming a second show. */
+    showMatch: bestMatch(parsed.name, shows || []),
 
     dup: already ? "quote" : alreadyShow ? "show" : "",
     dupNote: already

@@ -283,6 +283,13 @@ export default async function handler(req, res) {
              what links; these two are what a person reads. */
           venueName: str(r && r.venueName, 200),
           venueAddress: str(r && r.venueAddress, 300),
+          /* The reviewer saying "this job already has a show — use that one
+             rather than making another". Carried through here because
+             `cleaned` is a whitelist: a field not named here is dropped, which
+             is how the first version of this silently created a show anyway
+             and passed every test that only counted quotes. Validated against
+             the database further down; never trusted. */
+          attachTo: str(r && r.attachTo, 100),
         });
       }
       if (!cleaned.length)
@@ -383,14 +390,49 @@ export default async function handler(req, res) {
          knowing the show id before the row exists is what lets the quote carry
          event_id in the same bulk insert, with no assumption anywhere about
          the order PostgREST returns things in. */
-      const pairs = going.map((j) => ({
-        job: j,
-        showId: crypto.randomUUID(),
-        quoteId: crypto.randomUUID(),
-        familyId: crypto.randomUUID(),
-      }));
+      /* ─────────────────────────────────────────────────────────────────
+         ATTACHING TO A SHOW THAT ALREADY EXISTS.
 
-      const showRows = pairs.map(({ job, showId }) => ({
+         Most imported jobs are from years ago and were never in the app, so
+         the importer makes a show for each. But some of them ARE already
+         here — Tyler built the show at the time and is now importing the
+         quote for it. Creating a second show for those is what produced the
+         duplicates that had to be cleaned up afterwards.
+
+         `attachTo` on a row is the reviewer saying "use this one". Its show
+         is not created and not touched: only the quote and its line items
+         point at it. The stub-and-attach tool exists for the ones already
+         made; this is what stops the next batch making more.
+
+         VALIDATED, not trusted: an id that is not a real show, or that is
+         another imported stub, falls back to creating a show. A bad id here
+         would otherwise hang a job's money off nothing. */
+      const attachIds = [...new Set(going.map((j) => str(j.attachTo, 100)).filter(Boolean))];
+      const attachOk = new Set();
+      if (attachIds.length) {
+        const rows = await supabaseRest(
+          "GET", "/shows?id=in.(" + attachIds.join(",") + ")&select=id,data&limit=500", null);
+        for (const r of rows || []) {
+          const d = (r.data && typeof r.data === "object") ? r.data : {};
+          /* Not to another import: that is two stubs, not a real show. */
+          if (!(d._import && d._import.batch)) attachOk.add(r.id);
+        }
+      }
+
+      const pairs = going.map((j) => {
+        const want = str(j.attachTo, 100);
+        const attached = want && attachOk.has(want);
+        return {
+          job: j,
+          showId: attached ? want : crypto.randomUUID(),
+          attached,
+          quoteId: crypto.randomUUID(),
+          familyId: crypto.randomUUID(),
+        };
+      });
+
+      /* Only the ones that need a show get one. */
+      const showRows = pairs.filter((x) => !x.attached).map(({ job, showId }) => ({
         id: showId,
         name: job.name,
         client: job.client,
@@ -449,17 +491,31 @@ export default async function handler(req, res) {
         },
       }));
 
-      await supabaseRest("POST", "/shows", showRows, "return=minimal");
+      if (showRows.length) {
+        await supabaseRest("POST", "/shows", showRows, "return=minimal");
+      }
       try {
         await supabaseRest("POST", "/quotes", quoteRows, "return=minimal");
       } catch (e) {
-        /* The compensating delete. These show ids were minted in this request
-           and nothing else has ever seen them, so removing them cannot take
-           anything with it — and leaving them would put a row of empty shows
-           in the list with no revenue on them and no way to tell why. */
+        /* The compensating delete, and the ONE LINE IN THIS FILE THAT MUST NOT
+           BE WIDENED.
+
+           It removes shows this request created, which is safe precisely
+           because those ids were minted here and nothing else has ever seen
+           them. Since rows can now ATTACH to a show that already existed,
+           `pairs` also carries ids of Tyler's real shows — shows with crew,
+           schedules and years of history. Deleting by every id in `pairs`
+           would destroy them on a failure that was never their fault.
+
+           So it deletes what `showRows` created, not what `pairs` names. The
+           two were the same thing until attaching existed, which is exactly
+           the kind of change that turns a safe line into a catastrophic
+           one. */
         try {
-          await supabaseRest(
-            "DELETE", "/shows?id=in.(" + pairs.map((x) => x.showId).join(",") + ")", null);
+          const mine = showRows.map((r) => r.id);
+          if (mine.length) {
+            await supabaseRest("DELETE", "/shows?id=in.(" + mine.join(",") + ")", null);
+          }
         } catch (e2) { /* reported below either way */ }
         return json(res, 500, {
           error: "The jobs couldn't be saved, so nothing was added. " + ((e && e.message) || ""),
