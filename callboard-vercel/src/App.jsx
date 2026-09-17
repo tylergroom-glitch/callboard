@@ -7102,7 +7102,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.48.0";
+const APP_VERSION = "1.48.1";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -20696,7 +20696,15 @@ function MessageCrewModal({ event, onClose, flash }) {
           {/* Every way this could have reached fewer people than expected,
               said out loud rather than left to be noticed on site. */}
           {done.failed && done.failed.length
-            ? <div className="mc-warn"><b>{done.failed.length} did not go through:</b> {done.failed.join(", ")}</div> : null}
+            ? (
+              <div className="mc-warn">
+                <b>{done.failed.length} did not go through:</b> {done.failed.join(", ")}
+                {/* The REASON, in the mail provider's own words. A failure
+                    that will not say why is a dead end: there is nothing for
+                    the person reading it to do next. */}
+                {done.reason ? <span className="mc-why">{done.reason}</span> : null}
+              </div>
+            ) : null}
           {done.noEmail && done.noEmail.length
             ? <div className="mc-warn"><b>No email address on the crew list:</b> {done.noEmail.join(", ")}
                 <span className="mc-why">They were not emailed. Add an address on the Brief.</span></div> : null}
