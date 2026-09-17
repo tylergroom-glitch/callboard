@@ -650,3 +650,12 @@ export async function uploadVenueFile(venueId, file, { caption = "", onProgress 
     caption,
   });
 }
+
+/* ---- reports -------------------------------------------------------------
+   period is month | year | ytd; anchor is any date inside the period. The
+   window is worked out on the SERVER, in Pacific — the browser's idea of
+   "this month" and a UTC container's disagree for seven hours of every day,
+   and the disagreement moves money between months. */
+export const getReport = (period, anchor) =>
+  api("GET", "/api/reporting?report=1&period=" + encodeURIComponent(period) +
+      "&anchor=" + encodeURIComponent(anchor));

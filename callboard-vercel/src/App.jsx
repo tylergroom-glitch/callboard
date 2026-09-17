@@ -148,6 +148,7 @@ import {
   setTruckOrigin,
   getTruckRates,
   setTruckRates,
+  getReport,
   listVenueFiles,
   viewVenueFile,
   deleteVenueFile,
@@ -1429,6 +1430,8 @@ function Callboard({ auth, onLogout }) {
               <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "expenses" ? (
               <ExpensesScreen onClose={() => goAdmin("shows")} events={events} />
+            ) : admSection === "reports" ? (
+              <ReportsScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "roster" ? (
               <RosterScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "staff" ? (
@@ -8099,7 +8102,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.52.0";
+const APP_VERSION = "1.53.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -8141,6 +8144,8 @@ const ADM_NAV = [
      in, and the reason to open it — "I have a receipt in my pocket" — is the
      same kind of errand. */
   { key: "expenses", label: "Expenses", c: "#FB923C" },
+  /* After Billing and Expenses, because it is what those two add up to. */
+  { key: "reports", label: "Reports", c: "#34D399" },
   { key: "catalog", label: "Catalog", c: "#60A5FA" },
 ];
 
@@ -9085,6 +9090,263 @@ function SetTodoist() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * REPORTS
+ *
+ * Total income, total expenses, income by client, income by department — for a
+ * month, a year, or a year to date.
+ *
+ * TWO INCOMES SIDE BY SIDE, AND THE GAP BETWEEN THEM.
+ *   WON is the value of the jobs booked, counted in the period the job RAN.
+ *   INVOICED is what actually went out, counted when it was sent. They are
+ *   supposed to disagree — a December show invoiced in January sits in
+ *   December on one and January on the other — and showing one alone invites
+ *   reading it as the other. The gap is where work you did and never billed
+ *   shows up.
+ *
+ * NEITHER IS THE BOOKS. Billing carries the QuickBooks numbers; QuickBooks is
+ * the record. What this screen knows that QuickBooks does not is what the
+ * money was FOR.
+ *
+ * AND EVERY BREAKDOWN SAYS WHAT IT DOES NOT COVER. A department split built
+ * from line items can only ever describe the jobs that have line items —
+ * every imported historical job has a total and no lines. A figure covering a
+ * fifth of the money, read as a total, is the failure this screen is designed
+ * against, so the uncovered remainder is on screen next to it rather than
+ * left to be inferred from a number that does not add up.
+ * ───────────────────────────────────────────────────────────────────────────── */
+const RPT_PERIODS = [
+  { key: "month", label: "Month" },
+  { key: "ytd", label: "Year to date" },
+  { key: "year", label: "Full year" },
+];
+
+const rptMoney = (n) =>
+  (Number(n) < 0 ? "-" : "") + "$" +
+  Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-US");
+
+function ReportsScreen({ onClose }) {
+  const today = tdToday();
+  const [period, setPeriod] = useState("month");
+  const [anchor, setAnchor] = useState(today);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [openDept, setOpenDept] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setErr("");
+    getReport(period, anchor)
+      .then((r) => { if (alive) { setD(r); setLoading(false); } })
+      .catch((e) => { if (alive) { setErr((e && e.message) || "Couldn't build the report."); setLoading(false); } });
+    return () => { alive = false; };
+  }, [period, anchor]);
+
+  /* Stepping by period rather than a date picker: "the month before this one"
+     is the question actually being asked, and a calendar makes you answer a
+     different one first. */
+  const step = (dir) => {
+    const y = Number(anchor.slice(0, 4)), m = Number(anchor.slice(5, 7));
+    if (period === "month") {
+      const nm = m + dir;
+      const ny = y + (nm > 12 ? 1 : nm < 1 ? -1 : 0);
+      const mm = ((nm - 1 + 12) % 12) + 1;
+      setAnchor(ny + "-" + String(mm).padStart(2, "0") + "-15");
+    } else {
+      setAnchor((y + dir) + "-06-15");
+    }
+  };
+
+  const inc = d && d.income;
+  const cov = d && d.coverage;
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Reports</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      <div style={{ ...ctgRow, marginBottom: 6, alignItems: "center" }}>
+        {RPT_PERIODS.map((p) => (
+          <button key={p.key} onClick={() => setPeriod(p.key)}
+                  style={ctgChip(period === p.key, "#34D399")}>{p.label}</button>
+        ))}
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={() => step(-1)} style={{ padding: "5px 11px" }}>←</button>
+        <span style={{ fontSize: 14, fontWeight: 600, minWidth: 150, textAlign: "center" }}>
+          {d && d.window ? d.window.label : "…"}
+        </span>
+        <button className="btn ghost" onClick={() => step(1)} style={{ padding: "5px 11px" }}>→</button>
+      </div>
+
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Reading…</div> : null}
+
+      {d && !loading ? (
+        <>
+          {/* ---- the headline ------------------------------------------- */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+            <RptTile label="Won" note={inc.jobs + (inc.jobs === 1 ? " job" : " jobs")}
+                     value={rptMoney(inc.won)} colour="#34D399" />
+            <RptTile label="Invoiced" note={inc.invoices + (inc.invoices === 1 ? " invoice" : " invoices")}
+                     value={rptMoney(inc.invoiced)} colour="#FACC15" />
+            <RptTile label="Expenses" note="paid out" value={rptMoney(d.expenses.total)} colour="#FB923C" />
+            <RptTile label="Won less expenses" note="not a P&L" value={rptMoney(d.net)} colour="#818CF8" />
+          </div>
+
+          {/* The gap is the interesting number, so it gets a sentence rather
+              than a tile: a tile invites adding it to something. */}
+          {Math.abs(inc.gap) > 1 ? (
+            <p style={{ fontSize: 13, color: "var(--dim)", marginTop: 0, marginBottom: 16, maxWidth: 640 }}>
+              {inc.gap > 0
+                ? <>Work worth <b>{rptMoney(inc.gap)}</b> ran in this period that has not been
+                    invoiced in it. Some of that is normal — a job at the end of the month is
+                    usually billed in the next one — but it is where unbilled work shows up.</>
+                : <><b>{rptMoney(-inc.gap)}</b> more was invoiced in this period than the work that
+                    ran in it, which is what happens when you bill for jobs from an earlier
+                    period.</>}
+            </p>
+          ) : null}
+
+          {inc.undatedJobs ? (
+            <p style={{ fontSize: 12.5, color: "#D14343", marginTop: 0, marginBottom: 16 }}>
+              {inc.undatedJobs} won {inc.undatedJobs === 1 ? "job has" : "jobs have"} no date
+              ({rptMoney(inc.undatedWon)}), so {inc.undatedJobs === 1 ? "it is" : "they are"} in
+              no period at all. Give {inc.undatedJobs === 1 ? "it a date" : "them dates"} and
+              {inc.undatedJobs === 1 ? " it" : " they"} will appear here.
+            </p>
+          ) : null}
+
+          {/* ---- by client ---------------------------------------------- */}
+          <h2 style={{ fontSize: 15, margin: "0 0 8px" }}>Income by client</h2>
+          {d.byClient.length ? (
+            <div style={{ marginBottom: 22 }}>
+              <div style={{ ...ctgListRow, fontSize: 11.5, color: "var(--dim)", fontWeight: 600 }}>
+                <span style={{ flex: 1 }}>Client</span>
+                <span style={{ flex: "0 0 96px", textAlign: "right" }}>Won</span>
+                <span style={{ flex: "0 0 96px", textAlign: "right" }}>Invoiced</span>
+              </div>
+              {d.byClient.map((c) => (
+                <div key={c.key} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{c.label}</span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, fontWeight: 600 }}>
+                    {c.won ? rptMoney(c.won) : "—"}
+                  </span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, color: "var(--dim)" }}>
+                    {c.invoiced ? rptMoney(c.invoiced) : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : <p style={ctgHint}>Nothing in this period.</p>}
+
+          {/* ---- by department ------------------------------------------ */}
+          <h2 style={{ fontSize: 15, margin: "0 0 2px" }}>Income by department</h2>
+          <p style={{ fontSize: 12, color: "var(--dim)", marginTop: 0, marginBottom: 8 }}>
+            From the line items on won quotes. Tap a department for what is inside it.
+          </p>
+
+          {d.byDepartment.map((x) => (
+            <div key={x.department}>
+              <div style={{ ...ctgListRow, cursor: "pointer" }}
+                   onClick={() => setOpenDept(openDept === x.department ? "" : x.department)}>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>
+                  {openDept === x.department ? "▾ " : "▸ "}{x.department}
+                </span>
+                <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, fontWeight: 600 }}>
+                  {rptMoney(x.amount)}
+                </span>
+              </div>
+              {openDept === x.department
+                ? x.items.map((i) => (
+                    <div key={i.key} style={{ ...ctgListRow, paddingLeft: 26, background: "var(--line)" }}>
+                      <span style={{ flex: 1, fontSize: 12.5 }}>{i.name}</span>
+                      <span style={{ flex: "0 0 50px", textAlign: "right", fontSize: 12, color: "var(--dim)" }}>
+                        ×{i.count}
+                      </span>
+                      <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 12.5 }}>
+                        {rptMoney(i.amount)}
+                      </span>
+                    </div>
+                  ))
+                : null}
+            </div>
+          ))}
+
+          {/* WHAT THE BREAKDOWN DOES NOT COVER, on screen beside it. Without
+              this the department column is a real number about a subset, and
+              nothing says which subset. */}
+          {cov ? (
+            <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px",
+                          marginTop: 10, marginBottom: 20, fontSize: 12.5, lineHeight: 1.65,
+                          color: "var(--dim)" }}>
+              <b style={{ color: "var(--fg)" }}>What this breakdown covers.</b>{" "}
+              {rptMoney(cov.attributed)} of {rptMoney(inc.won)} has line items behind it
+              ({cov.jobsWithLines} {cov.jobsWithLines === 1 ? "job" : "jobs"}).
+              {cov.noLineDetail > 0.5 ? <>{" "}
+                {rptMoney(cov.noLineDetail)} is on {cov.jobsWithoutLines}{" "}
+                {cov.jobsWithoutLines === 1 ? "job" : "jobs"} with no line detail —
+                imported past jobs, and anything quoted as a single figure — so
+                {cov.jobsWithoutLines === 1 ? " it does" : " they do"} not appear above.</> : null}
+              {Math.abs(cov.lineVariance) > 0.5 ? <>{" "}
+                A further {rptMoney(cov.lineVariance)} is the difference between what the lines
+                add up to and what those jobs were won at, which is discounts.</> : null}
+            </div>
+          ) : null}
+
+          {/* ---- expenses ------------------------------------------------ */}
+          <h2 style={{ fontSize: 15, margin: "0 0 8px" }}>Expenses</h2>
+          {d.expenses.byCategory.length ? (
+            <div style={{ marginBottom: 14 }}>
+              {d.expenses.byCategory.map((c) => (
+                <div key={c.category} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{c.category}</span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5 }}>
+                    {rptMoney(c.amount)}
+                  </span>
+                </div>
+              ))}
+              <div style={{ ...ctgListRow, fontWeight: 600 }}>
+                <span style={{ flex: 1, fontSize: 13 }}>
+                  {rptMoney(d.expenses.onShows)} on shows · {rptMoney(d.expenses.overhead)} overhead
+                </span>
+                <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5 }}>
+                  {rptMoney(d.expenses.total)}
+                </span>
+              </div>
+            </div>
+          ) : <p style={ctgHint}>No expenses in this period.</p>}
+
+          <p style={{ color: "var(--dim)", fontSize: 11.5, lineHeight: 1.6, maxWidth: 640 }}>
+            <b>Won</b> is the value of jobs counted in the period they ran.
+            <b> Invoiced</b> is what was sent, counted when it was sent. They are different
+            questions and are meant to differ. Neither is your books — this does not
+            replace QuickBooks, and where the two disagree, QuickBooks is right.
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function RptTile({ label, value, note, colour }) {
+  return (
+    <div style={{ flex: "1 1 150px", minWidth: 140, border: "1px solid var(--line)",
+                  borderLeft: "3px solid " + colour, borderRadius: 9, padding: "11px 13px" }}>
+      <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".6px",
+                    color: "var(--dim)" }}>{label}</div>
+      <div style={{ fontSize: 23, fontWeight: 700, letterSpacing: "-.6px", margin: "2px 0 0" }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--dim)" }}>{note}</div>
     </div>
   );
 }
