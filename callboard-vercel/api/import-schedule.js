@@ -6,7 +6,7 @@
 // Reuses ANTHROPIC_API_KEY. The model is EXTRACT_MODEL (optional, defaults in
 // _lib.js), and maxDuration for this route is set in vercel.json - without it
 // the platform kills the call mid-flight and the app can only say "504".
-import { json, readBody, auth, claudeExtract } from "./_lib.js";
+import { json, readBody, auth, claudeExtract, EXTRACT_MAX_INPUT_CHARS } from "./_lib.js";
 
 const PROMPT = `You are parsing an event agenda / run-of-show into a structured daily schedule for an AV production team.
 
@@ -50,12 +50,31 @@ export default async function handler(req, res) {
   const hasPdf = typeof body.pdf === "string" && body.pdf.length > 0;
   if (!hasText && !hasPdf) return json(res, 400, { error: "Paste an agenda or upload a PDF." });
 
+  /* REFUSED, NOT QUIETLY SHORTENED.
+   *
+   * This was `body.text`. An agenda longer than that had its
+   * tail thrown away in silence, and what came back was a schedule missing its
+   * last day or two - with no error, no warning, and nothing on the screen to
+   * suggest anything had happened. That is the worst failure in this whole
+   * file, because it is the only one that produces a WRONG ANSWER THAT LOOKS
+   * LIKE A RIGHT ONE. A schedule that is merely absent gets noticed; a
+   * schedule that is short by one day gets believed.
+   *
+   * The cap is now ten times bigger and it says so when it is hit. */
+  if (hasText && body.text.length > EXTRACT_MAX_INPUT_CHARS) {
+    return json(res, 413, {
+      error: "That agenda is " + Math.round(body.text.length / 1000) + "k characters, and " +
+             Math.round(EXTRACT_MAX_INPUT_CHARS / 1000) + "k is the limit. Paste it a day " +
+             "at a time, or raise EXTRACT_MAX_INPUT_CHARS in Vercel.",
+    });
+  }
+
   const content = hasPdf
     ? [
         { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.pdf } },
         { type: "text", text: PROMPT },
       ]
-    : [{ type: "text", text: PROMPT + "\n\n═══ AGENDA ═══\n" + body.text.slice(0, 40000) }];
+    : [{ type: "text", text: PROMPT + "\n\n═══ AGENDA ═══\n" + body.text }];
 
   try {
     const parsed = await claudeExtract({ content, what: "that agenda" });

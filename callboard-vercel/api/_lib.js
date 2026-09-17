@@ -966,15 +966,33 @@ export const EXTRACT_MODEL = process.env.EXTRACT_MODEL || "claude-sonnet-5";
    decides what the caller is told, and it should be this code — which knows
    what was being attempted — rather than the platform, which returns an HTML
    page the browser cannot read. */
-export const EXTRACT_DEADLINE_MS = Number(process.env.EXTRACT_DEADLINE_MS) || 110000;
+export const EXTRACT_DEADLINE_MS = Number(process.env.EXTRACT_DEADLINE_MS) || 280000;
 
-/* How much room the answer gets. A day-by-day schedule off a real agenda runs
-   to a few thousand tokens, and the first version allowed 4096 - enough until
-   it was not, at which point the reply stopped mid-string and the app said
-   "the answer wasn't usable", which is exactly the wrong diagnosis. Tunable
-   for the same reason as the model: a document longer than anything seen so
-   far should be a settings change, not an upload. */
-export const EXTRACT_MAX_TOKENS = Number(process.env.EXTRACT_MAX_TOKENS) || 8192;
+/* How much room the answer gets.
+ *
+ * THIS NUMBER HAS BEEN WRONG TWICE, IN THE SAME DIRECTION.
+ *   4096 first - a real day-by-day agenda overran it, the reply stopped
+ *   mid-string, and the app called that "the answer wasn't usable", which is
+ *   the wrong diagnosis of a right answer with its end missing. Then 8192,
+ *   which Tyler's actual agenda also overran.
+ *
+ *   Both times the number was picked by imagining the document rather than by
+ *   looking up the ceiling. The ceiling is 128K output tokens on the current
+ *   models, so 8192 was not a careful limit; it was 1/16th of what was
+ *   available, protecting nothing. A run-of-show for a multi-day conference is
+ *   a big document and there is no reason to make somebody cut it up by hand
+ *   to fit a cap this side of the real one.
+ *
+ * 32000 is generous for any agenda anybody will paste and still well under the
+ * model's limit. max_tokens is a CAP, not a target - a short agenda still
+ * costs a short answer - so raising it has no price until it is needed. */
+export const EXTRACT_MAX_TOKENS = Number(process.env.EXTRACT_MAX_TOKENS) || 32000;
+
+/* And how much can go IN. See the note in api/import-schedule.js: this used to
+   be a silent .slice(), which is the one failure here that produces a wrong
+   answer looking like a right one. 400,000 characters is roughly 100K tokens,
+   comfortable inside a 1M context. */
+export const EXTRACT_MAX_INPUT_CHARS = Number(process.env.EXTRACT_MAX_INPUT_CHARS) || 400000;
 
 /* Said again, outside the prompt each route writes.
    The prompts all say "return ONLY JSON" and mostly get it. A system line is
@@ -1067,9 +1085,12 @@ export async function claudeExtract({ content, maxTokens = EXTRACT_MAX_TOKENS, w
      thing again. */
   if (data.stop_reason === "max_tokens") {
     console.log("[extract] truncated at max_tokens (" + maxTokens + ")");
+    /* Names the setting, like the timeout message names EXTRACT_MODEL.
+       Raising it is thirty seconds in Vercel; splitting a run-of-show by hand
+       is an afternoon, and it was poor advice to lead with it. */
     const e = new Error("That was too long to read in one go - the answer was cut off at " +
-                        maxTokens + " tokens. Import it in smaller pieces (a day or a " +
-                        "section at a time).");
+                        maxTokens + " tokens. Raise EXTRACT_MAX_TOKENS in Vercel (the model " +
+                        "allows far more), or import it a day at a time.");
     e.status = 502;
     throw e;
   }
