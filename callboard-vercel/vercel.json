@@ -1,11 +1,21 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "crons": [
-    { "path": "/api/billing-digest",  "schedule": "0 15 * * *" },
-    { "path": "/api/nudge?morning=1", "schedule": "30 15 * * *" },
-    { "path": "/api/nudge?loose=1",   "schedule": "0 22 * * *" },
-    { "path": "/api/nudge",           "schedule": "*/15 * * * *" },
-    { "path": "/api/todoist",         "schedule": "*/15 * * * *" },
-    { "path": "/api/send-scheduled",  "schedule": "*/5 * * * *" }
-  ]
+  "name": "callboard",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "pdf-lib": "^1.17.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.0"
+  }
 }
