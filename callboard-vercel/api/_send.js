@@ -190,13 +190,18 @@ export async function deliverMessage({ show, data, subject, message, sections, r
     stamp, pages: packet ? packet.pages : 0,
   });
 
-  const { sent, failed } = await sendBrevoBatch(
+  const { sent, failed, reason } = await sendBrevoBatch(
     chosen.map((c) => ({ to: c.email, toName: c.name, subject, html })),
     packet ? { attachment: [{ content: base64, name: fileName }] } : {},
   );
 
   const result = {
     sent, failed,
+    /* WHY it did not go, in Brevo's own words. Without this the screen says
+       "1 did not go through" and stops, which is a dead end for whoever is
+       looking at it — and the logs were silent too, because the response body
+       was never read. */
+    ...(reason ? { reason } : {}),
     pages: packet ? packet.pages : 0,
     sections: packet ? packet.sections : [],
     noEmail: withoutEmail,
