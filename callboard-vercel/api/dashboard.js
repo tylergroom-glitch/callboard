@@ -69,25 +69,61 @@ export default async function handler(req, res) {
        is what keeps this response small enough to be a landing page. */
     const [showRows, quoteRows] = await Promise.all([
       supabaseRest("GET", "/shows?select=id,name,client,start_date,end_date,data&order=start_date.asc.nullslast", null),
-      supabaseRest("GET", "/quotes?select=id,event_id,version,status,sent_at,total,data&order=version.desc", null),
+      supabaseRest("GET", "/quotes?select=id,family_id,event_id,version,status,sent_at,total,data&order=version.desc", null),
     ]);
 
-    /* Newest version per show wins, and `order=version.desc` above means the
-       first one seen for a show IS the newest. */
+    /* Newest version wins — and `order=version.desc` above means the first row
+       seen for any given family or show IS the newest.
+     *
+     * ONE JOB IS ONE OPPORTUNITY, HOWEVER MANY TIMES IT WAS REVISED.
+     *
+     *   A quote is VERSIONED AS SEPARATE ROWS sharing a family_id. Revising
+     *   writes a new row at the next version and leaves the old one exactly as
+     *   it was — so a job quoted once and revised twice is three rows, and if
+     *   it has been sent, none of them are won and none are lost.
+     *
+     *   The first version of this summed every such row. One 60,000 job that
+     *   had been revised twice reported as 165,000 across 3 opportunities:
+     *   the old versions' totals added to the current one, and the same job
+     *   counted three times. On a dashboard whose whole purpose is "what is
+     *   the pipeline worth", that is not a rounding error.
+     *
+     *   Worse, it disagreed with the Quotes screen, which has always shown one
+     *   row per family. Two screens, two answers, no way to tell which is
+     *   right — the exact failure api/_pipe.js exists to prevent, reappearing
+     *   somewhere I had not thought to look.
+     *
+     *   So: fold to the newest version per family FIRST, then ask whether that
+     *   one is still open. A family whose newest version is won or lost
+     *   contributes nothing, even though older sent versions are still sitting
+     *   in the table looking open.
+     *
+     *   Keyed on family_id, falling back to the row's own id: quotes made
+     *   before families existed carry a null family_id, and keying them all
+     *   under "null" would collapse every one of them into a single
+     *   opportunity — the opposite error, and a quieter one. */
     const quoteFor = {};
-    let openTotal = 0, openCount = 0;
+    const newestOfFamily = {};
     for (const q of (quoteRows || [])) {
       if (!q) continue;
+      const famKey = q.family_id || ("solo:" + q.id);
+      if (!(famKey in newestOfFamily)) newestOfFamily[famKey] = q;
+
+      if (q.event_id && !quoteFor[q.event_id]) {
+        quoteFor[q.event_id] = {
+          version: q.version, status: str(q.status), sentAt: q.sent_at,
+          data: (q.data && typeof q.data === "object") ? { deposits: q.data.deposits } : null,
+        };
+      }
+    }
+
+    let openTotal = 0, openCount = 0;
+    for (const key of Object.keys(newestOfFamily)) {
+      const q = newestOfFamily[key];
       const status = str(q.status);
       /* Open = still being chased. Won is revenue, lost is gone; neither is
          pipeline. */
       if (status !== "won" && status !== "lost") { openTotal += num(q.total); openCount += 1; }
-      if (q.event_id && !quoteFor[q.event_id]) {
-        quoteFor[q.event_id] = {
-          version: q.version, status, sentAt: q.sent_at,
-          data: (q.data && typeof q.data === "object") ? { deposits: q.data.deposits } : null,
-        };
-      }
     }
 
     const shows = (showRows || []).map((r) => {
