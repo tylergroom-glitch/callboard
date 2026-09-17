@@ -83,6 +83,11 @@ import {
   deleteQuote,
   getQuoteTerms,
   getQuoteTermsPdfMeta,
+  previewJobImport,
+  commitJobImport,
+  listJobImports,
+  undoJobImport,
+  getYearRevenue,
   listBilling,
   generateBillingCalendarLink,
   listBillingCalendarLinks,
@@ -6966,6 +6971,460 @@ function QuoteEditor({ quoteId, catalog, clients, venues, onClose, onChanged, on
 
 /* ---------- the list ---------- */
 
+/* ============================================================
+   PAST JOBS — bulk import, and the year's revenue.
+
+   WHY THIS EXISTS
+     "A way to batch import existing quotes just to track the gross revenue
+     for this year and be able to attach expenses to."
+
+     Two halves, and the second one decides the shape of the first. Gross
+     revenue is a won quote. An expense is `expenses.show_id` — the only join
+     an expense has — so every imported job has to be a SHOW as well, or the
+     number arrives with nowhere to put a receipt. The server creates both,
+     linked, in one go.
+
+   WHY THE REVIEW STEP IS NOT OPTIONAL
+     Forty rows read out of a spreadsheet, each one becoming two database rows
+     nobody typed. The screen that shows what is about to happen is not a
+     courtesy; it is the only moment anyone looks. So every row is listed —
+     including the ones that could not be read, which is the half an importer
+     is usually tempted to hide.
+   ============================================================ */
+
+const IJ_EXAMPLE =
+  "Job,Client,Date,Amount,Status\n" +
+  "AdventHealth Q1 Summit,AdventHealth,3/5/2026,\"$42,500.00\",Won\n" +
+  "Globex Sales Kickoff,Globex,Mar 12 - 14 2026,18750,Won\n" +
+  "Initech Holiday Party,Initech,2025-12-11,9200,Won";
+
+/* The columns this reads, named the way they will be typed. Shown on the paste
+   step so nobody has to guess, and ticked green once the paste actually
+   contains them — which turns "why is it not seeing my dates" from a support
+   question into something answered by looking. */
+const IJ_COLUMNS = [
+  ["name", "Job"], ["client", "Client"], ["startDate", "Date"],
+  ["endDate", "End date"], ["total", "Amount"], ["status", "Status"],
+  ["invoiceNo", "Invoice #"], ["note", "Notes"],
+];
+
+/* Dates on this screen ALWAYS carry the year, which is why prettyDate is not
+   used here. prettyDate is right everywhere else — those screens are about
+   this season, and "Mar 5" is how people talk. This one is about several
+   years at once: an import that reads "12/11/25" and displays "Dec 11" gives
+   somebody checking the list no way at all to see that it landed in 2025, and
+   the whole purpose of the screen is to put jobs in the right year.
+
+   Built from the string's own characters, like the parser, so nothing here
+   can move a job a day west of Greenwich. */
+const IJ_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function ijDate(iso) {
+  const s = String(iso || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return IJ_MONTHS[Number(s.slice(5, 7)) - 1] + " " + Number(s.slice(8, 10)) + ", " + s.slice(0, 4);
+}
+/* A job's dates in one phrase. Same month and year collapses to "Mar 12-14,
+   2026"; anything else gets both dates in full, because a job that runs over
+   a year end is exactly the one nobody should have to work out. */
+function ijRange(start, end) {
+  if (!end || end === start) return ijDate(start);
+  if (start.slice(0, 7) === end.slice(0, 7)) {
+    return IJ_MONTHS[Number(start.slice(5, 7)) - 1] + " " + Number(start.slice(8, 10)) +
+           "–" + Number(end.slice(8, 10)) + ", " + start.slice(0, 4);
+  }
+  return ijDate(start) + " – " + ijDate(end);
+}
+
+function ImportJobsModal({ onClose, onImported }) {
+  const [text, setText] = useState("");
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState("");            // "" | "read" | "import" | "undo"
+  const [err, setErr] = useState("");
+  const [prev, setPrev] = useState(null);          // { rows, summary, headers, unknown }
+  const [pick, setPick] = useState(() => new Set());
+  const [done, setDone] = useState(null);
+  const [past, setPast] = useState({ st: "load", rows: [], err: "" });
+
+  const loadPast = async () => {
+    try { setPast({ st: "ok", rows: await listJobImports(), err: "" }); }
+    catch (e) { setPast({ st: "err", rows: [], err: (e && e.message) || "Couldn't read past imports." }); }
+  };
+  useEffect(() => { loadPast(); }, []);
+
+  const read = async () => {
+    setBusy("read"); setErr(""); setDone(null);
+    try {
+      const r = await previewJobImport(text);
+      setPrev(r);
+      /* Ticked by default: exactly what the server said it would create.
+         A duplicate arrives UNTICKED — the safe default is the one that does
+         not double a year, and ticking it back on is a deliberate act. */
+      setPick(new Set(r.rows.filter((x) => x.action === "create").map((x) => x.line)));
+    } catch (e) { setErr((e && e.message) || "Couldn't read that."); setPrev(null); }
+    setBusy("");
+  };
+
+  const toggle = (line) => setPick((s) => {
+    const n = new Set(s);
+    if (n.has(line)) n.delete(line); else n.add(line);
+    return n;
+  });
+
+  const rows = (prev && prev.rows) || [];
+  const chosen = rows.filter((r) => r.ok && pick.has(r.line));
+  const chosenGross = chosen.reduce((t, r) => t + (r.status === "won" ? Number(r.total) || 0 : 0), 0);
+
+  const run = async () => {
+    setBusy("import"); setErr("");
+    try {
+      const r = await commitJobImport(chosen.map((x) => ({
+        name: x.name, client: x.client, startDate: x.startDate, endDate: x.endDate,
+        total: x.total, status: x.status, invoiceNo: x.invoiceNo, note: x.note,
+        line: x.line,
+        /* Only a row that was flagged as already here and ticked back on gets
+           the override. Everything else is checked against the database again
+           on the way in and skipped if it has appeared since. */
+        force: !!x.dup,
+      })), note);
+      setDone(r); setPrev(null); setText("");
+      await loadPast();
+      if (onImported) onImported();
+    } catch (e) { setErr((e && e.message) || "Couldn't import those."); }
+    setBusy("");
+  };
+
+  const undo = async (batchId) => {
+    if (!window.confirm("Take that import back out? Jobs that have had receipts, " +
+                        "tasks, invoices or crew added to them will be kept.")) return;
+    setBusy("undo"); setErr("");
+    try {
+      const r = await undoJobImport(batchId);
+      await loadPast();
+      if (onImported) onImported();
+      setDone({ undone: true, ...r });
+    } catch (e) { setErr((e && e.message) || "Couldn't undo that."); }
+    setBusy("");
+  };
+
+  const sum = (prev && prev.summary) || null;
+
+  return (
+    <div className="sa-overlay" onClick={onClose}>
+      <div className="sa-modal ij-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="sa-title">Import past jobs</div>
+        <div className="sa-hint">
+          Paste a table of jobs you have already done — straight out of a spreadsheet is
+          fine. Each one becomes a show with a won quote on it, so the year has a revenue
+          figure and there is somewhere to attach the receipts. Nothing is created until
+          you have looked at the list.
+        </div>
+
+        {err ? <div className="sa-err">{err}</div> : null}
+
+        {/* ---- what just happened ---- */}
+        {done ? (
+          <div>
+            {done.undone ? (
+              <div className="ij-sum">
+                <div className="ij-sumcell">
+                  <span className="ij-sumn good">{done.removed}</span>
+                  <span className="ij-suml">taken back out</span>
+                </div>
+                {done.kept && done.kept.length ? (
+                  <div className="ij-sumcell">
+                    <span className="ij-sumn warn">{done.kept.length}</span>
+                    <span className="ij-suml">kept</span>
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <div className="ij-sum">
+                <div className="ij-sumcell">
+                  <span className="ij-sumn good">{done.created}</span>
+                  <span className="ij-suml">jobs created</span>
+                </div>
+                <div className="ij-sumcell">
+                  <span className="ij-sumn">{qtMoney0(done.gross || 0)}</span>
+                  <span className="ij-suml">gross added</span>
+                </div>
+                {done.skipped && done.skipped.length ? (
+                  <div className="ij-sumcell">
+                    <span className="ij-sumn warn">{done.skipped.length}</span>
+                    <span className="ij-suml">already here</span>
+                  </div>
+                ) : null}
+                {done.rejected && done.rejected.length ? (
+                  <div className="ij-sumcell">
+                    <span className="ij-sumn bad">{done.rejected.length}</span>
+                    <span className="ij-suml">couldn&rsquo;t be read</span>
+                  </div>
+                ) : null}
+              </div>
+            )}
+            {done.message ? <div className="sa-hint">{done.message}</div> : null}
+            {/* Named, not counted. Which ones were skipped is the thing
+                somebody actually needs to see. */}
+            {done.skipped && done.skipped.length ? (
+              <div className="sa-hint">
+                <b>Skipped:</b>{" "}
+                {done.skipped.map((s) => s.name + " (" + s.reason + ")").join("; ")}
+              </div>
+            ) : null}
+            {done.rejected && done.rejected.length ? (
+              <div className="sa-hint">
+                <b>Not imported:</b>{" "}
+                {done.rejected.map((s) => (s.name || "a row") + " — " + s.reason).join("; ")}
+              </div>
+            ) : null}
+            {done.kept && done.kept.length ? (
+              <div className="sa-hint">
+                <b>Kept, because work has been done on them:</b>{" "}
+                {done.kept.map((k) => k.name + " (" + k.reason + ")").join("; ")}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* ---- paste ---- */}
+        {!prev ? (
+          <div>
+            <textarea
+              className="ij-paste"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder={"Paste here. The first row has to name the columns."}
+            />
+            <div className="ij-cols">
+              {IJ_COLUMNS.map(([k, label]) => (
+                <span key={k} className="ij-col">{label}</span>
+              ))}
+            </div>
+            <div className="sa-hint" style={{ marginTop: 10 }}>
+              Job, Date and Amount are required; the rest are optional. Dates are read
+              American-style, so 3/5/2026 is the 5th of March. A job with no status counts
+              as won. Example:
+            </div>
+            <pre className="ij-eg">{IJ_EXAMPLE}</pre>
+          </div>
+        ) : null}
+
+        {/* ---- review ---- */}
+        {prev ? (
+          <div>
+            <div className="ij-sum">
+              <div className="ij-sumcell">
+                <span className="ij-sumn good">{chosen.length}</span>
+                <span className="ij-suml">will be created</span>
+              </div>
+              <div className="ij-sumcell">
+                <span className="ij-sumn">{qtMoney0(chosenGross)}</span>
+                <span className="ij-suml">gross</span>
+              </div>
+              {sum && sum.duplicates ? (
+                <div className="ij-sumcell">
+                  <span className="ij-sumn warn">{sum.duplicates}</span>
+                  <span className="ij-suml">already here</span>
+                </div>
+              ) : null}
+              {sum && sum.problems ? (
+                <div className="ij-sumcell">
+                  <span className="ij-sumn bad">{sum.problems}</span>
+                  <span className="ij-suml">couldn&rsquo;t be read</span>
+                </div>
+              ) : null}
+            </div>
+
+            {/* Which columns were actually found, green for yes.
+                "Why are all my end dates missing" is a question this answers
+                by being looked at: the End date chip is grey, so that column
+                was not recognised, and the unrecognised names are listed
+                underneath. Without this the screen just quietly shows
+                one-day jobs. */}
+            <div className="ij-cols" style={{ margin: "0 0 12px" }}>
+              {IJ_COLUMNS.map(([k, label]) => (
+                <span key={k}
+                      className={"ij-col" + ((prev.headers || []).indexOf(k) >= 0 ? " on" : "")}>
+                  {label}
+                </span>
+              ))}
+            </div>
+            {prev.unknown && prev.unknown.length ? (
+              <div className="sa-hint">
+                Columns I didn&rsquo;t recognise, so they were ignored:{" "}
+                <b>{prev.unknown.join(", ")}</b>
+              </div>
+            ) : null}
+
+            <div className="ij-scroll">
+              <table className="ij-tbl">
+                <thead>
+                  <tr>
+                    <th className="tick" />
+                    <th>Job</th><th>Client</th><th>Dates</th>
+                    <th style={{ textAlign: "right" }}>Amount</th><th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.line}
+                        className={!r.ok ? "ij-r-bad" : r.dup ? "ij-r-dup" : "ij-r-new"}>
+                      <td className="tick">
+                        {r.ok ? (
+                          <input type="checkbox" checked={pick.has(r.line)}
+                                 onChange={() => toggle(r.line)} />
+                        ) : null}
+                      </td>
+                      <td>
+                        <div>{r.ok ? r.name : (r.raw && r.raw.name) || "(no name)"}</div>
+                        <span className="ij-line">row {r.line}</span>
+                        {!r.ok ? <span className="ij-why red">{r.error}</span> : null}
+                        {r.ok && r.dup ? <span className="ij-why amber">{r.dupNote}</span> : null}
+                      </td>
+                      <td>{r.ok ? r.client : (r.raw && r.raw.client) || ""}</td>
+                      <td>
+                        {r.ok ? ijRange(r.startDate, r.endDate) : (r.raw && r.raw.startDate) || ""}
+                      </td>
+                      <td className="num">
+                        {r.ok ? qtMoney0(r.total) : (r.raw && r.raw.total) || ""}
+                      </td>
+                      <td>{r.ok ? <QtBadge status={r.status} /> : null}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <label className="mc-field" style={{ marginTop: 12, display: "block" }}>
+              <span className="sa-label">Call this import something (optional)</span>
+              <input className="sa-input" value={note} onChange={(e) => setNote(e.target.value)}
+                     placeholder="2026 back-fill from the invoice register" />
+            </label>
+          </div>
+        ) : null}
+
+        <div className="sa-actions">
+          {prev ? (
+            <>
+              <button className="btn ghost" onClick={() => { setPrev(null); setErr(""); }}>Back</button>
+              <button className="btn" disabled={!chosen.length || busy === "import"} onClick={run}>
+                {busy === "import" ? "Importing…"
+                  : "Import " + chosen.length + " job" + (chosen.length === 1 ? "" : "s")}
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="btn ghost" onClick={onClose}>Close</button>
+              <button className="btn" disabled={!text.trim() || busy === "read"} onClick={read}>
+                {busy === "read" ? "Reading…" : "Check the list"}
+              </button>
+            </>
+          )}
+        </div>
+
+        {/* ---- what has been imported before ---- */}
+        {past.st === "ok" && past.rows.length ? (
+          <div className="ij-past">
+            <div className="ij-suml" style={{ marginBottom: 8 }}>Past imports</div>
+            {past.rows.map((b) => (
+              <div key={b.id} className="ij-pastrow">
+                <span className="when">{b.createdAt ? ijDate(String(b.createdAt).slice(0, 10)) : ""}</span>
+                <span style={{ flex: 1, minWidth: 140 }}>
+                  {b.note || (b.created + " job" + (b.created === 1 ? "" : "s"))}
+                  {b.actor ? <span className="who"> · {b.actor}</span> : null}
+                </span>
+                <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{qtMoney0(b.gross)}</span>
+                {b.status === "done" ? (
+                  <button className="btn ghost" style={{ padding: "4px 9px" }}
+                          disabled={busy === "undo"} onClick={() => undo(b.id)}>Undo</button>
+                ) : (
+                  <span className="ij-undone">
+                    {b.status === "part-undone" ? "partly undone" : "undone"}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {past.st === "err" ? <div className="sa-err">{past.err}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+/* The year, in one line, at the top of the Quotes screen.
+
+   GROSS IS WHAT WAS WON, NOT WHAT HAS BEEN COLLECTED. Billing answers the
+   other question, and the two numbers are different on purpose — so this says
+   "gross" everywhere and never "revenue" unqualified.
+
+   `undated` is shown rather than swallowed: a won job with no date cannot be
+   put in a year, and a figure that is quietly short is worse than one that
+   says how short it is. */
+function YearRevenueStrip({ reloadKey, onImport }) {
+  const thisYear = Number(new Intl.DateTimeFormat("en-CA", {
+    timeZone: BUSINESS_TZ, year: "numeric",
+  }).format(new Date()));
+  const [year, setYear] = useState(thisYear);
+  const [st, setSt] = useState("load");
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setSt("load");
+    getYearRevenue(year)
+      .then((r) => { if (alive) { setD(r); setSt("ok"); } })
+      .catch((e) => { if (alive) { setErr((e && e.message) || "Couldn't read the year."); setSt("err"); } });
+    return () => { alive = false; };
+  }, [year, reloadKey]);
+
+  const years = [];
+  for (let y = thisYear + 1; y >= thisYear - 5; y--) years.push(y);
+
+  return (
+    <div className="yr-strip">
+      <select className="yr-pick" value={year} onChange={(e) => setYear(Number(e.target.value))}>
+        {years.map((y) => <option key={y} value={y}>{y}</option>)}
+      </select>
+
+      {st === "load" ? <span className="yr-l">reading…</span> : null}
+      {st === "err" ? <span className="yr-l" style={{ color: "#f87171" }}>{err}</span> : null}
+
+      {st === "ok" && d ? (
+        <>
+          <div className="yr-cell">
+            <span className="yr-n green">{qtMoney0(d.gross)}</span>
+            <span className="yr-l">gross won</span>
+          </div>
+          <div className="yr-cell">
+            <span className="yr-n">{d.jobs}</span>
+            <span className="yr-l">{d.jobs === 1 ? "job" : "jobs"}</span>
+          </div>
+          <div className="yr-cell">
+            <span className="yr-n red">{qtMoney0(d.costs.total)}</span>
+            <span className="yr-l">costs logged</span>
+          </div>
+          <div className="yr-cell">
+            <span className="yr-n">{qtMoney0(d.net)}</span>
+            <span className="yr-l">gross less costs</span>
+          </div>
+          <div className="yr-note">
+            Gross is what was won, not what has been collected — Billing has that.
+            {d.undated ? " " + d.undated + " won job" + (d.undated === 1 ? " has" : "s have") +
+                          " no date, so " + (d.undated === 1 ? "it is" : "they are") + " not counted here." : ""}
+            {d.imported ? " " + d.imported + " of these were imported." : ""}
+          </div>
+        </>
+      ) : null}
+
+      <button className="btn ghost" style={{ padding: "6px 11px" }} onClick={onImport}>
+        Import past jobs
+      </button>
+    </div>
+  );
+}
+
 function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
   const [rows, setRows] = useState([]);
   const [catalog, setCatalog] = useState([]);
@@ -6975,6 +7434,11 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
   const [err, setErr] = useState("");
   const [openId, setOpenId] = useState(null);
   const [filter, setFilter] = useState("");
+  const [importing, setImporting] = useState(false);
+  /* Bumped whenever something has changed the money, so the year strip
+     refetches. A counter rather than a callback so the strip owns its own
+     request and its own error, the way every other panel here does. */
+  const [moneyKey, setMoneyKey] = useState(0);
 
   const loadList = async () => {
     try { setRows(await listQuotes()); setErr(""); }
@@ -7029,12 +7493,19 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
       />
     );
 
-  // Only the newest version of each family shows in the list; older ones are
-  // reachable from inside the editor.
+  /* Only the newest version of each family shows in the list; older ones are
+     reachable from inside the editor.
+
+     KEYED WITH A FALLBACK, and this is not defensive dressing. A quote made
+     before families existed carries a null familyId, and every one of those
+     keys as the string "null" — so the list would show ONE of them and hide
+     the rest, silently, with no empty state to notice. The Today dashboard had
+     the same fold and the same hole; this is the other place it lives. */
   const newest = {};
   for (const r of rows) {
-    const cur = newest[r.familyId];
-    if (!cur || r.version > cur.version) newest[r.familyId] = r;
+    const key = r.familyId || ("solo:" + r.id);
+    const cur = newest[key];
+    if (!cur || r.version > cur.version) newest[key] = r;
   }
   let list = Object.keys(newest).map((k) => newest[k]);
   if (filter) list = list.filter((r) => r.status === filter);
@@ -7056,6 +7527,15 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
           <button className="btn ghost" onClick={onClose}>Back to shows</button>
         </div>
       </div>
+
+      <YearRevenueStrip reloadKey={moneyKey} onImport={() => setImporting(true)} />
+
+      {importing ? (
+        <ImportJobsModal
+          onClose={() => setImporting(false)}
+          onImported={() => { loadList(); setMoneyKey((n) => n + 1); if (onShowCreated) onShowCreated(); }}
+        />
+      ) : null}
 
       <div style={{ ...qtRow, marginBottom: 16 }}>
         <button onClick={() => setFilter("")} style={ctgChip(!filter, "#96A0B2")}>All ({Object.keys(newest).length})</button>
@@ -7102,7 +7582,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.48.1";
+const APP_VERSION = "1.49.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -19666,6 +20146,96 @@ const CSS = `
 .cb .sa-clear{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--dim); margin-top:6px; cursor:pointer;}
 .cb .sa-err{color:var(--danger); font-size:12.5px; margin:4px 0 12px;}
 .cb .sa-actions{display:flex; gap:8px; justify-content:flex-end; margin-top:8px;}
+/* ------------------------------------------------------------------
+   Importing past jobs, and the year's revenue strip.
+
+   The review table is the whole point of this screen: forty rows that
+   somebody has to be able to scan before pressing a button that writes
+   forty shows. So it is wide (a modal at 980px, not 420), it scrolls in
+   its own box rather than the page, and the three states a row can be in
+   are told apart by a coloured left edge as well as by words - a table
+   where "already here" and "will be created" look alike is a table
+   nobody reads to the bottom of.
+
+   Every input carries an explicit width because the blanket rule on
+   .cb input sets width to 100%, which applies to checkboxes too, and an
+   unwidthed checkbox in here becomes a full-width grey slab.
+   (No backticks anywhere in this file's styles. The whole stylesheet is one
+   JavaScript template literal, so a single backtick in a comment ends it and
+   the build fails several thousand lines further down.)
+   ------------------------------------------------------------------ */
+.cb .ij-modal{max-width:980px;}
+.cb .ij-paste{width:100%; min-height:190px; background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:10px; padding:11px 12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; line-height:1.55; resize:vertical;}
+.cb .ij-eg{background:var(--panel2); border:1px solid var(--line); border-radius:10px; padding:10px 12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:var(--dim); line-height:1.7; white-space:pre; overflow-x:auto; margin:10px 0 0;}
+.cb .ij-cols{display:flex; flex-wrap:wrap; gap:6px; margin-top:10px;}
+.cb .ij-col{font-size:11px; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--dim); border:1px solid var(--line); border-radius:999px; padding:3px 9px;}
+.cb .ij-col.on{color:#101218; background:var(--green); border-color:var(--green);}
+.cb .ij-sum{display:flex; flex-wrap:wrap; gap:18px; padding:12px 14px; background:var(--panel2); border:1px solid var(--line); border-radius:12px; margin:0 0 14px;}
+.cb .ij-sumcell{display:flex; flex-direction:column; gap:2px;}
+.cb .ij-sumn{font-size:19px; font-weight:800; font-variant-numeric:tabular-nums;}
+.cb .ij-sumn.good{color:var(--green);}
+.cb .ij-sumn.warn{color:var(--amber);}
+.cb .ij-sumn.bad{color:var(--danger);}
+.cb .ij-suml{font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:700;}
+.cb .ij-scroll{max-height:46vh; overflow:auto; border:1px solid var(--line); border-radius:12px;}
+.cb .ij-tbl{width:100%; border-collapse:collapse; font-size:13px;}
+.cb .ij-tbl th{position:sticky; top:0; z-index:1; background:var(--panel2); text-align:left; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:800; padding:8px 10px; border-bottom:1px solid var(--line);}
+.cb .ij-tbl td{padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top;}
+.cb .ij-tbl tr:last-child td{border-bottom:none;}
+.cb .ij-tbl td.num{text-align:right; font-variant-numeric:tabular-nums; font-weight:700; white-space:nowrap;}
+.cb .ij-tbl td.tick{width:34px;}
+.cb .ij-tbl input[type=checkbox]{width:17px; height:17px; accent-color:var(--green); cursor:pointer;}
+.cb .ij-r-new td:first-child{box-shadow:inset 3px 0 0 var(--green);}
+.cb .ij-r-dup td:first-child{box-shadow:inset 3px 0 0 var(--amber);}
+.cb .ij-r-bad td:first-child{box-shadow:inset 3px 0 0 var(--danger);}
+.cb .ij-r-bad{opacity:.62;}
+.cb .ij-why{display:block; font-size:11.5px; color:var(--faint); margin-top:2px;}
+.cb .ij-why.amber{color:#f4c76b;}
+.cb .ij-why.red{color:#f87171;}
+.cb .ij-line{color:var(--faint); font-size:11px; font-variant-numeric:tabular-nums;}
+.cb .ij-past{margin-top:18px; border-top:1px solid var(--line); padding-top:14px;}
+.cb .ij-pastrow{display:flex; flex-wrap:wrap; gap:12px; align-items:center; padding:7px 0; font-size:13px; border-bottom:1px solid var(--line);}
+.cb .ij-pastrow:last-child{border-bottom:none;}
+.cb .ij-pastrow .when{color:var(--dim); min-width:150px;}
+.cb .ij-pastrow .who{color:var(--faint); font-size:12px;}
+.cb .ij-undone{color:var(--faint); font-style:italic;}
+/* the year strip on the Quotes screen */
+.cb .yr-strip{display:flex; flex-wrap:wrap; align-items:center; gap:20px; padding:13px 16px; background:var(--panel); border:1px solid var(--line); border-radius:14px; margin-bottom:16px;}
+.cb .yr-pick{background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px; padding:6px 9px; font-family:inherit; font-size:13px; font-weight:700; width:auto;}
+.cb .yr-cell{display:flex; flex-direction:column; gap:1px;}
+.cb .yr-n{font-size:18px; font-weight:800; font-variant-numeric:tabular-nums;}
+.cb .yr-n.green{color:var(--green);}
+.cb .yr-n.red{color:#f87171;}
+.cb .yr-l{font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--faint); font-weight:700;}
+.cb .yr-note{margin-left:auto; font-size:12px; color:var(--faint); max-width:320px; text-align:right; line-height:1.45;}
+/* On a phone the review table stops being a table.
+
+   Six columns at 420px means Amount and Status sit off the right-hand edge
+   behind a horizontal scrollbar nobody finds - and the amount is the one
+   number on this screen that must never be out of sight, because it is what
+   somebody is checking before pressing a button that writes it down. So each
+   row becomes a card: the job on its own line, everything else under it, the
+   tick in the margin, and the coloured edge on the row itself rather than on
+   a first cell that no longer starts the row. */
+@media (max-width: 760px){
+  .cb .yr-note{margin-left:0; text-align:left; max-width:none;}
+  .cb .ij-scroll{max-height:none;}
+  .cb .ij-tbl thead{display:none;}
+  .cb .ij-tbl, .cb .ij-tbl tbody, .cb .ij-tbl tr, .cb .ij-tbl td{display:block;}
+  .cb .ij-tbl tr{position:relative; padding:10px 12px 10px 40px; border-bottom:1px solid var(--line);}
+  .cb .ij-tbl tr:last-child{border-bottom:none;}
+  .cb .ij-tbl td{padding:0; border:none;}
+  .cb .ij-tbl td.tick{position:absolute; left:12px; top:12px; width:auto;}
+  .cb .ij-tbl td.num{text-align:left;}
+  .cb .ij-tbl td:not(.tick):not(:nth-child(2)){display:inline-block; margin:3px 14px 0 0; font-size:12.5px; color:var(--dim);}
+  .cb .ij-tbl td.num{font-size:14px; color:var(--ink);}
+  .cb .ij-r-new td:first-child, .cb .ij-r-dup td:first-child, .cb .ij-r-bad td:first-child{box-shadow:none;}
+  .cb .ij-r-new{border-left:3px solid var(--green);}
+  .cb .ij-r-dup{border-left:3px solid var(--amber);}
+  .cb .ij-r-bad{border-left:3px solid var(--danger);}
+  .cb .ij-modal{padding:16px;}
+  .cb .ij-sum{gap:14px;}
+}
 /* wiring diagram */
 .cb .wd-wrap{display:flex; flex-direction:column; gap:10px; margin-top:8px;}
 .cb .wd-bar{display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 10px; background:#101218; border:1px solid var(--line); border-radius:10px;}

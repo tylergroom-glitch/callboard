@@ -195,6 +195,34 @@ export const deleteQuote = (id) =>
 export const getQuoteTerms = () => api("GET", "/api/quotes?terms=1");
 export const saveQuoteTerms = (text) => api("POST", "/api/quotes?terms=1", { text });
 
+/* ---------- Past jobs: bulk import, and the year's revenue ----------
+
+   `previewJobImport` WRITES NOTHING. It reads a pasted table and hands back
+   every row with what it made of it, what is already in the app, and what it
+   would create. Nothing exists until `commitJobImport` is called.
+
+   The rows handed to commit are the RAW values, not the review screen's
+   verdict: the server re-reads every one of them and re-checks every duplicate
+   against the database as it is at that moment. That is what makes pressing
+   Import twice safe, and it means these two calls can be minutes apart without
+   the second one acting on a stale picture. */
+export const previewJobImport = (text) =>
+  api("POST", "/api/import-jobs?preview=1", { text });
+export const commitJobImport = (rows, note) =>
+  api("POST", "/api/import-jobs?commit=1", { rows, note });
+export const listJobImports = () => api("GET", "/api/import-jobs");
+/* Takes an import back out — but only the jobs that have had nothing hung on
+   them since. Anything with receipts, tasks, invoices or crew is kept and
+   named in the response. */
+export const undoJobImport = (batchId) =>
+  api("POST", "/api/import-jobs?undo=" + encodeURIComponent(batchId));
+
+/* The year's gross, by month and by client, with costs against it.
+   Gross is what was WON, not what has been collected — billing answers the
+   other question. */
+export const getYearRevenue = (year) =>
+  api("GET", "/api/reporting?revenue=1&year=" + encodeURIComponent(year));
+
 // Platform-wide TCG admin. Invites the person if they have no account yet.
 export const setTcgAdmin = (body) =>
   api("POST", "/api/members?tcg=1", { redirectTo: window.location.origin + "?setpw=1", ...body });
