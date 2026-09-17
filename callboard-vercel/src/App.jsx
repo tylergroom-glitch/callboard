@@ -7095,7 +7095,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.47.0";
+const APP_VERSION = "1.47.1";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
