@@ -148,6 +148,18 @@ import {
   setTruckOrigin,
   getTruckRates,
   setTruckRates,
+  getAttachPairs,
+  previewAttach,
+  commitAttach,
+  listAttachUndo,
+  undoAttach,
+  getReport,
+  listVenueFiles,
+  viewVenueFile,
+  deleteVenueFile,
+  uploadVenueFile,
+  getBackupManifest,
+  downloadBackup,
   getCrewDocStatus,
   listNewCrew,
   markCrewReviewed,
@@ -1423,6 +1435,8 @@ function Callboard({ auth, onLogout }) {
               <BillingScreen onClose={() => goAdmin("shows")} onOpenShow={openLandingShow} />
             ) : admSection === "expenses" ? (
               <ExpensesScreen onClose={() => goAdmin("shows")} events={events} />
+            ) : admSection === "reports" ? (
+              <ReportsScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "roster" ? (
               <RosterScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "staff" ? (
@@ -4242,6 +4256,7 @@ function CatalogVenues() {
   const [q, setQ] = useState("");
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [filesFor, setFilesFor] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -4281,10 +4296,17 @@ function CatalogVenues() {
           <span style={{ color: "var(--dim)", fontSize: 12, flex: "1 1 180px" }}>
             {[v.address, v.city, v.state, v.zip].filter(Boolean).join(", ")}
           </span>
+          {/* Only on a saved venue: attachments hang off an id, and a venue
+              being typed in for the first time does not have one yet. */}
+          <button className="btn ghost" onClick={() => setFilesFor(v)} style={{ padding: "5px 10px" }}>Files</button>
           <button className="btn ghost" onClick={() => setDraft(v)} style={{ padding: "5px 10px" }}>Edit</button>
           <button className="btn ghost danger" onClick={() => remove(v)} style={{ padding: "5px 10px" }}>Delete</button>
         </div>
       ))}
+
+      {filesFor ? (
+        <VenueFilesModal venue={filesFor} onClose={() => setFilesFor(null)} />
+      ) : null}
 
       {draft ? (
         <CtgModal title={draft.id ? "Edit venue" : "New venue"} onClose={() => setDraft(null)}>
@@ -4324,6 +4346,205 @@ function CatalogVenues() {
   );
 }
 
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS ATTACHED TO A VENUE
+ *
+ * The things you wish you still had about a room you worked two years ago: the
+ * Vectorworks plot, a PDF of it you can open on a phone, and photographs of
+ * the dock, the power and the parking.
+ *
+ * TWO THINGS SHAPE THIS SCREEN.
+ *
+ *   A venue plot is 50–200MB. That is minutes, not seconds, so the progress
+ *   bar is not decoration — without it a long upload is indistinguishable from
+ *   a hung one, and people cancel working uploads and start again.
+ *
+ *   A .vwx cannot be shown. Nothing renders one. So drawings are a list with a
+ *   download, and the thing worth having beside them is a PDF you can actually
+ *   open standing in a loading dock.
+ * ───────────────────────────────────────────────────────────────────────────── */
+const VF_GROUPS = [
+  { kind: "photo", label: "Photos", blurb: "Dock, power, parking — crew can see these." },
+  { kind: "plot", label: "Drawings", blurb: "Vectorworks and CAD. Yours only." },
+  { kind: "doc", label: "PDFs", blurb: "Plots to open on a phone, tech specs. Yours only." },
+];
+
+function VenueFilesModal({ venue, onClose }) {
+  const [files, setFiles] = useState(null);
+  const [err, setErr] = useState("");
+  const [up, setUp] = useState(null);      // { name, pct }
+  const [thumbs, setThumbs] = useState({}); // id -> signed url
+  const inputRef = useRef(null);
+
+  const load = async () => {
+    try { const r = await listVenueFiles(venue.id); setFiles(r.files); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the files."); setFiles([]); }
+  };
+  useEffect(() => { load(); }, [venue.id]);
+
+  /* Thumbnails are fetched one signed URL at a time, after the list. Doing it
+     as part of the list would mean the screen waits for every image before it
+     shows anything. */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      for (const f of (files || []).filter((x) => x.kind === "photo" && x.hasThumb)) {
+        if (thumbs[f.id]) continue;
+        try {
+          const r = await viewVenueFile(f.id, true);
+          if (!alive) return;
+          setThumbs((t) => ({ ...t, [f.id]: r.url }));
+        } catch (e) { /* a missing thumbnail is not worth an error on screen */ }
+      }
+    })();
+    return () => { alive = false; };
+  }, [files]);
+
+  const open = async (f) => {
+    setErr("");
+    try {
+      const r = await viewVenueFile(f.id);
+      /* A new tab rather than a navigation: a 200MB download must not take the
+         app with it, and the signed URL dies in five minutes anyway. */
+      window.open(r.url, "_blank", "noopener");
+    } catch (e) { setErr((e && e.message) || "Couldn't open that."); }
+  };
+
+  const pick = async (e) => {
+    const chosen = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!chosen.length) return;
+    setErr("");
+    for (const file of chosen) {
+      setUp({ name: file.name, pct: 0 });
+      try {
+        await uploadVenueFile(venue.id, file, {
+          onProgress: (p) => setUp({ name: file.name, pct: Math.round(p * 100) }),
+        });
+      } catch (ex) {
+        /* Named, and the loop stops. Carrying on after a failure means a
+           four-file drop where the second failed silently and nobody notices
+           until the day they look for it. */
+        setErr(file.name + " — " + ((ex && ex.message) || "upload failed"));
+        setUp(null);
+        await load();
+        return;
+      }
+    }
+    setUp(null);
+    await load();
+  };
+
+  const remove = async (f) => {
+    if (!window.confirm("Delete " + f.fileName + "? This cannot be undone.")) return;
+    try { await deleteVenueFile(f.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete that."); }
+  };
+
+  const size = (n) => !n ? "" :
+    n >= 1048576 ? Math.round(n / 1048576) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+
+  const byKind = (k) => (files || []).filter((f) => f.kind === k);
+
+  return (
+    <CtgModal title={venue.name || "Venue files"} onClose={onClose}>
+      {err ? <div style={ctgErr}>{err}</div> : null}
+
+      <div style={{ ...ctgRow, marginBottom: 14, alignItems: "center" }}>
+        <button className="btn amber" onClick={() => inputRef.current && inputRef.current.click()}
+                disabled={!!up}>
+          {up ? "Uploading…" : "+ Add files"}
+        </button>
+        <span style={{ color: "var(--dim)", fontSize: 12 }}>
+          Photos, Vectorworks, CAD or PDF. Up to 200 MB each.
+        </span>
+        <input ref={inputRef} type="file" multiple onChange={pick}
+               style={{ display: "none" }}
+               accept=".jpg,.jpeg,.png,.heic,.heif,.webp,.vwx,.vwxp,.dwg,.dxf,.pdf" />
+      </div>
+
+      {/* THE PROGRESS BAR IS THE POINT on a file this size. A percentage that
+          stops moving is how a stall becomes visible; with no bar at all a
+          twenty-minute upload looks exactly like a hang. */}
+      {up ? (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: "var(--dim)", marginBottom: 4 }}>
+            {up.name} — {up.pct}%
+          </div>
+          <div style={{ height: 6, borderRadius: 4, background: "var(--line)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: up.pct + "%", background: "#FFB020",
+                          transition: "width .2s" }} />
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--dim)", marginTop: 5 }}>
+            A large drawing can take several minutes. Leave this open.
+          </div>
+        </div>
+      ) : null}
+
+      {files === null ? <div style={ctgHint}>Loading…</div> : null}
+      {files && !files.length && !up ? (
+        <div style={{ ...ctgHint, padding: 26, textAlign: "center" }}>
+          Nothing attached to this venue yet.
+        </div>
+      ) : null}
+
+      {VF_GROUPS.map((g) => {
+        const list = byKind(g.kind);
+        if (!list.length) return null;
+        return (
+          <div key={g.kind} style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 1 }}>
+              {g.label} <span style={{ color: "var(--dim)", fontWeight: 400 }}>({list.length})</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--dim)", marginBottom: 8 }}>{g.blurb}</div>
+
+            {g.kind === "photo" ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {list.map((f) => (
+                  <div key={f.id} style={{ width: 118 }}>
+                    <div onClick={() => open(f)} title={f.fileName}
+                         style={{ width: 118, height: 84, borderRadius: 7, overflow: "hidden",
+                                  background: "var(--line)", cursor: "pointer",
+                                  display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {thumbs[f.id]
+                        ? <img src={thumbs[f.id]} alt={f.caption || f.fileName}
+                               style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        : <span style={{ fontSize: 11, color: "var(--dim)" }}>…</span>}
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 3, lineHeight: 1.35 }}>
+                      {f.caption || f.fileName}
+                    </div>
+                    <button className="btn ghost danger" onClick={() => remove(f)}
+                            style={{ padding: "2px 7px", fontSize: 11, marginTop: 2 }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              list.map((f) => (
+                <div key={f.id} style={{ ...ctgListRow, padding: "7px 9px" }}>
+                  <span style={{ flex: 1, minWidth: 120, fontSize: 13 }}>{f.fileName}</span>
+                  <span style={{ color: "var(--dim)", fontSize: 11.5, flex: "0 0 auto" }}>
+                    {size(f.fileSize)}
+                  </span>
+                  <button className="btn ghost" onClick={() => open(f)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Download</button>
+                  <button className="btn ghost danger" onClick={() => remove(f)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Delete</button>
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })}
+
+      <p style={{ color: "var(--dim)", fontSize: 11.5, lineHeight: 1.6, marginTop: 4, marginBottom: 0 }}>
+        Crew can see the photos when this venue is on their show. Drawings and PDFs
+        stay with you. Nothing here is in the database backup yet.
+      </p>
+    </CtgModal>
+  );
+}
 
 /* One shared terms block, appended as an appendix to every quote PDF. */
 function CatalogTerms() {
@@ -7077,6 +7298,13 @@ function pdfToRow(r, i) {
     invoiceNo: "",
     dup: r.dup || "",
     dupNote: r.dupNote || "",
+    /* A show already in the app that this job could go onto instead of getting
+       a new one. Starts UNPICKED even when the server is sure: attaching moves
+       the job's money onto an existing show, and a wrong attach is invisible
+       afterwards — the money simply sits somewhere else and nothing says so. A
+       spare show is visible and fixable; a mis-attached job is not. */
+    showMatch: r.showMatch || null,
+    attachTo: "",
     action: r.dup ? "skip" : "create",
     clientInfo: r.client || null,
     venueInfo: r.venue || null,
@@ -7240,6 +7468,9 @@ function ImportJobsModal({ onClose, onImported, clients, venues }) {
            the override. Everything else is checked against the database again
            on the way in and skipped if it has appeared since. */
         force: !!x.dup,
+        /* "" means make a show. An id means use that one — validated on the
+           server against what it actually is, never taken on trust. */
+        attachTo: x.attachTo || "",
         /* The PDF half. An id means "use the one I picked"; no id plus a
            newClient means "make this one". The server treats an id as final,
            so a stale proposal left alongside it cannot create a second
@@ -7548,6 +7779,28 @@ function ImportJobsModal({ onClose, onImported, clients, venues }) {
                         ) : null}
                         {r.ok && (r.warnings || []).length ? (
                           <span className="ij-why amber">{r.warnings.join(" ")}</span>
+                        ) : null}
+
+                        {/* A SHOW YOU ALREADY HAVE FOR THIS JOB.
+                            Offered rather than assumed, and off by default even
+                            when the names match exactly. Importing onto the
+                            wrong show is invisible afterwards — the money sits
+                            on another job and nothing on any screen says so —
+                            whereas a spare show is right there in the list. */}
+                        {r.ok && r.showMatch ? (
+                          <label className="ij-why" style={{ display: "block", marginTop: 3 }}>
+                            <input
+                              type="checkbox"
+                              style={{ width: "auto", marginRight: 6, verticalAlign: "middle" }}
+                              checked={r.attachTo === r.showMatch.id}
+                              onChange={(e) =>
+                                setPickField(r.line, "attachTo", e.target.checked ? r.showMatch.id : "")}
+                            />
+                            Put this on the show you already have —{" "}
+                            <b>{r.showMatch.name}</b>{" "}
+                            <span style={{ opacity: .75 }}>({r.showMatch.why.toLowerCase()})</span>
+                            {" "}instead of making a new one.
+                          </label>
                         ) : null}
                       </td>
                       <td>
@@ -7886,7 +8139,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.49.0";
+const APP_VERSION = "1.54.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -7928,6 +8181,8 @@ const ADM_NAV = [
      in, and the reason to open it — "I have a receipt in my pocket" — is the
      same kind of errand. */
   { key: "expenses", label: "Expenses", c: "#FB923C" },
+  /* After Billing and Expenses, because it is what those two add up to. */
+  { key: "reports", label: "Reports", c: "#34D399" },
   { key: "catalog", label: "Catalog", c: "#60A5FA" },
 ];
 
@@ -8581,6 +8836,8 @@ const SET_TABS = [
   { key: "todoist", label: "Todoist" },
   { key: "docs", label: "Crew documents" },
   { key: "look", label: "Appearance" },
+  { key: "backup", label: "Backup" },
+  { key: "dupes", label: "Duplicate shows" },
 ];
 
 /* How long ago, in words. A timestamp is a number you have to subtract from
@@ -8875,6 +9132,263 @@ function SetTodoist() {
   );
 }
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * REPORTS
+ *
+ * Total income, total expenses, income by client, income by department — for a
+ * month, a year, or a year to date.
+ *
+ * TWO INCOMES SIDE BY SIDE, AND THE GAP BETWEEN THEM.
+ *   WON is the value of the jobs booked, counted in the period the job RAN.
+ *   INVOICED is what actually went out, counted when it was sent. They are
+ *   supposed to disagree — a December show invoiced in January sits in
+ *   December on one and January on the other — and showing one alone invites
+ *   reading it as the other. The gap is where work you did and never billed
+ *   shows up.
+ *
+ * NEITHER IS THE BOOKS. Billing carries the QuickBooks numbers; QuickBooks is
+ * the record. What this screen knows that QuickBooks does not is what the
+ * money was FOR.
+ *
+ * AND EVERY BREAKDOWN SAYS WHAT IT DOES NOT COVER. A department split built
+ * from line items can only ever describe the jobs that have line items —
+ * every imported historical job has a total and no lines. A figure covering a
+ * fifth of the money, read as a total, is the failure this screen is designed
+ * against, so the uncovered remainder is on screen next to it rather than
+ * left to be inferred from a number that does not add up.
+ * ───────────────────────────────────────────────────────────────────────────── */
+const RPT_PERIODS = [
+  { key: "month", label: "Month" },
+  { key: "ytd", label: "Year to date" },
+  { key: "year", label: "Full year" },
+];
+
+const rptMoney = (n) =>
+  (Number(n) < 0 ? "-" : "") + "$" +
+  Math.abs(Math.round(Number(n) || 0)).toLocaleString("en-US");
+
+function ReportsScreen({ onClose }) {
+  const today = tdToday();
+  const [period, setPeriod] = useState("month");
+  const [anchor, setAnchor] = useState(today);
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [openDept, setOpenDept] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setErr("");
+    getReport(period, anchor)
+      .then((r) => { if (alive) { setD(r); setLoading(false); } })
+      .catch((e) => { if (alive) { setErr((e && e.message) || "Couldn't build the report."); setLoading(false); } });
+    return () => { alive = false; };
+  }, [period, anchor]);
+
+  /* Stepping by period rather than a date picker: "the month before this one"
+     is the question actually being asked, and a calendar makes you answer a
+     different one first. */
+  const step = (dir) => {
+    const y = Number(anchor.slice(0, 4)), m = Number(anchor.slice(5, 7));
+    if (period === "month") {
+      const nm = m + dir;
+      const ny = y + (nm > 12 ? 1 : nm < 1 ? -1 : 0);
+      const mm = ((nm - 1 + 12) % 12) + 1;
+      setAnchor(ny + "-" + String(mm).padStart(2, "0") + "-15");
+    } else {
+      setAnchor((y + dir) + "-06-15");
+    }
+  };
+
+  const inc = d && d.income;
+  const cov = d && d.coverage;
+
+  return (
+    <div className="cal-wrap">
+      <div className="cal-top">
+        <h1 className="cal-h1">Reports</h1>
+        <div className="cal-top-actions">
+          <button className="btn ghost" onClick={onClose}>Back to shows</button>
+        </div>
+      </div>
+
+      <div style={{ ...ctgRow, marginBottom: 6, alignItems: "center" }}>
+        {RPT_PERIODS.map((p) => (
+          <button key={p.key} onClick={() => setPeriod(p.key)}
+                  style={ctgChip(period === p.key, "#34D399")}>{p.label}</button>
+        ))}
+        <span style={{ flex: 1 }} />
+        <button className="btn ghost" onClick={() => step(-1)} style={{ padding: "5px 11px" }}>←</button>
+        <span style={{ fontSize: 14, fontWeight: 600, minWidth: 150, textAlign: "center" }}>
+          {d && d.window ? d.window.label : "…"}
+        </span>
+        <button className="btn ghost" onClick={() => step(1)} style={{ padding: "5px 11px" }}>→</button>
+      </div>
+
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {loading ? <div style={{ ...ctgHint, padding: 30, textAlign: "center" }}>Reading…</div> : null}
+
+      {d && !loading ? (
+        <>
+          {/* ---- the headline ------------------------------------------- */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 16 }}>
+            <RptTile label="Won" note={inc.jobs + (inc.jobs === 1 ? " job" : " jobs")}
+                     value={rptMoney(inc.won)} colour="#34D399" />
+            <RptTile label="Invoiced" note={inc.invoices + (inc.invoices === 1 ? " invoice" : " invoices")}
+                     value={rptMoney(inc.invoiced)} colour="#FACC15" />
+            <RptTile label="Expenses" note="paid out" value={rptMoney(d.expenses.total)} colour="#FB923C" />
+            <RptTile label="Won less expenses" note="not a P&L" value={rptMoney(d.net)} colour="#818CF8" />
+          </div>
+
+          {/* The gap is the interesting number, so it gets a sentence rather
+              than a tile: a tile invites adding it to something. */}
+          {Math.abs(inc.gap) > 1 ? (
+            <p style={{ fontSize: 13, color: "var(--dim)", marginTop: 0, marginBottom: 16, maxWidth: 640 }}>
+              {inc.gap > 0
+                ? <>Work worth <b>{rptMoney(inc.gap)}</b> ran in this period that has not been
+                    invoiced in it. Some of that is normal — a job at the end of the month is
+                    usually billed in the next one — but it is where unbilled work shows up.</>
+                : <><b>{rptMoney(-inc.gap)}</b> more was invoiced in this period than the work that
+                    ran in it, which is what happens when you bill for jobs from an earlier
+                    period.</>}
+            </p>
+          ) : null}
+
+          {inc.undatedJobs ? (
+            <p style={{ fontSize: 12.5, color: "#D14343", marginTop: 0, marginBottom: 16 }}>
+              {inc.undatedJobs} won {inc.undatedJobs === 1 ? "job has" : "jobs have"} no date
+              ({rptMoney(inc.undatedWon)}), so {inc.undatedJobs === 1 ? "it is" : "they are"} in
+              no period at all. Give {inc.undatedJobs === 1 ? "it a date" : "them dates"} and
+              {inc.undatedJobs === 1 ? " it" : " they"} will appear here.
+            </p>
+          ) : null}
+
+          {/* ---- by client ---------------------------------------------- */}
+          <h2 style={{ fontSize: 15, margin: "0 0 8px" }}>Income by client</h2>
+          {d.byClient.length ? (
+            <div style={{ marginBottom: 22 }}>
+              <div style={{ ...ctgListRow, fontSize: 11.5, color: "var(--dim)", fontWeight: 600 }}>
+                <span style={{ flex: 1 }}>Client</span>
+                <span style={{ flex: "0 0 96px", textAlign: "right" }}>Won</span>
+                <span style={{ flex: "0 0 96px", textAlign: "right" }}>Invoiced</span>
+              </div>
+              {d.byClient.map((c) => (
+                <div key={c.key} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{c.label}</span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, fontWeight: 600 }}>
+                    {c.won ? rptMoney(c.won) : "—"}
+                  </span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, color: "var(--dim)" }}>
+                    {c.invoiced ? rptMoney(c.invoiced) : "—"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : <p style={ctgHint}>Nothing in this period.</p>}
+
+          {/* ---- by department ------------------------------------------ */}
+          <h2 style={{ fontSize: 15, margin: "0 0 2px" }}>Income by department</h2>
+          <p style={{ fontSize: 12, color: "var(--dim)", marginTop: 0, marginBottom: 8 }}>
+            From the line items on won quotes. Tap a department for what is inside it.
+          </p>
+
+          {d.byDepartment.map((x) => (
+            <div key={x.department}>
+              <div style={{ ...ctgListRow, cursor: "pointer" }}
+                   onClick={() => setOpenDept(openDept === x.department ? "" : x.department)}>
+                <span style={{ flex: 1, fontSize: 13.5, fontWeight: 600 }}>
+                  {openDept === x.department ? "▾ " : "▸ "}{x.department}
+                </span>
+                <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5, fontWeight: 600 }}>
+                  {rptMoney(x.amount)}
+                </span>
+              </div>
+              {openDept === x.department
+                ? x.items.map((i) => (
+                    <div key={i.key} style={{ ...ctgListRow, paddingLeft: 26, background: "var(--line)" }}>
+                      <span style={{ flex: 1, fontSize: 12.5 }}>{i.name}</span>
+                      <span style={{ flex: "0 0 50px", textAlign: "right", fontSize: 12, color: "var(--dim)" }}>
+                        ×{i.count}
+                      </span>
+                      <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 12.5 }}>
+                        {rptMoney(i.amount)}
+                      </span>
+                    </div>
+                  ))
+                : null}
+            </div>
+          ))}
+
+          {/* WHAT THE BREAKDOWN DOES NOT COVER, on screen beside it. Without
+              this the department column is a real number about a subset, and
+              nothing says which subset. */}
+          {cov ? (
+            <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "11px 13px",
+                          marginTop: 10, marginBottom: 20, fontSize: 12.5, lineHeight: 1.65,
+                          color: "var(--dim)" }}>
+              <b style={{ color: "var(--fg)" }}>What this breakdown covers.</b>{" "}
+              {rptMoney(cov.attributed)} of {rptMoney(inc.won)} has line items behind it
+              ({cov.jobsWithLines} {cov.jobsWithLines === 1 ? "job" : "jobs"}).
+              {cov.noLineDetail > 0.5 ? <>{" "}
+                {rptMoney(cov.noLineDetail)} is on {cov.jobsWithoutLines}{" "}
+                {cov.jobsWithoutLines === 1 ? "job" : "jobs"} with no line detail —
+                imported past jobs, and anything quoted as a single figure — so
+                {cov.jobsWithoutLines === 1 ? " it does" : " they do"} not appear above.</> : null}
+              {Math.abs(cov.lineVariance) > 0.5 ? <>{" "}
+                A further {rptMoney(cov.lineVariance)} is the difference between what the lines
+                add up to and what those jobs were won at, which is discounts.</> : null}
+            </div>
+          ) : null}
+
+          {/* ---- expenses ------------------------------------------------ */}
+          <h2 style={{ fontSize: 15, margin: "0 0 8px" }}>Expenses</h2>
+          {d.expenses.byCategory.length ? (
+            <div style={{ marginBottom: 14 }}>
+              {d.expenses.byCategory.map((c) => (
+                <div key={c.category} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{c.category}</span>
+                  <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5 }}>
+                    {rptMoney(c.amount)}
+                  </span>
+                </div>
+              ))}
+              <div style={{ ...ctgListRow, fontWeight: 600 }}>
+                <span style={{ flex: 1, fontSize: 13 }}>
+                  {rptMoney(d.expenses.onShows)} on shows · {rptMoney(d.expenses.overhead)} overhead
+                </span>
+                <span style={{ flex: "0 0 96px", textAlign: "right", fontSize: 13.5 }}>
+                  {rptMoney(d.expenses.total)}
+                </span>
+              </div>
+            </div>
+          ) : <p style={ctgHint}>No expenses in this period.</p>}
+
+          <p style={{ color: "var(--dim)", fontSize: 11.5, lineHeight: 1.6, maxWidth: 640 }}>
+            <b>Won</b> is the value of jobs counted in the period they ran.
+            <b> Invoiced</b> is what was sent, counted when it was sent. They are different
+            questions and are meant to differ. Neither is your books — this does not
+            replace QuickBooks, and where the two disagree, QuickBooks is right.
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function RptTile({ label, value, note, colour }) {
+  return (
+    <div style={{ flex: "1 1 150px", minWidth: 140, border: "1px solid var(--line)",
+                  borderLeft: "3px solid " + colour, borderRadius: 9, padding: "11px 13px" }}>
+      <div style={{ fontSize: 11.5, textTransform: "uppercase", letterSpacing: ".6px",
+                    color: "var(--dim)" }}>{label}</div>
+      <div style={{ fontSize: 23, fontWeight: 700, letterSpacing: "-.6px", margin: "2px 0 0" }}>
+        {value}
+      </div>
+      <div style={{ fontSize: 11.5, color: "var(--dim)" }}>{note}</div>
+    </div>
+  );
+}
+
 function SettingsScreen({ onClose }) {
   const [tab, setTab] = useState("trucking");
   return (
@@ -8899,6 +9413,277 @@ function SettingsScreen({ onClose }) {
       {tab === "todoist" ? <SetTodoist /> : null}
       {tab === "docs" ? <SetCrewDocs /> : null}
       {tab === "look" ? <SetAppearance /> : null}
+      {tab === "backup" ? <SetBackup /> : null}
+      {tab === "dupes" ? <SetDuplicateShows /> : null}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * IMPORTED JOBS THAT ALREADY HAD A SHOW
+ *
+ * The past-jobs importer creates a show for every job it reads, because most
+ * of them were never in the app. When one WAS, the result is two shows: the
+ * real one, with its crew and schedule, and a stub carrying the quote.
+ *
+ * THIS SCREEN DELETES A SHOW, so it is built to be slow rather than clever:
+ * one pair at a time, a preview of exactly what moves before anything does,
+ * and a list of everything done so it can be put back. There is no "attach all
+ * the confident ones" button — a wrong pair does not look wrong afterwards,
+ * because the job's money simply sits on another show and nothing says so.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function SetDuplicateShows() {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState("");        // stub id being looked at
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [done, setDone] = useState([]);
+
+  const load = async () => {
+    setLoading(true); setErr("");
+    try {
+      const [pairs, undo] = await Promise.all([getAttachPairs(), listAttachUndo()]);
+      setD(pairs); setDone(undo.attaches || []);
+    } catch (e) { setErr((e && e.message) || "Couldn't read the shows."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const look = async (stub, keep) => {
+    setOpen(stub); setPlan(null); setNote(""); setErr("");
+    try { setPlan(await previewAttach(stub, keep)); }
+    catch (e) { setPlan({ ok: false, error: (e && e.message) || "Couldn't check that pair." }); }
+  };
+
+  const go = async (stub, keep) => {
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const r = await commitAttach(stub, keep);
+      setNote("Attached. " + r.movedQuotes + " quote" + (r.movedQuotes === 1 ? "" : "s") +
+              " and " + r.movedItems + " line item" + (r.movedItems === 1 ? "" : "s") + " moved.");
+      setOpen(""); setPlan(null);
+      await load();
+    } catch (e) { setErr((e && e.message) || "That didn't go through."); }
+    setBusy(false);
+  };
+
+  const putBack = async (id) => {
+    setBusy(true); setErr(""); setNote("");
+    try { const r = await undoAttach(id); setNote("“" + r.restored + "” is back."); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't put that back."); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>Imported jobs that already had a show</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+        Importing old quotes creates a show for each one. Where you already had a show
+        for that job, this moves the quote onto it and removes the leftover. The show
+        you built — its crew, schedule and everything else — is the one that stays.
+      </p>
+
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
+      {loading ? <p style={ctgHint}>Looking…</p> : null}
+
+      {d && !loading ? (
+        <>
+          <p style={{ fontSize: 13, marginTop: 4 }}>
+            <b>{d.stubs}</b> imported {d.stubs === 1 ? "show" : "shows"}, of which{" "}
+            <b>{d.matched}</b> look like a show you already had
+            {d.confident ? <> — {d.confident} with the same name and date</> : null}.
+          </p>
+
+          {d.pairs.filter((x) => x.match).map((x) => (
+            <div key={x.stub.id} style={{ border: "1px solid var(--line)", borderRadius: 9,
+                                          padding: "10px 12px", marginBottom: 8 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+                <span style={{ flex: "1 1 220px", fontSize: 13.5 }}>
+                  <b>{x.stub.name}</b>
+                  <span style={{ color: "var(--dim)" }}>
+                    {" "}{x.stub.startDate || "no date"}
+                    {x.stub.invoiceNo ? " · " + x.stub.invoiceNo : ""}
+                  </span>
+                </span>
+                <span style={{ fontSize: 12.5, color: x.match.confident ? "#0B7A3B" : "#B4690E" }}>
+                  {x.match.why}
+                </span>
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 2 }}>
+                onto <b style={{ color: "var(--fg)" }}>{x.match.name}</b>
+                {x.match.startDate ? " · " + x.match.startDate : ""}
+              </div>
+
+              {open === x.stub.id ? (
+                <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                  {!plan ? <span style={{ fontSize: 12.5, color: "var(--dim)" }}>Checking…</span> : null}
+                  {plan && !plan.ok ? (
+                    <p style={{ color: "#D14343", fontSize: 12.5, margin: 0 }}>{plan.error}</p>
+                  ) : null}
+                  {plan && plan.ok ? (
+                    <>
+                      <p style={{ fontSize: 13, margin: "0 0 6px" }}>{plan.summary}</p>
+                      {plan.fills && plan.fills.length ? (
+                        <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 8px" }}>
+                          Fills in what the kept show is missing: {plan.fills.join(", ")}.
+                          Nothing it already has is changed.
+                        </p>
+                      ) : null}
+                      <button className="btn amber" disabled={busy}
+                              onClick={() => go(x.stub.id, x.match.id)}>
+                        {busy ? "Working…" : "Attach and remove the leftover"}
+                      </button>
+                      <button className="btn ghost" onClick={() => { setOpen(""); setPlan(null); }}
+                              style={{ marginLeft: 8 }}>Cancel</button>
+                    </>
+                  ) : null}
+                </div>
+              ) : (
+                <button className="btn ghost" style={{ marginTop: 7, padding: "4px 10px", fontSize: 12.5 }}
+                        onClick={() => look(x.stub.id, x.match.id)}>
+                  Check this pair
+                </button>
+              )}
+            </div>
+          ))}
+
+          {d.pairs.some((x) => !x.match) ? (
+            <p style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 12 }}>
+              {d.pairs.filter((x) => !x.match).length} imported{" "}
+              {d.pairs.filter((x) => !x.match).length === 1 ? "show matches" : "shows match"} nothing
+              you already had, which is what you would expect for a job that was never in the
+              app. Nothing to do with {d.pairs.filter((x) => !x.match).length === 1 ? "it" : "them"}.
+            </p>
+          ) : null}
+
+          {!d.matched ? (
+            <p style={{ ...ctgHint, padding: 22, textAlign: "center" }}>
+              Nothing here looks like a duplicate.
+            </p>
+          ) : null}
+
+          {done.length ? (
+            <>
+              <h3 style={{ fontSize: 14, margin: "22px 0 4px" }}>Done, and undoable</h3>
+              <p style={{ fontSize: 12, color: "var(--dim)", marginTop: 0 }}>
+                A wrong pair does not look wrong afterwards — the money just sits on another
+                show. These can be put back exactly as they were.
+              </p>
+              {done.map((a) => (
+                <div key={a.id} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13 }}>
+                    {a.stubName} <span style={{ color: "var(--dim)" }}>onto</span> {a.keepName}
+                  </span>
+                  <button className="btn ghost" disabled={busy} onClick={() => putBack(a.id)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Put back</button>
+                </div>
+              ))}
+            </>
+          ) : null}
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * BACKUP
+ *
+ * Supabase's own daily backups cover a bad write or a show deleted by mistake.
+ * They do not cover losing Supabase — their backups are not downloadable, so
+ * every copy of this business lives inside one company's account.
+ *
+ * This screen is the copy that does not. It is deliberately the plainest thing
+ * in the app: a count of what is there, and a button. A backup nobody takes is
+ * the normal outcome of a backup that needs explaining.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function SetBackup() {
+  const [man, setMan] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try { setMan(await getBackupManifest()); }
+    catch (e) { setErr(e.message || "Could not read what is in the database."); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const take = async () => {
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const r = await downloadBackup();
+      setNote("Saved " + r.name + " (" + Math.max(1, Math.round(r.bytes / 1024)) + " KB).");
+    } catch (e) {
+      setErr(e.message || "The backup failed.");
+    } finally { setBusy(false); }
+  };
+
+  const rows = man && man.rows ? man.rows : {};
+  const biggest = Object.entries(rows).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>Take a copy</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+        Everything in the database, in one file you keep. It is plain data, so it can
+        be loaded into any Postgres — it does not depend on this app or on Supabase
+        still being here.
+      </p>
+
+      {err ? <p className="err" style={{ color: "#D14343", fontSize: 13 }}>{err}</p> : null}
+
+      {man ? (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-.5px" }}>
+            {man.totalRows.toLocaleString()} rows
+          </div>
+          <div style={{ color: "var(--dim)", fontSize: 13, marginBottom: 10 }}>
+            across {man.tables} tables
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 12.5, color: "var(--dim)" }}>
+            {biggest.map(([t, n]) => (
+              <span key={t}>{t} <b style={{ color: "var(--fg)" }}>{n.toLocaleString()}</b></span>
+            ))}
+          </div>
+          {/* A table the backup expects and cannot find is shown here rather
+              than only inside the downloaded file, because this is the screen
+              someone is actually looking at. */}
+          {man.missingTables && man.missingTables.length ? (
+            <p style={{ color: "#D14343", fontSize: 12.5, marginBottom: 0, marginTop: 10 }}>
+              Not found in the database, so not in the backup: {man.missingTables.join(", ")}.
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p style={{ color: "var(--dim)", fontSize: 13 }}>Counting…</p>
+      )}
+
+      <button className="btn" onClick={take} disabled={busy || !man}>
+        {busy ? "Building…" : "Download backup"}
+      </button>
+      {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
+
+      {/* WHAT IS NOT IN IT. Said here, not only inside the file, because the
+          moment to learn that receipts are not included is now and not during
+          a crisis. */}
+      <h3 style={{ fontSize: 14, margin: "22px 0 4px" }}>What this does not cover</h3>
+      <ul style={{ color: "var(--dim)", fontSize: 13, lineHeight: 1.65, paddingLeft: 18, marginTop: 0 }}>
+        <li><b>Uploaded files.</b> Crew documents and expense receipts are stored
+            as files, not rows, and are not in this download.</li>
+        <li><b>Logins.</b> Accounts and passwords live in Supabase Auth.</li>
+      </ul>
+
+      <p style={{ color: "var(--dim)", fontSize: 12.5, lineHeight: 1.6, marginBottom: 0 }}>
+        Keep it somewhere that is not this app and not the same account — and note
+        that it holds client records, financials and crew personal details, so
+        treat it the way you would treat the filing cabinet it replaces.
+      </p>
     </div>
   );
 }
@@ -21452,7 +22237,10 @@ const MSG_SECTIONS = [
 ];
 
 function MessageCrewModal({ event, onClose, flash }) {
-  const [subject, setSubject] = useState(event.name ? event.name + " — call sheet" : "");
+  /* "Show name - Production Book". A plain hyphen, not an em dash: this is a
+     subject line people scan in a phone's inbox list, and it is what Tyler
+     asked for. Still editable — this is only what it opens with. */
+  const [subject, setSubject] = useState(event.name ? event.name + " - Production Book" : "");
   const [message, setMessage] = useState("");
   const [picked, setPicked] = useState(() => new Set(["brief", "schedule"]));
   const [busy, setBusy] = useState("");          // "" | "preview" | "send"

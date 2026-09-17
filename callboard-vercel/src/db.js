@@ -484,3 +484,195 @@ export const cancelShowMessage = (showId, id) =>
 /* ---- appearance --------------------------------------------------------- */
 export const getAppearance = () => api("GET", "/api/appearance");
 export const saveAppearance = (patch) => api("PUT", "/api/appearance", patch);
+
+/* ---- backups ------------------------------------------------------------
+   The manifest goes through api() like everything else. The download cannot:
+   api() calls res.json(), and a backup is gzipped bytes, so it is fetched
+   here and handed to the browser as a file. */
+export const getBackupManifest = () => api("GET", "/api/backup?manifest=1");
+
+export async function downloadBackup(table) {
+  const path = "/api/backup" + (table ? "?table=" + encodeURIComponent(table) : "");
+  const res = await fetch(path, {
+    headers: { ...(auth && auth.token ? { Authorization: "Bearer " + auth.token } : {}) },
+  });
+
+  /* A refusal comes back as JSON even though a success comes back as bytes.
+     Read the type rather than guessing: treating a refusal as a file is how
+     someone ends up with a 200-byte "backup" containing an error message and
+     no idea anything went wrong. */
+  if (!res.ok) {
+    let msg = "Backup failed (" + res.status + ")";
+    try { const j = await res.json(); if (j && j.error) msg = j.error; } catch (e) {}
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
+  }
+
+  const blob = await res.blob();
+  if (!blob.size) throw new Error("The backup came back empty. Nothing has been saved.");
+
+  /* The filename the server chose, so the date in it is the server's date. */
+  const cd = res.headers.get("content-disposition") || "";
+  const m = cd.match(/filename="([^"]+)"/);
+  const name = (m && m[1]) ||
+    ("touchstone-backup-" + new Date().toISOString().slice(0, 10) + ".json.gz");
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  /* Revoked on a timeout rather than immediately: Safari has been known to
+     cancel the download if the object URL disappears in the same tick. */
+  setTimeout(() => { try { URL.revokeObjectURL(url); } catch (e) {} }, 30000);
+  return { name, bytes: blob.size };
+}
+
+/* ---- venue attachments ---------------------------------------------------
+   Photos, Vectorworks plots and PDFs hung off a venue.
+
+   THE UPLOAD DOES NOT GO THROUGH api(). Two reasons, and both matter for a
+   180MB venue plot:
+
+     1. The bytes go STRAIGHT TO SUPABASE on a signed URL. Anything routed
+        through the app itself dies at 4.5MB.
+     2. fetch() cannot report upload progress. There is no event for it. On a
+        file this size that means a twenty-minute wait with nothing moving on
+        screen, which is indistinguishable from a hang — so people cancel and
+        try again, forever. XMLHttpRequest can, so this uses it. */
+export const listVenueFiles = (venueId) =>
+  api("GET", "/api/venue-files?venue=" + encodeURIComponent(venueId));
+
+export const viewVenueFile = (id, thumb) =>
+  api("GET", "/api/venue-files?view=" + encodeURIComponent(id) + (thumb ? "&thumb=1" : ""));
+
+export const deleteVenueFile = (id) =>
+  api("DELETE", "/api/venue-files?id=" + encodeURIComponent(id));
+
+const signVenueUpload = (venueId, fileName, fileSize) =>
+  api("POST", "/api/venue-files?sign=1&venue=" + encodeURIComponent(venueId),
+      { fileName, fileSize });
+
+const recordVenueFile = (venueId, body) =>
+  api("POST", "/api/venue-files?venue=" + encodeURIComponent(venueId), body);
+
+/* One PUT, with progress and one retry.
+   `onProgress` is called with 0..1. A rejected promise here is a failed
+   upload — nothing is recorded, so a half-sent file leaves no row behind. */
+function putWithProgress(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url, true);
+    if (blob.type) xhr.setRequestHeader("Content-Type", blob.type);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
+    };
+    xhr.onload = () =>
+      (xhr.status >= 200 && xhr.status < 300)
+        ? resolve()
+        : reject(new Error("The upload was refused (" + xhr.status + ")."));
+    xhr.onerror = () => reject(new Error("The connection dropped during the upload."));
+    xhr.onabort = () => reject(new Error("The upload was cancelled."));
+    /* No timeout set on purpose: a 200MB file over venue wi-fi legitimately
+       takes a long time, and a timeout here would kill uploads that were
+       working. A stall shows as progress that stops moving. */
+    xhr.send(blob);
+  });
+}
+
+async function putRetrying(url, blob, onProgress) {
+  try {
+    return await putWithProgress(url, blob, onProgress);
+  } catch (e) {
+    /* One retry, because the common failure on a long upload is a single
+       dropped connection rather than anything wrong with the file. A second
+       failure is reported rather than hidden behind a third attempt — at
+       these sizes, silently retrying forever wastes someone's afternoon. */
+    if (onProgress) onProgress(0);
+    return await putWithProgress(url, blob, onProgress);
+  }
+}
+
+/* A small JPEG of a photo, made here before it is uploaded.
+   Without it, opening a venue with twenty photographs pulls twenty full-size
+   images — on a phone in a car park that is the difference between a feature
+   people use and one they wait for and give up on.
+
+   Returns null for anything that is not an image the browser can decode,
+   which includes HEIC in some browsers. A missing thumbnail is not an error:
+   the full image is still there and the list falls back to it. */
+export async function makeThumb(file, max = 400) {
+  if (!file || !/^image\//.test(file.type || "")) return null;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    try { bitmap.close(); } catch (e) {}
+    return await new Promise((res) => canvas.toBlob(res, "image/jpeg", 0.72));
+  } catch (e) {
+    return null;
+  }
+}
+
+/* The whole job: ask for a URL, send the bytes, record the row.
+   Nothing is recorded until the bytes are actually there, so a failed upload
+   leaves the venue exactly as it was rather than a row pointing at nothing. */
+export async function uploadVenueFile(venueId, file, { caption = "", onProgress } = {}) {
+  const signed = await signVenueUpload(venueId, file.name, file.size);
+
+  await putRetrying(signed.url, file, onProgress);
+
+  /* The thumbnail goes up after the main file and its failure is survivable —
+     a venue photo with no thumbnail still works. Letting it fail the whole
+     upload would throw away a 200MB send over a 30KB one. */
+  let thumbPath = "";
+  if (signed.thumb) {
+    const thumb = await makeThumb(file);
+    if (thumb) {
+      try { await putWithProgress(signed.thumb.url, thumb); thumbPath = signed.thumb.path; }
+      catch (e) { thumbPath = ""; }
+    }
+  }
+
+  return recordVenueFile(venueId, {
+    path: signed.path,
+    thumbPath,
+    fileName: file.name,
+    fileSize: file.size,
+    mime: file.type || "",
+    caption,
+  });
+}
+
+/* ---- reports -------------------------------------------------------------
+   period is month | year | ytd; anchor is any date inside the period. The
+   window is worked out on the SERVER, in Pacific — the browser's idea of
+   "this month" and a UTC container's disagree for seven hours of every day,
+   and the disagreement moves money between months. */
+export const getReport = (period, anchor) =>
+  api("GET", "/api/reporting?report=1&period=" + encodeURIComponent(period) +
+      "&anchor=" + encodeURIComponent(anchor));
+
+/* ---- imported jobs that already had a show -------------------------------
+   The past-jobs importer makes a show per job. When the job was already in the
+   app that leaves a duplicate: the real show, and a stub carrying the quote. */
+export const getAttachPairs = () => api("GET", "/api/attach-import?pairs=1");
+
+export const previewAttach = (stub, keep) =>
+  api("GET", "/api/attach-import?preview=1&stub=" + encodeURIComponent(stub) +
+      "&keep=" + encodeURIComponent(keep));
+
+export const commitAttach = (stub, keep) =>
+  api("POST", "/api/attach-import?commit=1", { stub, keep });
+
+export const listAttachUndo = () => api("GET", "/api/attach-import?undo=1");
+
+export const undoAttach = (id) =>
+  api("POST", "/api/attach-import?undo=" + encodeURIComponent(id), {});
