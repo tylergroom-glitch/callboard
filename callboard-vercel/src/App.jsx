@@ -148,6 +148,12 @@ import {
   setTruckOrigin,
   getTruckRates,
   setTruckRates,
+  listVenueFiles,
+  viewVenueFile,
+  deleteVenueFile,
+  uploadVenueFile,
+  getBackupManifest,
+  downloadBackup,
   getCrewDocStatus,
   listNewCrew,
   markCrewReviewed,
@@ -4242,6 +4248,7 @@ function CatalogVenues() {
   const [q, setQ] = useState("");
   const [draft, setDraft] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [filesFor, setFilesFor] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -4281,10 +4288,17 @@ function CatalogVenues() {
           <span style={{ color: "var(--dim)", fontSize: 12, flex: "1 1 180px" }}>
             {[v.address, v.city, v.state, v.zip].filter(Boolean).join(", ")}
           </span>
+          {/* Only on a saved venue: attachments hang off an id, and a venue
+              being typed in for the first time does not have one yet. */}
+          <button className="btn ghost" onClick={() => setFilesFor(v)} style={{ padding: "5px 10px" }}>Files</button>
           <button className="btn ghost" onClick={() => setDraft(v)} style={{ padding: "5px 10px" }}>Edit</button>
           <button className="btn ghost danger" onClick={() => remove(v)} style={{ padding: "5px 10px" }}>Delete</button>
         </div>
       ))}
+
+      {filesFor ? (
+        <VenueFilesModal venue={filesFor} onClose={() => setFilesFor(null)} />
+      ) : null}
 
       {draft ? (
         <CtgModal title={draft.id ? "Edit venue" : "New venue"} onClose={() => setDraft(null)}>
@@ -4324,6 +4338,205 @@ function CatalogVenues() {
   );
 }
 
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHAT IS ATTACHED TO A VENUE
+ *
+ * The things you wish you still had about a room you worked two years ago: the
+ * Vectorworks plot, a PDF of it you can open on a phone, and photographs of
+ * the dock, the power and the parking.
+ *
+ * TWO THINGS SHAPE THIS SCREEN.
+ *
+ *   A venue plot is 50–200MB. That is minutes, not seconds, so the progress
+ *   bar is not decoration — without it a long upload is indistinguishable from
+ *   a hung one, and people cancel working uploads and start again.
+ *
+ *   A .vwx cannot be shown. Nothing renders one. So drawings are a list with a
+ *   download, and the thing worth having beside them is a PDF you can actually
+ *   open standing in a loading dock.
+ * ───────────────────────────────────────────────────────────────────────────── */
+const VF_GROUPS = [
+  { kind: "photo", label: "Photos", blurb: "Dock, power, parking — crew can see these." },
+  { kind: "plot", label: "Drawings", blurb: "Vectorworks and CAD. Yours only." },
+  { kind: "doc", label: "PDFs", blurb: "Plots to open on a phone, tech specs. Yours only." },
+];
+
+function VenueFilesModal({ venue, onClose }) {
+  const [files, setFiles] = useState(null);
+  const [err, setErr] = useState("");
+  const [up, setUp] = useState(null);      // { name, pct }
+  const [thumbs, setThumbs] = useState({}); // id -> signed url
+  const inputRef = useRef(null);
+
+  const load = async () => {
+    try { const r = await listVenueFiles(venue.id); setFiles(r.files); setErr(""); }
+    catch (e) { setErr((e && e.message) || "Couldn't load the files."); setFiles([]); }
+  };
+  useEffect(() => { load(); }, [venue.id]);
+
+  /* Thumbnails are fetched one signed URL at a time, after the list. Doing it
+     as part of the list would mean the screen waits for every image before it
+     shows anything. */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      for (const f of (files || []).filter((x) => x.kind === "photo" && x.hasThumb)) {
+        if (thumbs[f.id]) continue;
+        try {
+          const r = await viewVenueFile(f.id, true);
+          if (!alive) return;
+          setThumbs((t) => ({ ...t, [f.id]: r.url }));
+        } catch (e) { /* a missing thumbnail is not worth an error on screen */ }
+      }
+    })();
+    return () => { alive = false; };
+  }, [files]);
+
+  const open = async (f) => {
+    setErr("");
+    try {
+      const r = await viewVenueFile(f.id);
+      /* A new tab rather than a navigation: a 200MB download must not take the
+         app with it, and the signed URL dies in five minutes anyway. */
+      window.open(r.url, "_blank", "noopener");
+    } catch (e) { setErr((e && e.message) || "Couldn't open that."); }
+  };
+
+  const pick = async (e) => {
+    const chosen = Array.from(e.target.files || []);
+    e.target.value = "";
+    if (!chosen.length) return;
+    setErr("");
+    for (const file of chosen) {
+      setUp({ name: file.name, pct: 0 });
+      try {
+        await uploadVenueFile(venue.id, file, {
+          onProgress: (p) => setUp({ name: file.name, pct: Math.round(p * 100) }),
+        });
+      } catch (ex) {
+        /* Named, and the loop stops. Carrying on after a failure means a
+           four-file drop where the second failed silently and nobody notices
+           until the day they look for it. */
+        setErr(file.name + " — " + ((ex && ex.message) || "upload failed"));
+        setUp(null);
+        await load();
+        return;
+      }
+    }
+    setUp(null);
+    await load();
+  };
+
+  const remove = async (f) => {
+    if (!window.confirm("Delete " + f.fileName + "? This cannot be undone.")) return;
+    try { await deleteVenueFile(f.id); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't delete that."); }
+  };
+
+  const size = (n) => !n ? "" :
+    n >= 1048576 ? Math.round(n / 1048576) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+
+  const byKind = (k) => (files || []).filter((f) => f.kind === k);
+
+  return (
+    <CtgModal title={venue.name || "Venue files"} onClose={onClose}>
+      {err ? <div style={ctgErr}>{err}</div> : null}
+
+      <div style={{ ...ctgRow, marginBottom: 14, alignItems: "center" }}>
+        <button className="btn amber" onClick={() => inputRef.current && inputRef.current.click()}
+                disabled={!!up}>
+          {up ? "Uploading…" : "+ Add files"}
+        </button>
+        <span style={{ color: "var(--dim)", fontSize: 12 }}>
+          Photos, Vectorworks, CAD or PDF. Up to 200 MB each.
+        </span>
+        <input ref={inputRef} type="file" multiple onChange={pick}
+               style={{ display: "none" }}
+               accept=".jpg,.jpeg,.png,.heic,.heif,.webp,.vwx,.vwxp,.dwg,.dxf,.pdf" />
+      </div>
+
+      {/* THE PROGRESS BAR IS THE POINT on a file this size. A percentage that
+          stops moving is how a stall becomes visible; with no bar at all a
+          twenty-minute upload looks exactly like a hang. */}
+      {up ? (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12.5, color: "var(--dim)", marginBottom: 4 }}>
+            {up.name} — {up.pct}%
+          </div>
+          <div style={{ height: 6, borderRadius: 4, background: "var(--line)", overflow: "hidden" }}>
+            <div style={{ height: "100%", width: up.pct + "%", background: "#FFB020",
+                          transition: "width .2s" }} />
+          </div>
+          <div style={{ fontSize: 11.5, color: "var(--dim)", marginTop: 5 }}>
+            A large drawing can take several minutes. Leave this open.
+          </div>
+        </div>
+      ) : null}
+
+      {files === null ? <div style={ctgHint}>Loading…</div> : null}
+      {files && !files.length && !up ? (
+        <div style={{ ...ctgHint, padding: 26, textAlign: "center" }}>
+          Nothing attached to this venue yet.
+        </div>
+      ) : null}
+
+      {VF_GROUPS.map((g) => {
+        const list = byKind(g.kind);
+        if (!list.length) return null;
+        return (
+          <div key={g.kind} style={{ marginBottom: 18 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 1 }}>
+              {g.label} <span style={{ color: "var(--dim)", fontWeight: 400 }}>({list.length})</span>
+            </div>
+            <div style={{ fontSize: 11.5, color: "var(--dim)", marginBottom: 8 }}>{g.blurb}</div>
+
+            {g.kind === "photo" ? (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                {list.map((f) => (
+                  <div key={f.id} style={{ width: 118 }}>
+                    <div onClick={() => open(f)} title={f.fileName}
+                         style={{ width: 118, height: 84, borderRadius: 7, overflow: "hidden",
+                                  background: "var(--line)", cursor: "pointer",
+                                  display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {thumbs[f.id]
+                        ? <img src={thumbs[f.id]} alt={f.caption || f.fileName}
+                               style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                        : <span style={{ fontSize: 11, color: "var(--dim)" }}>…</span>}
+                    </div>
+                    <div style={{ fontSize: 11, marginTop: 3, lineHeight: 1.35 }}>
+                      {f.caption || f.fileName}
+                    </div>
+                    <button className="btn ghost danger" onClick={() => remove(f)}
+                            style={{ padding: "2px 7px", fontSize: 11, marginTop: 2 }}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              list.map((f) => (
+                <div key={f.id} style={{ ...ctgListRow, padding: "7px 9px" }}>
+                  <span style={{ flex: 1, minWidth: 120, fontSize: 13 }}>{f.fileName}</span>
+                  <span style={{ color: "var(--dim)", fontSize: 11.5, flex: "0 0 auto" }}>
+                    {size(f.fileSize)}
+                  </span>
+                  <button className="btn ghost" onClick={() => open(f)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Download</button>
+                  <button className="btn ghost danger" onClick={() => remove(f)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Delete</button>
+                </div>
+              ))
+            )}
+          </div>
+        );
+      })}
+
+      <p style={{ color: "var(--dim)", fontSize: 11.5, lineHeight: 1.6, marginTop: 4, marginBottom: 0 }}>
+        Crew can see the photos when this venue is on their show. Drawings and PDFs
+        stay with you. Nothing here is in the database backup yet.
+      </p>
+    </CtgModal>
+  );
+}
 
 /* One shared terms block, appended as an appendix to every quote PDF. */
 function CatalogTerms() {
@@ -7886,7 +8099,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.50.0";
+const APP_VERSION = "1.52.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -8581,6 +8794,7 @@ const SET_TABS = [
   { key: "todoist", label: "Todoist" },
   { key: "docs", label: "Crew documents" },
   { key: "look", label: "Appearance" },
+  { key: "backup", label: "Backup" },
 ];
 
 /* How long ago, in words. A timestamp is a number you have to subtract from
@@ -8899,6 +9113,105 @@ function SettingsScreen({ onClose }) {
       {tab === "todoist" ? <SetTodoist /> : null}
       {tab === "docs" ? <SetCrewDocs /> : null}
       {tab === "look" ? <SetAppearance /> : null}
+      {tab === "backup" ? <SetBackup /> : null}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * BACKUP
+ *
+ * Supabase's own daily backups cover a bad write or a show deleted by mistake.
+ * They do not cover losing Supabase — their backups are not downloadable, so
+ * every copy of this business lives inside one company's account.
+ *
+ * This screen is the copy that does not. It is deliberately the plainest thing
+ * in the app: a count of what is there, and a button. A backup nobody takes is
+ * the normal outcome of a backup that needs explaining.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function SetBackup() {
+  const [man, setMan] = useState(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    setErr("");
+    try { setMan(await getBackupManifest()); }
+    catch (e) { setErr(e.message || "Could not read what is in the database."); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const take = async () => {
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const r = await downloadBackup();
+      setNote("Saved " + r.name + " (" + Math.max(1, Math.round(r.bytes / 1024)) + " KB).");
+    } catch (e) {
+      setErr(e.message || "The backup failed.");
+    } finally { setBusy(false); }
+  };
+
+  const rows = man && man.rows ? man.rows : {};
+  const biggest = Object.entries(rows).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
+  return (
+    <div style={{ maxWidth: 680 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>Take a copy</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+        Everything in the database, in one file you keep. It is plain data, so it can
+        be loaded into any Postgres — it does not depend on this app or on Supabase
+        still being here.
+      </p>
+
+      {err ? <p className="err" style={{ color: "#D14343", fontSize: 13 }}>{err}</p> : null}
+
+      {man ? (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+          <div style={{ fontSize: 22, fontWeight: 700, letterSpacing: "-.5px" }}>
+            {man.totalRows.toLocaleString()} rows
+          </div>
+          <div style={{ color: "var(--dim)", fontSize: 13, marginBottom: 10 }}>
+            across {man.tables} tables
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", fontSize: 12.5, color: "var(--dim)" }}>
+            {biggest.map(([t, n]) => (
+              <span key={t}>{t} <b style={{ color: "var(--fg)" }}>{n.toLocaleString()}</b></span>
+            ))}
+          </div>
+          {/* A table the backup expects and cannot find is shown here rather
+              than only inside the downloaded file, because this is the screen
+              someone is actually looking at. */}
+          {man.missingTables && man.missingTables.length ? (
+            <p style={{ color: "#D14343", fontSize: 12.5, marginBottom: 0, marginTop: 10 }}>
+              Not found in the database, so not in the backup: {man.missingTables.join(", ")}.
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p style={{ color: "var(--dim)", fontSize: 13 }}>Counting…</p>
+      )}
+
+      <button className="btn" onClick={take} disabled={busy || !man}>
+        {busy ? "Building…" : "Download backup"}
+      </button>
+      {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
+
+      {/* WHAT IS NOT IN IT. Said here, not only inside the file, because the
+          moment to learn that receipts are not included is now and not during
+          a crisis. */}
+      <h3 style={{ fontSize: 14, margin: "22px 0 4px" }}>What this does not cover</h3>
+      <ul style={{ color: "var(--dim)", fontSize: 13, lineHeight: 1.65, paddingLeft: 18, marginTop: 0 }}>
+        <li><b>Uploaded files.</b> Crew documents and expense receipts are stored
+            as files, not rows, and are not in this download.</li>
+        <li><b>Logins.</b> Accounts and passwords live in Supabase Auth.</li>
+      </ul>
+
+      <p style={{ color: "var(--dim)", fontSize: 12.5, lineHeight: 1.6, marginBottom: 0 }}>
+        Keep it somewhere that is not this app and not the same account — and note
+        that it holds client records, financials and crew personal details, so
+        treat it the way you would treat the filing cabinet it replaces.
+      </p>
     </div>
   );
 }
