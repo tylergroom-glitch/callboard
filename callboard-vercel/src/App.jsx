@@ -7886,7 +7886,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.49.0";
+const APP_VERSION = "1.50.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -21452,7 +21452,10 @@ const MSG_SECTIONS = [
 ];
 
 function MessageCrewModal({ event, onClose, flash }) {
-  const [subject, setSubject] = useState(event.name ? event.name + " — call sheet" : "");
+  /* "Show name - Production Book". A plain hyphen, not an em dash: this is a
+     subject line people scan in a phone's inbox list, and it is what Tyler
+     asked for. Still editable — this is only what it opens with. */
+  const [subject, setSubject] = useState(event.name ? event.name + " - Production Book" : "");
   const [message, setMessage] = useState("");
   const [picked, setPicked] = useState(() => new Set(["brief", "schedule"]));
   const [busy, setBusy] = useState("");          // "" | "preview" | "send"
