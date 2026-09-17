@@ -128,6 +128,158 @@ export default async function handler(req, res) {
       });
     }
 
+    /* ---- the year's money ------------------------------------------------
+       GET /api/reporting?revenue=1&year=2026
+
+       "What did we gross this year, and what did it cost." The one number
+       Tyler asked the importer for, and the reason the importer writes won
+       quotes rather than notes on a show.
+
+       THREE DECISIONS, ALL OF WHICH CHANGE THE ANSWER, SO ALL STATED:
+
+       1. ONE JOB IS ONE NUMBER, HOWEVER MANY TIMES IT WAS REVISED.
+          Quotes version as separate rows sharing family_id. Summing the rows
+          reported one 60,000 job as 165,000 on the dashboard before it was
+          caught; the same table would do the same thing here. Fold to the
+          newest WON version per family first, then add.
+
+          Newest *won*, not newest: a family whose v3 is a draft revision still
+          earned what v2 was won at.
+
+       2. THE JOB'S DATE, NOT THE INVOICE'S.
+          Revenue is counted in the year the job happened (`start_date`),
+          because that is the year Tyler means by "this year" and the year the
+          costs sit in. A won quote with no date cannot be placed at all, so it
+          is counted OUT and reported as `undated` — a figure that is silently
+          missing is worse than one that is visibly missing.
+
+       3. GROSS IS WHAT WAS WON, NOT WHAT WAS COLLECTED.
+          This does not read invoices or payments. `gross` is the value of the
+          work; billing knows what has actually been paid and that is a
+          different screen and a different question. Named `gross` throughout
+          so the two are never mistaken for each other. */
+    if (req.method === "GET" && q.revenue) {
+      const year = String(q.year || "").trim();
+      if (!/^\d{4}$/.test(year)) return json(res, 400, { error: "year must be four digits" });
+      const from = year + "-01-01", to = year + "-12-31";
+
+      const [quotes, shows, expenses] = await Promise.all([
+        supabaseRest("GET", "/quotes?" + WON +
+          "&select=id,family_id,version,name,client_id,event_id,start_date,total,data" +
+          "&order=version.desc&limit=5000", null),
+        supabaseRest("GET", "/shows?select=id,name,client&limit=5000", null),
+        supabaseRest("GET", "/expenses?deleted_at=is.null&select=show_id,spent_on,amount,category" +
+          "&spent_on=gte." + from + "&spent_on=lte." + to + "&limit=20000", null),
+      ]);
+      let clients = [];
+      try {
+        clients = await supabaseRest("GET", "/clients?select=id,name,parent_id&limit=5000", null) || [];
+      } catch (e) { /* client names are a nicety; the totals are not */ }
+
+      const clientName = new Map();
+      for (const c of clients) clientName.set(c.id, String(c.name || ""));
+      const showName = new Map();
+      const showClient = new Map();
+      for (const s of shows || []) {
+        showName.set(s.id, String(s.name || ""));
+        showClient.set(s.id, String(s.client || ""));
+      }
+
+      /* Rows arrive version.desc, so the first one seen for a family IS its
+         newest won version. Keyed on family_id with the row's own id as a
+         fallback — a quote made before families existed carries a null
+         family_id, and keying all of those under "null" would collapse every
+         one of them into a single job. */
+      const newest = {};
+      for (const qq of quotes || []) {
+        if (!qq) continue;
+        const key = qq.family_id || ("solo:" + qq.id);
+        if (!(key in newest)) newest[key] = qq;
+      }
+
+      const months = [];
+      for (let i = 1; i <= 12; i++) months.push({ month: i, gross: 0, jobs: 0 });
+      const byClient = new Map();
+      const jobs = [];
+      let gross = 0, undated = 0, otherYears = 0, imported = 0;
+
+      for (const key of Object.keys(newest)) {
+        const qq = newest[key];
+        const d = String(qq.start_date || "");
+        if (!d) { undated += 1; continue; }
+        if (d < from || d > to) { otherYears += 1; continue; }
+
+        const amount = Number(qq.total) || 0;
+        const mi = parseInt(d.slice(5, 7), 10);
+        if (mi >= 1 && mi <= 12) { months[mi - 1].gross += amount; months[mi - 1].jobs += 1; }
+        gross += amount;
+
+        const name = String(qq.name || "") || showName.get(qq.event_id) || "Untitled";
+        /* The client id when the quote has one, and the show's own text when it
+           does not — which is every imported job, because the importer does not
+           invent directory records for names it has never seen. */
+        const cname = (qq.client_id && clientName.get(qq.client_id)) ||
+                      showClient.get(qq.event_id) || "";
+        const ck = cname || "(no client)";
+        const ce = byClient.get(ck) || { client: ck, gross: 0, jobs: 0 };
+        ce.gross += amount; ce.jobs += 1;
+        byClient.set(ck, ce);
+
+        const wasImported = !!(qq.data && typeof qq.data === "object" && qq.data._import);
+        if (wasImported) imported += 1;
+        jobs.push({
+          quoteId: qq.id,
+          showId: qq.event_id || null,
+          name,
+          client: cname,
+          startDate: d,
+          gross: Math.round(amount * 100) / 100,
+          imported: wasImported,
+          costs: 0,
+        });
+      }
+
+      /* Costs. Split by whether they belong to a job or to the company —
+         "we spent 180,000 this year" means nothing until you know how much of
+         it was on jobs. Overhead has show_id null by definition; api/expenses
+         gates it on isAdmin for exactly that reason. */
+      let direct = 0, overhead = 0;
+      const costByShow = new Map();
+      for (const e of expenses || []) {
+        const a = Number(e.amount) || 0;
+        if (e.show_id) {
+          direct += a;
+          costByShow.set(e.show_id, (costByShow.get(e.show_id) || 0) + a);
+        } else overhead += a;
+      }
+      for (const j of jobs) {
+        if (j.showId && costByShow.has(j.showId)) {
+          j.costs = Math.round(costByShow.get(j.showId) * 100) / 100;
+        }
+      }
+
+      const r2 = (n) => Math.round(n * 100) / 100;
+      jobs.sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)));
+
+      return json(res, 200, {
+        year,
+        gross: r2(gross),
+        jobs: jobs.length,
+        imported,
+        byMonth: months.map((m) => ({ month: m.month, gross: r2(m.gross), jobs: m.jobs })),
+        byClient: [...byClient.values()]
+          .map((c) => ({ client: c.client, gross: r2(c.gross), jobs: c.jobs }))
+          .sort((a, b) => b.gross - a.gross),
+        rows: jobs,
+        costs: { direct: r2(direct), overhead: r2(overhead), total: r2(direct + overhead) },
+        net: r2(gross - direct - overhead),
+        /* Won work this figure could not place. Shown on the screen, not
+           swallowed: a job with no date is a job missing from the year. */
+        undated,
+        otherYears,
+      });
+    }
+
     /* ---- which shows actually have line detail --------------------------
        This is the one that tells you how much importing is left to do, so it
        exists before the importer rather than after it. A won quote with no
