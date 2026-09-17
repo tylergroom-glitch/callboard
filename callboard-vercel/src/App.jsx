@@ -396,6 +396,13 @@ const PULL_TEMPLATES = [
 function normalize(e) {
   if (!e) return e;
   e.venue = e.venue || { name: "", address: "", mapLink: "" };
+  /* Two fields the crew packet prints at the top of the brief. Defaulted here
+     like everything else, so a show created before they existed reads as an
+     empty string rather than undefined — the packet skips an empty one and
+     prints nothing, which is the right behaviour for a show that has not been
+     given a summary. */
+  if (typeof e.clientBrief !== "string") e.clientBrief = "";
+  if (typeof e.dressCode !== "string") e.dressCode = "";
   e.contacts = e.contacts || [];
   e.crew = e.crew || [];
   e.schedule = e.schedule || [];
@@ -7095,7 +7102,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.47.1";
+const APP_VERSION = "1.48.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -10565,7 +10572,26 @@ function BriefTab({ event, update, isAdmin, isTcg, showId }) {
         </div>
       </Panel>
 
-
+      {/* Straight after the facts and before the contact list, mirroring the
+          order these come out in the crew packet: what the job IS, then what
+          to wear, then where it is and who is on it. */}
+      <Panel title="About this show" sub="Printed at the top of the crew packet">
+        <Field label="Summary for the crew">
+          <textarea
+            rows={4}
+            value={event.clientBrief}
+            placeholder="What this show is, who the client is, and what they care about. A short paragraph — it is the first thing the crew reads."
+            onChange={(e) => update((ev) => (ev.clientBrief = e.target.value))}
+          />
+        </Field>
+        <Field label="Dress code">
+          <input
+            value={event.dressCode}
+            placeholder="All black, collared. Soft-soled shoes. No logos other than TCG."
+            onChange={(e) => update((ev) => (ev.dressCode = e.target.value))}
+          />
+        </Field>
+      </Panel>
 
       <Panel
         title="Key contacts"
