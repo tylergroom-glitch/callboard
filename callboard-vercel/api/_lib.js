@@ -393,7 +393,14 @@ export async function sendBrevoEmail({ to, toName, subject, html, text }) {
    worth asking afterwards. */
 export async function sendBrevoBatch(messages, opts = {}) {
   const list = (messages || []).filter((m) => m && m.to);
-  if (!BREVO_API_KEY || !list.length) return { sent: 0, failed: list.map((m) => m.to) };
+  if (!BREVO_API_KEY) {
+    /* Named, because "nothing went out and nobody said why" is the failure
+       this whole function is now built to avoid — including when the reason
+       is that it was never configured. */
+    console.log("[brevo] BREVO_API_KEY is not set; nothing was sent");
+    return { sent: 0, failed: list.map((m) => m.to), reason: "Email is not configured (no Brevo API key)." };
+  }
+  if (!list.length) return { sent: 0, failed: [] };
   /* Attachments ride at the TOP level, not inside a version: Brevo sends the
      bytes once and applies them to every version in the call. Putting them per
      version would upload the same packet thirty-five times and blow the 20MB
@@ -405,6 +412,16 @@ export async function sendBrevoBatch(messages, opts = {}) {
 
   let sent = 0;
   const failed = [];
+  /* WHY THE FAILURE IS READ AND NOT JUST COUNTED.
+     This used to do `else chunk.forEach(m => failed.push(m.to))` and throw the
+     response away — no body, no status, no log line. So a refused send showed
+     "1 did not go through" on screen, nothing in the Vercel logs, and no way
+     to find out why short of guessing. Brevo always says what was wrong
+     ("Contact is blacklisted", "sender not valid", "attachment too large");
+     it was simply never asked.
+     The reason goes two places: the function console, in full, and back to the
+     caller in short form so the screen can say it. */
+  const reasons = [];
   /* Chunked at 1,000 because that is the documented ceiling per call. Nobody
      has a roster that long, but a loop that silently drops the 1,001st is the
      kind of thing discovered years later. */
@@ -426,13 +443,36 @@ export async function sendBrevoBatch(messages, opts = {}) {
           })),
         }),
       });
-      if (r.ok) sent += chunk.length;
-      else chunk.forEach((m) => failed.push(m.to));
-    } catch {
+      if (r.ok) { sent += chunk.length; continue; }
+
+      /* Brevo answers JSON on an error. Read it defensively: a gateway can
+         return HTML, and failing to parse the explanation must not turn a
+         reported failure into a thrown one. */
+      let why = "HTTP " + r.status;
+      try {
+        const txt = await r.text();
+        console.log("[brevo] " + r.status + " " + txt.slice(0, 500));
+        try {
+          const j = JSON.parse(txt);
+          if (j && j.message) why = String(j.message);
+          else if (txt) why = txt.slice(0, 200);
+        } catch { if (txt) why = txt.slice(0, 200); }
+      } catch (e) {
+        console.log("[brevo] " + r.status + " (body unreadable: " + ((e && e.message) || e) + ")");
+      }
+      reasons.push(why);
+      chunk.forEach((m) => failed.push(m.to));
+    } catch (e) {
+      const why = (e && e.message) || String(e);
+      console.log("[brevo] request failed: " + why);
+      reasons.push(why);
       chunk.forEach((m) => failed.push(m.to));
     }
   }
-  return { sent, failed };
+  /* One reason, not a list: every chunk of a single send fails the same way in
+     practice, and "Contact is blacklisted" twice is not twice as useful. */
+  const reason = reasons.length ? [...new Set(reasons)].join(" / ").slice(0, 300) : "";
+  return { sent, failed, ...(reason ? { reason } : {}) };
 }
 
 // ---- Department-scoped editing (dept_editor role) ----
