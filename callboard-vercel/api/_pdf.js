@@ -20,7 +20,7 @@
 //   an "as of" stamp on every page so a packet forwarded three days later
 //   cannot be mistaken for current.
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
-import { BRAND, LOGO_PNG_B64 } from "./_brand.js";
+import { BRAND, LOGO_PNG_B64, LOGO_WIDE_PNG_B64, LOGO_WIDE_RATIO } from "./_brand.js";
 
 export const PAGE = { w: 612, h: 792 };          // US Letter, in points
 const M = { top: 54, bottom: 52, left: 46, right: 46 };
@@ -38,6 +38,9 @@ const BAND = rgb(BRAND.tint.r, BRAND.tint.g, BRAND.tint.b);
 
 /* The mark, and the space it occupies in the header. */
 const LOGO_H = 24;
+/* The full lockup, centred, on the first page of a section. Wide rather than
+   tall — the mark sits above the words — so it is sized by WIDTH. */
+const LOGO_WIDE_W = 186;
 
 /* WinAnsi is what the standard fonts can encode. A smart quote pasted out of
    Word, an en dash, an emoji in a note — pdf-lib THROWS on any of them rather
@@ -69,17 +72,25 @@ export async function newDoc() {
      And it is allowed to fail. If the bytes are ever corrupted by an edit to
      _brand.js, the packet still builds with the wordmark alone. Losing a
      picture is a cosmetic problem; a send that 500s over one is not. */
-  let logo = null;
+  let logo = null, logoWide = null;
   try {
     logo = await doc.embedPng(Buffer.from(LOGO_PNG_B64, "base64"));
   } catch (e) {
     console.log("[pdf] logo not embedded: " + ((e && e.message) || e));
   }
-  return { doc, font, bold, logo };
+  try {
+    logoWide = await doc.embedPng(Buffer.from(LOGO_WIDE_PNG_B64, "base64"));
+  } catch (e) {
+    console.log("[pdf] wide logo not embedded: " + ((e && e.message) || e));
+  }
+  return { doc, font, bold, logo, logoWide };
 }
 
-export function makeWriter({ doc, font, bold, logo }, { title, subtitle, stamp }) {
-  const st = { page: null, y: 0, pages: 0, section: "" };
+export function makeWriter({ doc, font, bold, logo, logoWide }, { title, subtitle, stamp }) {
+  /* `lead` marks the first page of a section — the one that gets the full
+     centred lockup. Continuation pages get the compact rail so that a long
+     pull list does not spend an inch of every sheet on a logo. */
+  const st = { page: null, y: 0, pages: 0, section: "", lead: false };
 
   const width = (t, size, f) => f.widthOfTextAtSize(ascii(t), size);
 
@@ -118,7 +129,47 @@ export function makeWriter({ doc, font, bold, logo }, { title, subtitle, stamp }
     return cx - x;
   }
 
+  /* The opening masthead: lockup centred, then the show, then the client and
+     venue. This is what somebody sees first, so it is the one that gets room. */
+  function drawLeadHead() {
+    const p = st.page;
+    let y = st.y;
+
+    if (logoWide) {
+      const w = LOGO_WIDE_W;
+      const h = w / (LOGO_WIDE_RATIO || 2.56);
+      p.drawImage(logoWide, { x: (PAGE.w - w) / 2, y: y - h, width: w, height: h });
+      y -= h + 14;
+    } else {
+      /* No lockup: fall back to the wordmark rather than nothing, so the page
+         still says who sent it. */
+      const w = bold.widthOfTextAtSize(ascii(BRAND.short), 9);
+      p.drawText(ascii(BRAND.short), { x: (PAGE.w - w) / 2, y: y - 9, size: 9, font: bold, color: BRAND_MID });
+      y -= 22;
+    }
+
+    /* drawText places the BASELINE at y, so the ascenders climb above it.
+       Drawing at the running cursor put the show title's capitals straight
+       through the bottom of the lockup. Every line here therefore drops by its
+       own size first, and only then advances the cursor. */
+    const centre = (t, size, f, color) => {
+      const w = f.widthOfTextAtSize(ascii(t), size);
+      y -= size;
+      p.drawText(ascii(t), { x: (PAGE.w - w) / 2, y, size, font: f, color });
+      y -= 5;
+    };
+    if (title) centre(title, 15, bold, INK);
+    if (subtitle) centre(subtitle, 9.5, font, DIM);
+    if (st.section) { y -= 2; centre(st.section, 9, bold, BRAND_INK); }
+
+    st.y = y - 8;
+    p.drawLine({ start: { x: M.left, y: st.y }, end: { x: PAGE.w - M.right, y: st.y }, thickness: 2, color: BRAND_RULE });
+    p.drawLine({ start: { x: M.left, y: st.y - 2.6 }, end: { x: PAGE.w - M.right, y: st.y - 2.6 }, thickness: 0.5, color: RULE });
+    st.y -= 18;
+  }
+
   function drawPageHead() {
+    if (st.lead) { st.lead = false; drawLeadHead(); return; }
     const p = st.page;
     const top = st.y;
     let textX = M.left;
@@ -268,12 +319,61 @@ export function makeWriter({ doc, font, bold, logo }, { title, subtitle, stamp }
     st.y -= 10;
   }
 
+  /* ---- two columns, side by side ----
+     Two blocks of the same kind next to each other — the venue and the hotel,
+     which are the two addresses somebody needs and which invite being compared
+     rather than read one after the other.
+
+     Deliberately NOT a general column system. Each side is a heading and a few
+     short lines; both are measured first, the taller one sets the height, and
+     the cursor moves down past both. Anything that needs to wrap across a
+     column break belongs in the single column this file is otherwise built
+     around. */
+  function twoCol(left, right, opts = {}) {
+    const gut = opts.gutter === undefined ? 22 : opts.gutter;
+    const colW = (PAGE.w - M.left - M.right - gut) / 2;
+    const titleSize = 10, size = opts.size || 10;
+
+    const linesFor = (b) => {
+      const out = [];
+      for (const ln of ((b && b.lines) || [])) {
+        if (!ascii(ln.text).trim()) continue;
+        const f = ln.bold ? bold : font;
+        for (const w of wrap(ln.text, ln.size || size, f, colW)) {
+          out.push({ text: w, size: ln.size || size, bold: !!ln.bold, dim: !!ln.dim });
+        }
+      }
+      return out;
+    };
+    const L = linesFor(left), R = linesFor(right);
+    const height = (arr) => arr.reduce((h, l) => h + l.size + 4, 0);
+    ensure(titleSize + 8 + Math.max(height(L), height(R)) + 6);
+
+    const top = st.y;
+    const drawCol = (x, head, arr) => {
+      let y = top;
+      st.page.drawText(ascii(head || ""), { x, y: y - titleSize + 1, size: titleSize, font: bold, color: BRAND_MID });
+      y -= titleSize + 7;
+      for (const l of arr) {
+        st.page.drawText(l.text, { x, y: y - l.size, size: l.size,
+          font: l.bold ? bold : font, color: l.dim ? DIM : INK });
+        y -= l.size + 4;
+      }
+    };
+    drawCol(M.left, left && left.head, L);
+    drawCol(M.left + colW + gut, right && right.head, R);
+    st.y = top - (titleSize + 7) - Math.max(height(L), height(R)) - 6;
+  }
+
   /* A section always starts a page. A packet is skimmed by flipping, and a
      schedule that begins two thirds down a pull list page cannot be found. */
   function section(name) {
     st.section = ascii(name);
+    st.lead = true;          // this page gets the full lockup
     newPage();
-    heading(name);
+    /* No repeated heading under the lead masthead: the section name is already
+       in it, centred, and printing it twice is the kind of thing that makes a
+       document look automatically generated. */
   }
 
   /* Stamped LAST, once every page exists, so the total is real rather than a
@@ -301,6 +401,6 @@ export function makeWriter({ doc, font, bold, logo }, { title, subtitle, stamp }
     });
   }
 
-  return { heading, subheading, para, note, table, section, gap, finish,
+  return { heading, subheading, para, note, table, twoCol, section, gap, finish,
            get pages() { return st.pages; } };
 }

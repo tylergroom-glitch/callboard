@@ -83,76 +83,68 @@ const byDate = (a, b) => {
 
 /* ---------------------------------------------------------------- brief -- */
 function brief(w, ev) {
-  const venue = ev.venue || {};
-  if (s(venue.name) || s(venue.address)) {
-    w.subheading("Venue");
-    if (s(venue.name)) w.para(venue.name, { bold: true, gap: 2 });
-    if (s(venue.address)) w.para(venue.address, { gap: 2 });
-    if (s(venue.mapLink)) w.note(venue.mapLink);
-    w.gap(6);
+  /* ---- what this job actually is ----
+     A paragraph at the top, before any address. Somebody who has worked four
+     shows this month opens this and needs one sentence telling them which one
+     it is and what the client cares about. Everything below is logistics; this
+     is the only part that is context. */
+  const about = s(ev.clientBrief);
+  if (about) {
+    w.subheading("About this show");
+    w.para(about, { gap: 8 });
   }
 
-  /* ---- where everyone is sleeping ----
-     Directly under the venue, because the two addresses somebody needs before
-     they need anything else are where the show is and where their bed is.
+  /* ---- what to wear ----
+     Its own line, not buried in a notes field, because it is the one
+     instruction people get wrong and it is the one that is visible from the
+     back of the room. */
+  const dress = s(ev.dressCode);
+  if (dress) {
+    w.subheading("Dress code");
+    w.para(dress, { bold: true, gap: 10 });
+  }
 
-     WHAT IS DELIBERATELY NOT HERE: flight confirmation numbers.
-     A record locator plus a surname is enough to view, change or cancel
-     somebody's flight on most airline sites — and this document goes to the
-     whole crew and gets forwarded from there. The flight table below carries
-     the airline, the number and the times, which is everything you need to
-     meet someone off a plane, and nothing that lets a stranger rebook them.
-     Hotel confirmations DO appear: they are what a front desk asks for, and
-     the blast radius of one is a room, not a journey. Each person's own
-     flight locator is on their My Call screen, which shows them theirs and
-     nobody else's. */
+  /* ---- the two addresses, side by side ----
+     Where the show is and where the bed is. Side by side rather than stacked
+     because they are the same kind of fact and the question is usually "how
+     far apart are these", which a reader answers by comparing them. */
+  const venue = (ev.venue && typeof ev.venue === "object") ? ev.venue : {};
   const it = (ev.itinerary && typeof ev.itinerary === "object") ? ev.itinerary : {};
-  const stays = rowsOf(it.stays).filter((r) => nonEmpty(r, ["crewName", "checkIn", "checkOut", "confirmation"]));
-  const flights = rowsOf(it.flights).filter((r) => nonEmpty(r, ["crewName", "date", "airport", "flightNo"]));
+  const hasVenue = s(venue.name) || s(venue.address);
   const hasHotel = s(it.hotelName) || s(it.hotelAddress);
 
-  if (hasHotel || stays.length || flights.length) {
-    w.subheading("Hotel");
-    if (s(it.hotelName)) w.para(it.hotelName, { bold: true, gap: 2 });
-    if (s(it.hotelAddress)) w.para(it.hotelAddress, { gap: 2 });
-    if (!hasHotel) w.note("No hotel has been named on the itinerary.");
-    w.gap(6);
-
-    if (stays.length) {
-      w.table(
-        [{ label: "Name", key: "name", w: 2.4 }, { label: "Check in", key: "in", w: 1.5 },
-         { label: "Check out", key: "out", w: 1.5 }, { label: "Confirmation", key: "conf", w: 1.6 },
-         { label: "Notes", key: "notes", w: 2.4, dim: true }],
-        stays.map((r) => ({
-          name: s(r.crewName), in: fmtDay(r.checkIn), out: fmtDay(r.checkOut),
-          conf: s(r.confirmation), notes: s(r.notes),
-        })),
-      );
-    }
-
-    if (flights.length) {
-      w.para("Flights", { size: 9, bold: true, gap: 2 });
-      w.table(
-        [{ label: "Name", key: "name", w: 2.2 }, { label: "Date", key: "date", w: 1.4 },
-         { label: "Route", key: "route", w: 1.6 }, { label: "Flight", key: "no", w: 1.1 },
-         { label: "Dep", key: "dep", w: 0.9 }, { label: "Arr", key: "arr", w: 0.9 },
-         { label: "Notes", key: "notes", w: 1.9, dim: true }],
-        flights.map((r) => ({
-          name: s(r.crewName), date: fmtDay(r.date), route: s(r.airport),
-          no: s(r.flightNo), dep: s(r.depart), arr: s(r.arrive), notes: s(r.notes),
-        })),
-      );
-    }
+  /* Side by side ONLY when there is something to put in both columns.
+     A local show with no travel was getting a "Hotel — No hotel on the
+     itinerary" column sitting next to the venue: half the width of the page
+     spent saying that nothing is there. When there is no hotel the venue gets
+     the block to itself, which is how it read before any of this. */
+  if (hasVenue && !hasHotel) {
+    w.subheading("Event venue");
+    if (s(venue.name)) w.para(venue.name, { bold: true, gap: 2 });
+    if (s(venue.mapLink)) w.para(venue.mapLink, { gap: 2 });
+    if (s(venue.address)) w.para(venue.address, { gap: 2 });
+    w.gap(8);
+  } else if (hasVenue || hasHotel) {
+    w.twoCol(
+      /* `mapLink` is the ROOM, not a URL. The field is labelled "Room" in the
+         brief editor and prompts "Ballroom A / room #"; the key is a leftover
+         from when it held a map link. It was being rendered small and grey
+         like a footnote, which is the wrong weight for the one line that tells
+         somebody which door to walk through. It sits under the venue name,
+         where people say it. */
+      { head: "Event venue", lines: [
+        { text: venue.name, bold: true },
+        { text: venue.mapLink },
+        { text: venue.address },
+      ] },
+      { head: "Hotel", lines: [
+        { text: it.hotelName, bold: true },
+        { text: it.hotelAddress },
+      ] },
+    );
+    w.gap(4);
   }
 
-  /* A row needs someone IN it, not just a job title.
-     Every new show is created with three placeholder contacts — Production
-     Manager, Venue CSM, Client — with the role filled in and the name, phone
-     and email blank, waiting to be completed. The old filter accepted a row
-     with any of the four fields set, so those placeholders rendered as three
-     lines of nothing but a role: worse than an absent Contacts section,
-     because it looks like the information was supposed to be there and got
-     lost. A contact you cannot contact is not a contact. */
   const contacts = rowsOf(ev.contacts).filter((c) => nonEmpty(c, ["name", "phone", "email"]));
   if (contacts.length) {
     w.subheading("Contacts");
@@ -163,29 +155,69 @@ function brief(w, ev) {
     );
   }
 
+  /* ---- ONE crew list ----
+     Name, position, call, and — for anybody the itinerary has a room for —
+     their arrival, departure and confirmation number, on the same line.
+     Previously this was two tables that had to be read against each other:
+     find yourself in the crew list for your call time, find yourself again in
+     the rooms list for your hotel dates. One row per person is the whole
+     point; nobody should have to cross-reference themselves.
+
+     Rooms are matched to crew BY NAME, trimmed and case-folded, which is what
+     the My Call screen already does. A stay whose name matches nobody on the
+     crew list is still shown, at the bottom, rather than silently dropped —
+     that mismatch is usually a typo somebody needs to see.
+
+     Flight details are deliberately absent: asked for and declined. */
   const crew = rowsOf(ev.crew).filter((c) => s(c.name));
-  if (crew.length) {
+  const stays = rowsOf(it.stays).filter((r) => nonEmpty(r, ["crewName", "checkIn", "checkOut", "confirmation"]));
+
+  if (crew.length || stays.length) {
+    const norm = (v) => s(v).toLowerCase();
+    const stayFor = {};
+    for (const r of stays) {
+      const k = norm(r.crewName);
+      if (k && !stayFor[k]) stayFor[k] = r;
+    }
+
+    /* NO CALL TIME COLUMN, deliberately.
+       Call times live per day per person, so a single column can only show
+       ONE of them — the earliest — and on a three-day show that is wrong for
+       most people on most days. It was showing everyone the same 8:00 AM
+       because that is the first day's call. The Schedule section carries the
+       real per-day times; this table is who is on the job and when they are
+       in town. */
+    const spec = [
+      { label: "Name", key: "name", w: 2.6 },
+      { label: "Position", key: "position", w: 2.3 },
+      { label: "Arrive", key: "in", w: 1.5 },
+      { label: "Depart", key: "out", w: 1.5 },
+      { label: "Hotel conf.", key: "conf", w: 1.7 },
+    ];
+
+    const used = new Set();
+    const rows = crew.map((c) => {
+      const st = stayFor[norm(c.name)];
+      if (st) used.add(norm(c.name));
+      return {
+        name: s(c.name), position: s(c.position),
+        in: st ? fmtDay(st.checkIn) : "", out: st ? fmtDay(st.checkOut) : "",
+        conf: st ? s(st.confirmation) : "",
+      };
+    });
+
+    /* A room booked for somebody who is not on the crew list. Shown, not
+       swallowed — it is either a name typed differently in two places or
+       somebody nobody added to the show, and both want looking at. */
+    const orphans = stays
+      .filter((r) => !used.has(norm(r.crewName)))
+      .map((r) => ({
+        name: s(r.crewName), position: "(not on the crew list)",
+        in: fmtDay(r.checkIn), out: fmtDay(r.checkOut), conf: s(r.confirmation),
+      }));
+
     w.subheading("Crew");
-    /* Call times live per DAY per person. The packet shows the earliest one
-       each person has, labelled as such, because "your call" is the number
-       somebody actually needs and the full grid is the Schedule section's job. */
-    const callFor = (cid) => {
-      const days = rowsOf(ev.schedule).slice().sort(byDate);
-      for (const d of days) {
-        const t = ev.callTimes && ev.callTimes[d.id] && ev.callTimes[d.id][cid];
-        if (s(t)) return s(t);
-      }
-      return "";
-    };
-    w.table(
-      [{ label: "Name", key: "name", w: 2.2 }, { label: "Position", key: "position", w: 2 },
-       { label: "First call", key: "call", w: 1.2 }, { label: "Phone", key: "phone", w: 1.6, dim: true },
-       { label: "Email", key: "email", w: 2.6, dim: true }],
-      crew.map((c) => ({
-        name: s(c.name), position: s(c.position), call: callFor(c.id),
-        phone: s(c.phone), email: s(c.email),
-      })),
-    );
+    w.table(spec, rows.concat(orphans));
   }
 
   const wifi = rowsOf(ev.wifi).filter((n) => nonEmpty(n, ["network", "ssid", "password"]));
@@ -198,8 +230,7 @@ function brief(w, ev) {
     );
   }
 
-  if (!contacts.length && !crew.length && !s(venue.name) && !s(venue.address)
-      && !hasHotel && !stays.length && !flights.length) {
+  if (!about && !dress && !hasVenue && !hasHotel && !contacts.length && !crew.length && !stays.length) {
     w.note("Nothing has been filled in on the Brief yet.");
   }
 }
