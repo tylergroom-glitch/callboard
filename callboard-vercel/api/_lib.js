@@ -926,3 +926,130 @@ export async function logActivity(p, kind, summary, opts = {}) {
     console.log("[activity] not recorded: " + ((e && e.message) || e));
   }
 }
+
+/* ---------------------------------------------------------------------------
+   THE CLAUDE API, IN ONE PLACE.
+
+   Three routes ask Claude to turn a document into JSON: import-schedule (a
+   pasted or uploaded agenda), import-quote (a quote PDF's gear list) and
+   import-catalog (a price list). Each had its own copy of the same forty
+   lines, its own hard-coded model name and its own error text.
+
+   THE FAILURE THAT PROMPTED THIS
+     All three stopped working at once and the app said "Request failed (504)".
+     That is not an error message, it is the absence of one: the function was
+     being killed by the platform before it could answer, so nothing this app
+     wrote ever reached the screen. Three things were wrong at once and only
+     the first is the fix:
+
+       1. NO maxDuration WAS SET. A serverless function inherits the project's
+          default, which on this project is short. An Opus call on a document
+          takes longer than that, so the platform terminated it mid-flight and
+          returned its own HTML error page — which is why the browser fell back
+          to the status code.
+       2. THE ROUTE COULD NOT TELL YOU THAT. There was no deadline of its own,
+          so it never got the chance to say "that took too long"; it was simply
+          cut off. It now gives up BEFORE the platform does and says so.
+       3. THE MODEL WAS PINNED IN THREE FILES. When a model is slow, retired,
+          or not on the account's plan, that was three uploads to change.
+
+   So: one function, one model name, a deadline it owns, and errors that say
+   what happened.
+--------------------------------------------------------------------------- */
+
+/* Env first, so a model that has to change is a Vercel setting and not a
+   deploy — which for a hand-uploaded repo is the difference between thirty
+   seconds and an upload cycle. */
+export const EXTRACT_MODEL = process.env.EXTRACT_MODEL || "claude-sonnet-5";
+
+/* Shorter than the function's own limit, ON PURPOSE. Whoever gives up first
+   decides what the caller is told, and it should be this code — which knows
+   what was being attempted — rather than the platform, which returns an HTML
+   page the browser cannot read. */
+export const EXTRACT_DEADLINE_MS = Number(process.env.EXTRACT_DEADLINE_MS) || 110000;
+
+/* Ask Claude for JSON and give back the parsed object.
+   Throws an Error carrying `.status`, already worded for a person to read:
+   every return path here ends up in front of somebody who is trying to import
+   a document and wants to know why it did not work. */
+export async function claudeExtract({ content, maxTokens = 4096, what = "that file" }) {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    const e = new Error("ANTHROPIC_API_KEY is not set. Add it in Vercel under " +
+                        "Settings > Environment Variables, then redeploy.");
+    e.status = 500;
+    throw e;
+  }
+
+  const started = Date.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), EXTRACT_DEADLINE_MS);
+
+  let apiRes;
+  try {
+    apiRes = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: EXTRACT_MODEL,
+        max_tokens: maxTokens,
+        messages: [{ role: "user", content }],
+      }),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    const secs = Math.round((Date.now() - started) / 1000);
+    console.log("[extract] " + EXTRACT_MODEL + " failed after " + secs + "s: " + ((err && err.message) || err));
+    const e = new Error(err && err.name === "AbortError"
+      ? "Reading " + what + " took longer than " + Math.round(EXTRACT_DEADLINE_MS / 1000) +
+        " seconds and was stopped. Try a shorter document, or set EXTRACT_MODEL " +
+        "in Vercel to a faster model."
+      : "Couldn't reach the Claude API: " + ((err && err.message) || "network error"));
+    e.status = 504;
+    throw e;
+  }
+  clearTimeout(timer);
+
+  const secs = Math.round((Date.now() - started) / 1000);
+  /* In the log whether it worked or not. "How long did it take" is the first
+     question about every one of these and there was previously no way to ask
+     it short of guessing. */
+  console.log("[extract] " + EXTRACT_MODEL + " " + apiRes.status + " in " + secs + "s (" + what + ")");
+
+  if (!apiRes.ok) {
+    const body = await apiRes.json().catch(() => ({}));
+    const detail = (body && body.error && (body.error.message || body.error.type)) || "";
+    /* The model name is IN the message. A 404 from this endpoint almost always
+       means the model is not one this account can use, and a message that does
+       not say which model was asked for sends you looking in the wrong place. */
+    const e = new Error("Claude API error " + apiRes.status +
+      " using model " + EXTRACT_MODEL + (detail ? ": " + detail : "") +
+      (apiRes.status === 404 || apiRes.status === 400
+        ? " - if that model is not available on your account, set EXTRACT_MODEL in Vercel."
+        : ""));
+    e.status = 502;
+    throw e;
+  }
+
+  const data = await apiRes.json();
+  const text = (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("")
+    .replace(/```json\s*/g, "")
+    .replace(/```\s*/g, "")
+    .trim();
+
+  try {
+    return JSON.parse(text);
+  } catch (err) {
+    console.log("[extract] unparseable reply: " + text.slice(0, 200));
+    const e = new Error("Claude read " + what + " but the answer wasn't usable. Try again.");
+    e.status = 502;
+    throw e;
+  }
+}

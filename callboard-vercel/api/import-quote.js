@@ -5,9 +5,11 @@
 //   2. section financials → for the P&L / costing tab
 // Returns { cases, loose, costing }
 //
-// SETUP: add ANTHROPIC_API_KEY to your Vercel environment variables.
-// Recommended: in vercel.json set maxDuration: 30 for this function.
-import { json, readBody, auth } from "./_lib.js";
+// SETUP: add ANTHROPIC_API_KEY to your Vercel environment variables. The model
+// is EXTRACT_MODEL (optional). maxDuration for this route IS now set in
+// vercel.json - it was only ever a recommendation in this comment, and not
+// doing it is what made these importers fail with an unreadable 504.
+import { json, readBody, auth, claudeExtract } from "./_lib.js";
 
 const PROMPT = `You are parsing an AV/live-event production quote PDF to extract two things:
 1. A gear/equipment pull list (physical items only, organized by case)
@@ -60,11 +62,6 @@ export default async function handler(req, res) {
   const p = auth(req);
   if (!p) return json(res, 401, { error: "Not signed in" });
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return json(res, 500, {
-      error: "ANTHROPIC_API_KEY is not set. Add it to your Vercel environment variables.",
-    });
-  }
 
   let body;
   try {
@@ -75,53 +72,10 @@ export default async function handler(req, res) {
   if (!body.pdf) return json(res, 400, { error: "No PDF data provided" });
 
   try {
-    const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-6",
-        max_tokens: 4096,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "document",
-                source: { type: "base64", media_type: "application/pdf", data: body.pdf },
-              },
-              { type: "text", text: PROMPT },
-            ],
-          },
-        ],
-      }),
-    });
-
-    if (!apiRes.ok) {
-      const err = await apiRes.json().catch(() => ({}));
-      return json(res, 502, {
-        error: "Claude API error: " + (err?.error?.message || apiRes.status),
-      });
-    }
-
-    const data = await apiRes.json();
-    const text = (data.content || [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("")
-      .replace(/```json\s*/g, "")
-      .replace(/```\s*/g, "")
-      .trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return json(res, 502, { error: "Could not parse AI response as JSON. Try again." });
-    }
+    const parsed = await claudeExtract({ content: [
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.pdf } },
+      { type: "text", text: PROMPT },
+    ], what: "that quote" });
 
     if (!Array.isArray(parsed.cases)) {
       return json(res, 502, { error: "Unexpected response structure from AI. Try again." });
@@ -133,6 +87,6 @@ export default async function handler(req, res) {
       costing: parsed.costing || null,
     });
   } catch (e) {
-    return json(res, 500, { error: e.message || "Server error" });
+    return json(res, e.status || 500, { error: e.message || "Server error" });
   }
 }

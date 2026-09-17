@@ -9,7 +9,7 @@
 //
 // SETUP: needs ANTHROPIC_API_KEY in Vercel (you already have it for
 // /api/import-quote). Nothing else.
-import { json, readBody, auth, isAdmin } from "./_lib.js";
+import { json, readBody, auth, isAdmin, claudeExtract } from "./_lib.js";
 
 const PROMPT = `You are reading an AV / live-event rental quote PDF in order to build a PRICING CATALOG.
 
@@ -62,9 +62,6 @@ export default async function handler(req, res) {
   if (!p) return json(res, 401, { error: "Not signed in" });
   if (!isAdmin(p)) return json(res, 403, { error: "Admin only" });
 
-  if (!process.env.ANTHROPIC_API_KEY)
-    return json(res, 500, { error: "ANTHROPIC_API_KEY is not set. Add it in Vercel and redeploy." });
-
   let body;
   try {
     body = await readBody(req);
@@ -74,48 +71,11 @@ export default async function handler(req, res) {
   if (!body.pdf) return json(res, 400, { error: "No PDF data provided" });
 
   try {
-    const apiRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "x-api-key": process.env.ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-6",
-        max_tokens: 8192,
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.pdf } },
-              { type: "text", text: PROMPT },
-            ],
-          },
-        ],
-      }),
-    });
+    const parsed = await claudeExtract({ content: [
+      { type: "document", source: { type: "base64", media_type: "application/pdf", data: body.pdf } },
+      { type: "text", text: PROMPT },
+    ], maxTokens: 8192, what: "that price list" });
 
-    if (!apiRes.ok) {
-      const err = await apiRes.json().catch(() => ({}));
-      return json(res, 502, { error: "Claude API error: " + ((err && err.error && err.error.message) || apiRes.status) });
-    }
-
-    const data = await apiRes.json();
-    const text = (data.content || [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("")
-      .replace(/```json\s*/g, "")
-      .replace(/```\s*/g, "")
-      .trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return json(res, 502, { error: "Could not read the AI response. Try again." });
-    }
     if (!Array.isArray(parsed.items))
       return json(res, 502, { error: "Unexpected response from the AI. Try again." });
 
@@ -133,6 +93,6 @@ export default async function handler(req, res) {
 
     return json(res, 200, { items });
   } catch (e) {
-    return json(res, 500, { error: e.message || "Server error" });
+    return json(res, e.status || 500, { error: e.message || "Server error" });
   }
 }
