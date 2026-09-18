@@ -81,6 +81,11 @@ export const TABLES = [
      within a minute of the table existing. That is the whole reason this list
      is safe to write by hand. */
   "venue_files",
+  /* Caught by the completeness test within a minute of existing, same as the
+     three before it. This one matters more than most: it holds the ONLY copy
+     of a show that an attach deleted, so a backup without it cannot put one
+     back. */
+  "attach_log",
 ];
 
 /* Tables whose loss would be an inconvenience rather than a disaster: caches

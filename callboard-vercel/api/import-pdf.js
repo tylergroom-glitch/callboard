@@ -129,6 +129,14 @@ export default async function handler(req, res) {
        to look at the PDF, and a reason NOT to quietly import it. */
     check: { ...parsed.check, linesTotal, linesBalance: Math.abs(linesTotal - (parsed.total || 0)) < 0.005 },
 
+    /* A SHOW THIS JOB COULD ATTACH TO INSTEAD OF CREATING ONE.
+       `alreadyShow` above is an EXACT name-and-date match, which catches the
+       easy case and misses the common one: the show Tyler built at the time is
+       called "Ridgeline Summit 2026" and the PDF says "2026 Ridgeline Summit".
+       Same matcher as the client and venue lookups, so a near miss is offered
+       rather than silently becoming a second show. */
+    showMatch: bestMatch(parsed.name, shows || []),
+
     dup: already ? "quote" : alreadyShow ? "show" : "",
     dupNote: already
       ? "A quote for this job is already in the app" + (already.status ? " (" + already.status + ")" : "") + "."
