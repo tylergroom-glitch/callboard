@@ -659,3 +659,20 @@ export async function uploadVenueFile(venueId, file, { caption = "", onProgress 
 export const getReport = (period, anchor) =>
   api("GET", "/api/reporting?report=1&period=" + encodeURIComponent(period) +
       "&anchor=" + encodeURIComponent(anchor));
+
+/* ---- imported jobs that already had a show -------------------------------
+   The past-jobs importer makes a show per job. When the job was already in the
+   app that leaves a duplicate: the real show, and a stub carrying the quote. */
+export const getAttachPairs = () => api("GET", "/api/attach-import?pairs=1");
+
+export const previewAttach = (stub, keep) =>
+  api("GET", "/api/attach-import?preview=1&stub=" + encodeURIComponent(stub) +
+      "&keep=" + encodeURIComponent(keep));
+
+export const commitAttach = (stub, keep) =>
+  api("POST", "/api/attach-import?commit=1", { stub, keep });
+
+export const listAttachUndo = () => api("GET", "/api/attach-import?undo=1");
+
+export const undoAttach = (id) =>
+  api("POST", "/api/attach-import?undo=" + encodeURIComponent(id), {});

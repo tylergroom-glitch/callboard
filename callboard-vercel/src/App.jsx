@@ -148,6 +148,11 @@ import {
   setTruckOrigin,
   getTruckRates,
   setTruckRates,
+  getAttachPairs,
+  previewAttach,
+  commitAttach,
+  listAttachUndo,
+  undoAttach,
   getReport,
   listVenueFiles,
   viewVenueFile,
@@ -7293,6 +7298,13 @@ function pdfToRow(r, i) {
     invoiceNo: "",
     dup: r.dup || "",
     dupNote: r.dupNote || "",
+    /* A show already in the app that this job could go onto instead of getting
+       a new one. Starts UNPICKED even when the server is sure: attaching moves
+       the job's money onto an existing show, and a wrong attach is invisible
+       afterwards — the money simply sits somewhere else and nothing says so. A
+       spare show is visible and fixable; a mis-attached job is not. */
+    showMatch: r.showMatch || null,
+    attachTo: "",
     action: r.dup ? "skip" : "create",
     clientInfo: r.client || null,
     venueInfo: r.venue || null,
@@ -7456,6 +7468,9 @@ function ImportJobsModal({ onClose, onImported, clients, venues }) {
            the override. Everything else is checked against the database again
            on the way in and skipped if it has appeared since. */
         force: !!x.dup,
+        /* "" means make a show. An id means use that one — validated on the
+           server against what it actually is, never taken on trust. */
+        attachTo: x.attachTo || "",
         /* The PDF half. An id means "use the one I picked"; no id plus a
            newClient means "make this one". The server treats an id as final,
            so a stale proposal left alongside it cannot create a second
@@ -7764,6 +7779,28 @@ function ImportJobsModal({ onClose, onImported, clients, venues }) {
                         ) : null}
                         {r.ok && (r.warnings || []).length ? (
                           <span className="ij-why amber">{r.warnings.join(" ")}</span>
+                        ) : null}
+
+                        {/* A SHOW YOU ALREADY HAVE FOR THIS JOB.
+                            Offered rather than assumed, and off by default even
+                            when the names match exactly. Importing onto the
+                            wrong show is invisible afterwards — the money sits
+                            on another job and nothing on any screen says so —
+                            whereas a spare show is right there in the list. */}
+                        {r.ok && r.showMatch ? (
+                          <label className="ij-why" style={{ display: "block", marginTop: 3 }}>
+                            <input
+                              type="checkbox"
+                              style={{ width: "auto", marginRight: 6, verticalAlign: "middle" }}
+                              checked={r.attachTo === r.showMatch.id}
+                              onChange={(e) =>
+                                setPickField(r.line, "attachTo", e.target.checked ? r.showMatch.id : "")}
+                            />
+                            Put this on the show you already have —{" "}
+                            <b>{r.showMatch.name}</b>{" "}
+                            <span style={{ opacity: .75 }}>({r.showMatch.why.toLowerCase()})</span>
+                            {" "}instead of making a new one.
+                          </label>
                         ) : null}
                       </td>
                       <td>
@@ -8102,7 +8139,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.53.0";
+const APP_VERSION = "1.54.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -8800,6 +8837,7 @@ const SET_TABS = [
   { key: "docs", label: "Crew documents" },
   { key: "look", label: "Appearance" },
   { key: "backup", label: "Backup" },
+  { key: "dupes", label: "Duplicate shows" },
 ];
 
 /* How long ago, in words. A timestamp is a number you have to subtract from
@@ -9376,6 +9414,178 @@ function SettingsScreen({ onClose }) {
       {tab === "docs" ? <SetCrewDocs /> : null}
       {tab === "look" ? <SetAppearance /> : null}
       {tab === "backup" ? <SetBackup /> : null}
+      {tab === "dupes" ? <SetDuplicateShows /> : null}
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * IMPORTED JOBS THAT ALREADY HAD A SHOW
+ *
+ * The past-jobs importer creates a show for every job it reads, because most
+ * of them were never in the app. When one WAS, the result is two shows: the
+ * real one, with its crew and schedule, and a stub carrying the quote.
+ *
+ * THIS SCREEN DELETES A SHOW, so it is built to be slow rather than clever:
+ * one pair at a time, a preview of exactly what moves before anything does,
+ * and a list of everything done so it can be put back. There is no "attach all
+ * the confident ones" button — a wrong pair does not look wrong afterwards,
+ * because the job's money simply sits on another show and nothing says so.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function SetDuplicateShows() {
+  const [d, setD] = useState(null);
+  const [err, setErr] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState("");        // stub id being looked at
+  const [plan, setPlan] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [done, setDone] = useState([]);
+
+  const load = async () => {
+    setLoading(true); setErr("");
+    try {
+      const [pairs, undo] = await Promise.all([getAttachPairs(), listAttachUndo()]);
+      setD(pairs); setDone(undo.attaches || []);
+    } catch (e) { setErr((e && e.message) || "Couldn't read the shows."); }
+    setLoading(false);
+  };
+  useEffect(() => { load(); }, []);
+
+  const look = async (stub, keep) => {
+    setOpen(stub); setPlan(null); setNote(""); setErr("");
+    try { setPlan(await previewAttach(stub, keep)); }
+    catch (e) { setPlan({ ok: false, error: (e && e.message) || "Couldn't check that pair." }); }
+  };
+
+  const go = async (stub, keep) => {
+    setBusy(true); setErr(""); setNote("");
+    try {
+      const r = await commitAttach(stub, keep);
+      setNote("Attached. " + r.movedQuotes + " quote" + (r.movedQuotes === 1 ? "" : "s") +
+              " and " + r.movedItems + " line item" + (r.movedItems === 1 ? "" : "s") + " moved.");
+      setOpen(""); setPlan(null);
+      await load();
+    } catch (e) { setErr((e && e.message) || "That didn't go through."); }
+    setBusy(false);
+  };
+
+  const putBack = async (id) => {
+    setBusy(true); setErr(""); setNote("");
+    try { const r = await undoAttach(id); setNote("“" + r.restored + "” is back."); await load(); }
+    catch (e) { setErr((e && e.message) || "Couldn't put that back."); }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ maxWidth: 760 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>Imported jobs that already had a show</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+        Importing old quotes creates a show for each one. Where you already had a show
+        for that job, this moves the quote onto it and removes the leftover. The show
+        you built — its crew, schedule and everything else — is the one that stays.
+      </p>
+
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
+      {loading ? <p style={ctgHint}>Looking…</p> : null}
+
+      {d && !loading ? (
+        <>
+          <p style={{ fontSize: 13, marginTop: 4 }}>
+            <b>{d.stubs}</b> imported {d.stubs === 1 ? "show" : "shows"}, of which{" "}
+            <b>{d.matched}</b> look like a show you already had
+            {d.confident ? <> — {d.confident} with the same name and date</> : null}.
+          </p>
+
+          {d.pairs.filter((x) => x.match).map((x) => (
+            <div key={x.stub.id} style={{ border: "1px solid var(--line)", borderRadius: 9,
+                                          padding: "10px 12px", marginBottom: 8 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+                <span style={{ flex: "1 1 220px", fontSize: 13.5 }}>
+                  <b>{x.stub.name}</b>
+                  <span style={{ color: "var(--dim)" }}>
+                    {" "}{x.stub.startDate || "no date"}
+                    {x.stub.invoiceNo ? " · " + x.stub.invoiceNo : ""}
+                  </span>
+                </span>
+                <span style={{ fontSize: 12.5, color: x.match.confident ? "#0B7A3B" : "#B4690E" }}>
+                  {x.match.why}
+                </span>
+              </div>
+              <div style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 2 }}>
+                onto <b style={{ color: "var(--fg)" }}>{x.match.name}</b>
+                {x.match.startDate ? " · " + x.match.startDate : ""}
+              </div>
+
+              {open === x.stub.id ? (
+                <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+                  {!plan ? <span style={{ fontSize: 12.5, color: "var(--dim)" }}>Checking…</span> : null}
+                  {plan && !plan.ok ? (
+                    <p style={{ color: "#D14343", fontSize: 12.5, margin: 0 }}>{plan.error}</p>
+                  ) : null}
+                  {plan && plan.ok ? (
+                    <>
+                      <p style={{ fontSize: 13, margin: "0 0 6px" }}>{plan.summary}</p>
+                      {plan.fills && plan.fills.length ? (
+                        <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 8px" }}>
+                          Fills in what the kept show is missing: {plan.fills.join(", ")}.
+                          Nothing it already has is changed.
+                        </p>
+                      ) : null}
+                      <button className="btn amber" disabled={busy}
+                              onClick={() => go(x.stub.id, x.match.id)}>
+                        {busy ? "Working…" : "Attach and remove the leftover"}
+                      </button>
+                      <button className="btn ghost" onClick={() => { setOpen(""); setPlan(null); }}
+                              style={{ marginLeft: 8 }}>Cancel</button>
+                    </>
+                  ) : null}
+                </div>
+              ) : (
+                <button className="btn ghost" style={{ marginTop: 7, padding: "4px 10px", fontSize: 12.5 }}
+                        onClick={() => look(x.stub.id, x.match.id)}>
+                  Check this pair
+                </button>
+              )}
+            </div>
+          ))}
+
+          {d.pairs.some((x) => !x.match) ? (
+            <p style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 12 }}>
+              {d.pairs.filter((x) => !x.match).length} imported{" "}
+              {d.pairs.filter((x) => !x.match).length === 1 ? "show matches" : "shows match"} nothing
+              you already had, which is what you would expect for a job that was never in the
+              app. Nothing to do with {d.pairs.filter((x) => !x.match).length === 1 ? "it" : "them"}.
+            </p>
+          ) : null}
+
+          {!d.matched ? (
+            <p style={{ ...ctgHint, padding: 22, textAlign: "center" }}>
+              Nothing here looks like a duplicate.
+            </p>
+          ) : null}
+
+          {done.length ? (
+            <>
+              <h3 style={{ fontSize: 14, margin: "22px 0 4px" }}>Done, and undoable</h3>
+              <p style={{ fontSize: 12, color: "var(--dim)", marginTop: 0 }}>
+                A wrong pair does not look wrong afterwards — the money just sits on another
+                show. These can be put back exactly as they were.
+              </p>
+              {done.map((a) => (
+                <div key={a.id} style={ctgListRow}>
+                  <span style={{ flex: 1, fontSize: 13 }}>
+                    {a.stubName} <span style={{ color: "var(--dim)" }}>onto</span> {a.keepName}
+                  </span>
+                  <button className="btn ghost" disabled={busy} onClick={() => putBack(a.id)}
+                          style={{ padding: "4px 9px", fontSize: 12 }}>Put back</button>
+                </div>
+              ))}
+            </>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
