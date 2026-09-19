@@ -1307,33 +1307,46 @@ function Callboard({ auth, onLogout }) {
     }
   }
 
-  async function deleteEvent() {
-    if (!event) return;
-    if (!window.confirm(`Delete "${event.name}"? This removes it for everyone and can't be undone.`)) return;
-    try {
-      await deleteEvent_api(event.id);
-      const next = events.filter((e) => e.id !== event.id);
-      setEvents(next);
-      if (next.length) {
-        const e = normalize(await getEvent(next[0].id));
-        loadingRef.current = true;
-        setCurrentId(next[0].id);
-        setEvent(e);
-      } else {
-        const seed = blankEvent();
-        const created = await createEvent({
-          name: seed.name, client: seed.client, startDate: seed.startDate, endDate: seed.endDate, data: seed, password: "",
-        });
-        seed.id = created.id;
-        loadingRef.current = true;
-        setEvents([created]);
-        setCurrentId(seed.id);
-        setEvent(seed);
-      }
-      setTab("home");
-    } catch (err) {
-      flash(err.message || "Couldn't delete");
+  /* Deleting a show, by id, with no confirmation of its own.
+     It used to be a button in the top bar with a browser confirm on it, one
+     along from Duplicate and Show access — and a browser confirm is not a
+     safeguard, it is a reflex. The decision now happens in Settings >
+     Delete a show, where the show has to be found and its name typed out.
+     This function is only the doing. */
+  async function removeShow(id) {
+    if (!id) return;
+    /* Deliberately NOT caught. The screen that calls this shows the reason to
+       whoever pressed the button; swallowing it here and flashing a toast was
+       fine for a top-bar button and is not fine for a typed confirmation that
+       has to be able to say "that did not work, and here is why". */
+    await deleteEvent_api(id);
+    const next = events.filter((e) => e.id !== id);
+    setEvents(next);
+
+    /* ONLY MOVE IF THE DELETED SHOW WAS THE ONE OPEN.
+       The old version always jumped to the first show in the list, which was
+       right when the only way to delete was from the show you were looking
+       at. From Settings it would throw away whatever was open for no reason —
+       delete a leftover import and find yourself in a different job. */
+    if (id !== currentId) return;
+
+    if (next.length) {
+      const e = normalize(await getEvent(next[0].id));
+      loadingRef.current = true;
+      setCurrentId(next[0].id);
+      setEvent(e);
+    } else {
+      const seed = blankEvent();
+      const created = await createEvent({
+        name: seed.name, client: seed.client, startDate: seed.startDate, endDate: seed.endDate, data: seed, password: "",
+      });
+      seed.id = created.id;
+      loadingRef.current = true;
+      setEvents([created]);
+      setCurrentId(seed.id);
+      setEvent(seed);
     }
+    setTab("home");
   }
 
   async function changeShowPassword() {
@@ -1442,7 +1455,8 @@ function Callboard({ auth, onLogout }) {
             ) : admSection === "staff" ? (
               <TcgStaffScreen onClose={() => goAdmin("shows")} />
             ) : admSection === "settings" ? (
-              <SettingsScreen onClose={() => goAdmin("shows")} />
+              <SettingsScreen onClose={() => goAdmin("shows")}
+                              shows={events} currentId={currentId} onDeleteShow={removeShow} />
             ) : (
               calendar
             )}
@@ -1502,7 +1516,13 @@ function Callboard({ auth, onLogout }) {
               <button className="btn ghost" onClick={duplicateEvent}>Duplicate</button>
               <button className="btn ghost" onClick={() => setShowAccessOpen(true)}>Show access</button>
               {isSuperAdmin && <button className="btn ghost" onClick={openPnlDashboard}>P&amp;L Dashboard</button>}
-              <button className="btn danger ghost" onClick={deleteEvent}>Delete</button>
+              {/* DELETE IS NOT UP HERE ANY MORE.
+                  It sat one button along from Duplicate and Show access, both
+                  of which are pressed often, and a mis-hit removed a show for
+                  everyone with nothing but a browser confirm in the way. It
+                  now lives in Settings > Delete a show, where getting to it is
+                  a decision rather than a slip, and where the show has to be
+                  named by hand before anything happens. */}
             </div>
           </>
         ) : (
@@ -3705,6 +3725,7 @@ const ctgListRow = { display: "flex", alignItems: "center", gap: 12, background:
 const ctgChip = (on, color) => ({ background: on ? color : "transparent", color: on ? "#101218" : "var(--dim)", border: "1px solid " + (on ? color : "var(--line)"), borderRadius: 999, padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer" });
 const ctgErr = { color: "var(--danger)", fontSize: 13, margin: "8px 0" };
 const ctgHint = { color: "var(--dim)", fontSize: 13, marginTop: 6 };
+const ctgInput = { background: "var(--panel2)", color: "var(--ink)", border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", font: "inherit", fontSize: 13 };
 
 async function ctgFileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -8139,7 +8160,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.55.0";
+const APP_VERSION = "1.56.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -8838,6 +8859,7 @@ const SET_TABS = [
   { key: "look", label: "Appearance" },
   { key: "backup", label: "Backup" },
   { key: "dupes", label: "Duplicate shows" },
+  { key: "delete", label: "Delete a show" },
 ];
 
 /* How long ago, in words. A timestamp is a number you have to subtract from
@@ -9389,7 +9411,124 @@ function RptTile({ label, value, note, colour }) {
   );
 }
 
-function SettingsScreen({ onClose }) {
+/* ─────────────────────────────────────────────────────────────────────────────
+ * DELETING A SHOW
+ *
+ * This used to be a button in the top bar, one along from Duplicate and Show
+ * access — both pressed often — with a browser confirm behind it. A browser
+ * confirm is not a safeguard; it is a reflex, dismissed by the same hand that
+ * caused the problem. And deleting a show takes its quotes, expenses, tasks
+ * and crew with it, for everyone, with no undo.
+ *
+ * So it is here instead, and getting to it is the safeguard: Settings, a tab
+ * of its own, find the show in a list, then TYPE ITS NAME. Nothing about that
+ * happens by accident.
+ *
+ * It is also more useful here than it was up there. The old button could only
+ * delete the show you were looking at; this one reaches any of them, which is
+ * what clearing out leftover imports actually needs.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function SetDeleteShow({ shows, currentId, onDelete }) {
+  const [q, setQ] = useState("");
+  const [pick, setPick] = useState(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [note, setNote] = useState("");
+
+  const needle = q.trim().toLowerCase();
+  const list = (shows || [])
+    .filter((s) => !needle ||
+      String(s.name || "").toLowerCase().indexOf(needle) >= 0 ||
+      String(s.client || "").toLowerCase().indexOf(needle) >= 0)
+    .slice(0, 40);
+
+  /* Exact, trimmed. Not case-insensitive and not fuzzy: the point of typing
+     the name is to have read it, and a match that forgives you is a match that
+     did not make you read it. */
+  const armed = !!pick && typed.trim() === String(pick.name || "").trim() && !!typed.trim();
+
+  const go = async () => {
+    if (!armed) return;
+    setBusy(true); setErr(""); setNote("");
+    const name = pick.name;
+    try {
+      await onDelete(pick.id);
+      setNote("“" + name + "” is gone.");
+      setPick(null); setTyped(""); setQ("");
+    } catch (e) {
+      setErr((e && e.message) || "That didn't go through.");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div style={{ maxWidth: 620 }}>
+      <h2 style={{ fontSize: 16, margin: "0 0 4px" }}>Delete a show</h2>
+      <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
+        This removes the show for everyone, along with its crew, schedule, quotes,
+        expenses and tasks. There is no undo. If you only want it out of the way,
+        it is usually better to leave it alone — nothing costs anything to keep.
+      </p>
+
+      {err ? <div style={ctgErr}>{err}</div> : null}
+      {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
+
+      {!pick ? (
+        <>
+          <input
+            value={q} onChange={(e) => setQ(e.target.value)}
+            placeholder="Find a show by name or client…"
+            style={{ ...ctgInput, width: "100%", marginBottom: 10 }}
+          />
+          {list.length ? list.map((s) => (
+            <div key={s.id} style={ctgListRow}>
+              <span style={{ flex: 1, fontSize: 13 }}>
+                {s.name || "Untitled"}
+                <span style={{ color: "var(--dim)" }}>
+                  {s.client ? " · " + s.client : ""}
+                  {s.startDate ? " · " + s.startDate : ""}
+                  {s.id === currentId ? " · open now" : ""}
+                </span>
+              </span>
+              <button className="btn ghost" style={{ padding: "4px 9px", fontSize: 12 }}
+                      onClick={() => { setPick(s); setTyped(""); setErr(""); setNote(""); }}>
+                Delete…
+              </button>
+            </div>
+          )) : (
+            <p style={ctgHint}>{needle ? "Nothing matches that." : "No shows."}</p>
+          )}
+        </>
+      ) : (
+        <div style={{ border: "1px solid var(--line)", borderRadius: 9, padding: "12px 14px" }}>
+          <p style={{ fontSize: 13.5, margin: "0 0 4px" }}>
+            Delete <b>{pick.name || "Untitled"}</b>
+            {pick.client ? <span style={{ color: "var(--dim)" }}> · {pick.client}</span> : null}?
+          </p>
+          <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 10px" }}>
+            Everything attached to it goes with it, for everyone, permanently.
+            Type the name exactly as it appears above to confirm.
+          </p>
+          <input
+            value={typed} onChange={(e) => setTyped(e.target.value)}
+            placeholder={pick.name || "Untitled"}
+            style={{ ...ctgInput, width: "100%", marginBottom: 10 }}
+          />
+          <button className="btn danger" disabled={!armed || busy} onClick={go}>
+            {busy ? "Deleting…" : "Delete this show"}
+          </button>
+          <button className="btn ghost" style={{ marginLeft: 8 }} disabled={busy}
+                  onClick={() => { setPick(null); setTyped(""); }}>
+            Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SettingsScreen({ onClose, shows, currentId, onDeleteShow }) {
   const [tab, setTab] = useState("trucking");
   return (
     <div className="cal-wrap">
@@ -9415,6 +9554,9 @@ function SettingsScreen({ onClose }) {
       {tab === "look" ? <SetAppearance /> : null}
       {tab === "backup" ? <SetBackup /> : null}
       {tab === "dupes" ? <SetDuplicateShows /> : null}
+      {tab === "delete" ? (
+        <SetDeleteShow shows={shows || []} currentId={currentId} onDelete={onDeleteShow} />
+      ) : null}
     </div>
   );
 }
@@ -10275,11 +10417,11 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
         <div className="evt-actions">
           {/* isAdmin, not canEdit: /api/show-message gates on canManageShow,
               and a button that always 403s is worse than no button. */}
-          {isAdmin && <button className="btn ghost" onClick={() => setMsgOpen(true)}>Message the crew</button>}
+          {isAdmin && <button className="btn ghost" onClick={() => setMsgOpen(true)}>Messaging</button>}
           <button className="btn amber copy" onClick={copyBrief}>Copy brief for crew</button>
         </div>
       </header>
-      {msgOpen && <MessageCrewModal event={event} flash={flash} onClose={() => setMsgOpen(false)} />}
+      {msgOpen && <MessagingModal event={event} flash={flash} onClose={() => setMsgOpen(false)} />}
 
       {homeGroup ? (
         <>
@@ -20910,25 +21052,60 @@ const CSS = `
    back, so the statuses do not jitter left and right down the list. */
 .cb .mc-callback.ghost{cursor:default;}
 
-/* Confirmations, per message. The group wrapper exists so the row and its
-   confirmation line share one bottom border instead of two. */
-.cb .mc-hgroup{border-bottom:1px solid var(--line); padding-bottom:2px;}
-.cb .mc-hgroup:last-child{border-bottom:0;}
-.cb .mc-hgroup .mc-hrow{border-bottom:0; padding-bottom:2px;}
-.cb .mc-hack{
-  display:block; width:100%; text-align:left; background:none; border:0;
-  padding:1px 2px 6px; font:inherit; font-size:12px; color:var(--dim); cursor:pointer;
+/* ---------- Messaging: the hub, and message history ----------
+   No backticks anywhere in this stylesheet: the whole thing is inside a JS
+   template literal and one backtick ends it. */
+.cb .mc-hub{max-width:440px;}
+.cb .mc-hubbtn{
+  display:block; width:100%; text-align:left; background:var(--panel2);
+  border:1px solid var(--line); border-radius:11px; padding:14px 16px;
+  margin:0 0 10px; font:inherit; cursor:pointer; color:var(--ink);
 }
-.cb .mc-hack b{color:var(--ink); font-weight:600;}
-.cb .mc-hack.all b{color:var(--green);}
-.cb .mc-hack em{font-style:normal; color:var(--amber); margin-left:7px;}
-.cb .mc-hack:hover em{text-decoration:underline;}
-.cb .mc-hwho{padding:0 2px 8px; font-size:12px; line-height:1.5;}
-.cb .mc-hwait{color:var(--ink);}
-.cb .mc-hwait b{color:var(--amber); font-weight:600;}
-.cb .mc-hwait.done b{color:var(--green);}
-.cb .mc-hgot{margin-top:4px; color:var(--dim); display:flex; flex-wrap:wrap; gap:2px 12px;}
-.cb .mc-hgot em{font-style:normal; color:var(--faint);}
+.cb .mc-hubbtn:hover{border-color:var(--amber);}
+.cb .mc-hubbtn b{display:block; font-size:15px; margin-bottom:3px;}
+.cb .mc-hubbtn span{display:block; font-size:12.5px; color:var(--dim); line-height:1.45;}
+.cb .mc-back{
+  display:inline-block; background:none; border:0; padding:0 0 8px;
+  font:inherit; font-size:12.5px; color:var(--dim); cursor:pointer;
+}
+.cb .mc-back:hover{color:var(--amber);}
+
+.cb .mh-when{color:var(--dim); font-size:12.5px; margin:-4px 0 14px;}
+/* pre-wrap so the crew read the line breaks the message was written with. */
+.cb .mh-body{
+  white-space:pre-wrap; font-size:13.5px; line-height:1.55;
+  background:var(--panel2); border-radius:9px; padding:11px 13px;
+}
+.cb .mh-score{float:right; font-weight:600; color:var(--green);}
+.cb .mh-people{display:flex; flex-direction:column; gap:1px;}
+.cb .mh-person{
+  display:flex; align-items:baseline; gap:9px; padding:7px 2px;
+  border-bottom:1px solid var(--line); font-size:13px;
+}
+.cb .mh-person:last-child{border-bottom:0;}
+.cb .mh-person b{font-weight:600;}
+.cb .mh-person em{font-style:normal; color:var(--dim); font-size:12px;}
+/* The state column is what this list is for, so it holds the right edge and
+   does not wander in and out as names change length. */
+.cb .mh-state{margin-left:auto; flex:0 0 auto; color:var(--amber); font-size:12px;}
+.cb .mh-person.on .mh-state{color:var(--green);}
+
+.cb .mh-list{display:flex; flex-direction:column; gap:1px; margin-bottom:6px;}
+.cb .mh-row{
+  display:flex; align-items:baseline; gap:10px; width:100%; text-align:left;
+  background:none; border:0; border-bottom:1px solid var(--line);
+  padding:9px 2px; font:inherit; font-size:13px; color:var(--ink); cursor:pointer;
+}
+.cb .mh-row:hover{background:var(--panel2);}
+.cb .mh-rsub{flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+.cb .mh-rwhen{flex:0 0 auto; color:var(--dim); font-size:12px; font-variant-numeric:tabular-nums;}
+.cb .mh-rst{flex:0 0 auto; font-size:12px; font-weight:600; color:var(--dim);}
+.cb .mh-rst.pending{color:var(--amber);}
+.cb .mh-rst.sent{color:var(--green);}
+.cb .mh-rst.sending{color:var(--amber-deep);}
+.cb .mh-rst.failed{color:var(--danger);}
+.cb .mh-rack{flex:0 0 96px; text-align:right; font-size:12px; color:var(--dim);}
+.cb .mh-rack.all{color:var(--green);}
 
 /* ---------- Today dashboard ----------
    No backticks anywhere in this stylesheet: the whole thing is inside a JS
@@ -22285,7 +22462,253 @@ const MSG_SECTIONS = [
   { key: "pull",     label: "Pull List" },
 ];
 
-function MessageCrewModal({ event, onClose, flash }) {
+/* ─────────────────────────────────────────────────────────────────────────────
+ * MESSAGING
+ *
+ * One button on the show header, two things behind it: write a message, or go
+ * and look at what has already been sent. They were the same screen until now,
+ * with the history squeezed into a strip above the Send button — which is the
+ * wrong shape for both. Writing a message wants room; reading what went out on
+ * Tuesday and who has answered it is a different job done at a different time.
+ *
+ * This is a router and nothing else. Each view renders its own overlay, so the
+ * composer is untouched apart from a Back button.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function MessagingModal({ event, onClose, flash }) {
+  const [view, setView] = useState("menu");
+
+  if (view === "send") {
+    return (
+      <MessageCrewModal
+        event={event} flash={flash} onClose={onClose}
+        onBack={() => setView("menu")}
+        onHistory={() => setView("history")}
+      />
+    );
+  }
+  if (view === "history") {
+    return <MessageHistoryModal event={event} onClose={onClose} onBack={() => setView("menu")} />;
+  }
+
+  return (
+    <div className="sa-overlay" onClick={onClose}>
+      <div className="sa-modal mc-hub" onClick={(e) => e.stopPropagation()}>
+        <div className="sa-title">Messaging — {event.name || "this show"}</div>
+        <button className="mc-hubbtn" onClick={() => setView("send")}>
+          <b>Send a message</b>
+          <span>Write to the crew, attach the packet, send now or schedule it.</span>
+        </button>
+        <button className="mc-hubbtn" onClick={() => setView("history")}>
+          <b>Message history</b>
+          <span>Everything that has gone out, what was in it, and who has confirmed.</span>
+        </button>
+        <div className="sa-actions"><button className="btn ghost" onClick={onClose}>Close</button></div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * MESSAGE HISTORY
+ *
+ * A list, and one message at a time opened out: what it said, what was
+ * attached to it, and every person it went to with their confirmation beside
+ * their name.
+ *
+ * THE RECIPIENT LIST IS NAMES, NOT ADDRESSES, and that is decided on the
+ * server — /api/show-message never sends the address list back. This screen
+ * could not render addresses if it wanted to.
+ * ───────────────────────────────────────────────────────────────────────────── */
+function MessageHistoryModal({ event, onClose, onBack }) {
+  const [st, setSt] = useState({ s: "load", rows: [], err: "" });
+  const [openId, setOpenId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+
+  const load = async () => {
+    try {
+      const r = await listShowMessages(event.id);
+      setSt({ s: "ok", rows: (r && r.messages) || [], err: "" });
+    } catch (e) {
+      setSt({ s: "err", rows: [], err: (e && e.message) || "Couldn't read the history." });
+    }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [event.id]);
+
+  const callBack = async (id) => {
+    setBusy(true); setNote("");
+    try { await cancelShowMessage(event.id, id); await load(); setNote("Called back."); }
+    catch (e) { setNote((e && e.message) || "Couldn't cancel it."); }
+    setBusy(false);
+  };
+
+  const open = st.rows.find((m) => m.id === openId) || null;
+
+  /* ---- one message, opened out --------------------------------------- */
+  if (open) {
+    const people = open.people || [];
+    const got = people.filter((p) => p.at);
+    const not = people.filter((p) => !p.at);
+    /* Whether a confirmation was ever ASKED for. Undefined means the message
+       predates the toggle — the column reads as nothing rather than as "0 of
+       9 confirmed", which would be a wrong number that looks like a real one. */
+    const asked = open.ackRequired === true;
+    return (
+      <div className="sa-overlay" onClick={onClose}>
+        <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
+          <button className="mc-back" onClick={() => setOpenId("")}>&larr; All messages</button>
+          <div className="sa-title">{open.subject}</div>
+          <p className="mh-when">
+            {open.status === "sent" ? "Sent " + fmtWhen(open.sentAt || open.sendAt)
+              : open.status === "pending" ? "Waiting to go " + fmtWhen(open.sendAt)
+              : open.status === "sending" ? "Stopped part way through, " + fmtWhen(open.sendAt)
+              : open.status + " · " + fmtWhen(open.sendAt)}
+            {open.createdBy ? " · set up by " + open.createdBy : ""}
+          </p>
+
+          <div className="mc-block">
+            <div className="mc-blockhead">What it said</div>
+            {open.message
+              ? <div className="mh-body">{open.message}</div>
+              : <div className="sa-hint">No message — the packet went on its own.</div>}
+          </div>
+
+          <div className="mc-block">
+            <div className="mc-blockhead">Attached</div>
+            {open.sections && open.sections.length ? (
+              <div className="mc-chips">
+                {open.sections.map((s, i) => <span key={i} className="mc-chip on">{s}</span>)}
+              </div>
+            ) : <div className="sa-hint">Nothing attached.</div>}
+            {open.result && open.result.pages
+              ? <div className="sa-hint">One PDF, {open.result.pages} page
+                  {open.result.pages === 1 ? "" : "s"}, built at the moment it was sent.</div>
+              : null}
+          </div>
+
+          <div className="mc-block">
+            <div className="mc-blockhead">
+              {open.status === "sent" ? "Who it went to" : "Who it will go to"} — {people.length}
+              {asked ? <span className="mh-score">{got.length} confirmed</span> : null}
+            </div>
+            {people.length ? (
+              <div className="mh-people">
+                {/* Unconfirmed FIRST. This list exists to be acted on, and the
+                    people who have answered are not the ones to act on. */}
+                {(asked ? not.concat(got) : people).map((p, i) => (
+                  <div key={i} className={"mh-person" + (p.at ? " on" : "")}>
+                    <b>{p.name}</b>
+                    {p.position ? <em>{p.position}</em> : null}
+                    <span className="mh-state">
+                      {!asked ? ""
+                        : p.at ? "confirmed " + fmtWhen(p.at)
+                        : "no answer yet"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="sa-hint">
+                {open.to ? open.to + " recipients — the crew list has changed since, so they " +
+                  "cannot be named." : "Nobody recorded."}
+              </div>
+            )}
+            {!asked && open.status === "sent" ? (
+              <div className="sa-hint">No confirmation was asked for on this one.</div>
+            ) : null}
+            {open.result && open.result.failed && open.result.failed.length ? (
+              <div className="mc-warn">
+                <b>{open.result.failed.length} did not go through:</b> {open.result.failed.join(", ")}
+                {open.result.reason ? <span className="mc-why">{open.result.reason}</span> : null}
+              </div>
+            ) : null}
+            {open.result && open.result.noEmail && open.result.noEmail.length ? (
+              <div className="mc-warn"><b>No email address at the time:</b> {open.result.noEmail.join(", ")}</div>
+            ) : null}
+          </div>
+
+          <div className="sa-actions">
+            <button className="btn ghost" onClick={() => setOpenId("")}>Back</button>
+            <span className="tk-spacer" />
+            <button className="btn" onClick={onClose}>Close</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---- the list -------------------------------------------------------- */
+  return (
+    <div className="sa-overlay" onClick={onClose}>
+      <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
+        {onBack ? <button className="mc-back" onClick={onBack}>&larr; Messaging</button> : null}
+        <div className="sa-title">Message history — {event.name || "this show"}</div>
+
+        {st.s === "load" ? <p className="sa-hint">Looking…</p> : null}
+        {st.s === "err" ? <div className="sa-err">{st.err}</div> : null}
+        {note ? <p className="sa-hint">{note}</p> : null}
+
+        {st.s === "ok" && !st.rows.length ? (
+          <p className="sa-hint">Nothing has been sent for this show yet.</p>
+        ) : null}
+
+        {st.s === "ok" && st.rows.length ? (
+          <div className="mh-list">
+            {st.rows.map((m) => {
+              const asked = m.ackRequired === true && m.status === "sent";
+              return (
+                <button key={m.id} className="mh-row" onClick={() => setOpenId(m.id)}>
+                  <span className="mh-rsub">{m.subject}</span>
+                  <span className="mh-rwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
+                  <span className={"mh-rst " + m.status}>
+                    {m.status === "pending" ? "waiting"
+                      : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
+                      : m.status === "sending" ? "stuck mid-send"
+                      : m.status}
+                  </span>
+                  <span className={"mh-rack" + (asked && m.sentTo && m.confirmed >= m.sentTo ? " all" : "")}>
+                    {asked ? m.confirmed + " of " + (m.sentTo == null ? "?" : m.sentTo) + " confirmed" : ""}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {st.s === "ok" && st.rows.some((m) => m.status === "pending") ? (
+          <div className="mc-block">
+            <div className="mc-blockhead">Waiting to go</div>
+            {st.rows.filter((m) => m.status === "pending").map((m) => (
+              <div key={m.id} className="mc-hrow pending">
+                <span className="mc-hwhen">{fmtWhen(m.sendAt)}</span>
+                <span className="mc-hsub">{m.subject}</span>
+                <button className="mc-callback" disabled={busy}
+                        onClick={() => callBack(m.id)}>Call back</button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {st.s === "ok" && st.rows.some((m) => m.status === "sending") ? (
+          /* Deliberately not retried automatically: nobody here can tell
+             whether the mail went before the process died, and sending the
+             same packet twice is worse than sending it late. */
+          <div className="mc-warn">
+            <b>One send stopped part way through.</b>
+            <span className="mc-why">
+              It is not retried on its own — check whether the crew received it,
+              then send again if they did not.
+            </span>
+          </div>
+        ) : null}
+
+        <div className="sa-actions"><button className="btn ghost" onClick={onClose}>Close</button></div>
+      </div>
+    </div>
+  );
+}
+
+function MessageCrewModal({ event, onClose, flash, onBack, onHistory }) {
   /* "Show name - Production Book". A plain hyphen, not an em dash: this is a
      subject line people scan in a phone's inbox list, and it is what Tyler
      asked for. Still editable — this is only what it opens with. */
@@ -22305,9 +22728,6 @@ function MessageCrewModal({ event, onClose, flash }) {
      confirm button on every email is how people learn to ignore it. */
   const [ack, setAck] = useState(true);
   const [hist, setHist] = useState({ st: "load", rows: [], err: "" });
-  /* Which message's confirmations are expanded in the history list. One at a
-     time: this panel sits above the Send button and is not the main event. */
-  const [openAck, setOpenAck] = useState("");
 
   const loadHist = async () => {
     try {
@@ -22472,7 +22892,8 @@ function MessageCrewModal({ event, onClose, flash }) {
   return (
     <div className="sa-overlay" onClick={onClose}>
       <div className="sa-modal mc-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="sa-title">Message the crew — {event.name || "this show"}</div>
+        {onBack ? <button className="mc-back" onClick={onBack}>&larr; Messaging</button> : null}
+        <div className="sa-title">Send a message — {event.name || "this show"}</div>
 
         <label className="mc-field">
           <span>Subject</span>
@@ -22575,68 +22996,36 @@ function MessageCrewModal({ event, onClose, flash }) {
           </div>
         </div>
 
-        {/* What is already queued or gone. Sits inside the composer rather than
-            on its own screen because "has this already gone out?" is a question
-            you ask with your hand on the Send button. */}
+        {/* A SHORT LIST, NOT THE WHOLE HISTORY.
+            "Has this already gone out?" is a question you ask with your hand
+            on the Send button, so the last few stay here. Everything else —
+            what each message said, what was attached, who confirmed it —
+            lives in Message history, which is its own screen and does the job
+            properly rather than in a strip above a Send button. */}
         {hist.st === "ok" && hist.rows.length ? (
           <div className="mc-block">
-            <div className="mc-blockhead">Already sent or waiting</div>
+            <div className="mc-blockhead">
+              Recently sent or waiting
+              {onHistory ? (
+                <button className="mc-all" onClick={onHistory}>see all</button>
+              ) : null}
+            </div>
             <div className="mc-hist">
-              {hist.rows.slice(0, 6).map((m) => {
-                /* The confirmation line only appears when this message
-                   actually asked for one. `ackRequired` is undefined on
-                   messages sent before per-message tracking existed — not
-                   false — and showing "0 of 9 confirmed" against one of those
-                   would be a wrong number that looks like a real one. */
-                const tracked = m.ackRequired === true && m.status === "sent";
-                const waiting = m.pendingBy || [];
-                return (
-                  <div key={m.id} className="mc-hgroup">
-                    <div className={"mc-hrow " + m.status}>
-                      <span className="mc-hwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
-                      <span className="mc-hsub">{m.subject}</span>
-                      <span className={"mc-hst " + m.status}>
-                        {m.status === "pending" ? "waiting"
-                          : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
-                          : m.status === "sending" ? "stuck mid-send"
-                          : m.status}
-                      </span>
-                      {m.status === "pending"
-                        ? <button className="mc-callback" onClick={() => callBack(m.id)}>Call back</button>
-                        : <span className="mc-callback ghost" />}
-                    </div>
-                    {tracked ? (
-                      <button
-                        className={"mc-hack" + (m.sentTo && m.confirmed >= m.sentTo ? " all" : "")}
-                        onClick={() => setOpenAck(openAck === m.id ? "" : m.id)}
-                      >
-                        <b>{m.confirmed}</b> of {m.sentTo == null ? "?" : m.sentTo} confirmed
-                        {waiting.length ? <em>{openAck === m.id ? "hide" : "who?"}</em> : null}
-                      </button>
-                    ) : null}
-                    {tracked && openAck === m.id ? (
-                      <div className="mc-hwho">
-                        {waiting.length ? (
-                          <div className="mc-hwait">
-                            <b>Still waiting on</b> {waiting.join(", ")}
-                          </div>
-                        ) : (
-                          <div className="mc-hwait done"><b>Everyone confirmed.</b></div>
-                        )}
-                        {m.confirmedBy && m.confirmedBy.length ? (
-                          <div className="mc-hgot">
-                            {m.confirmedBy.map((c, i) => (
-                              <span key={i}>
-                                {c.name || "Someone"} <em>{fmtWhen(c.at)}</em>
-                              </span>
-                            ))}
-                          </div>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                );
-              })}
+              {hist.rows.slice(0, 4).map((m) => (
+                <div key={m.id} className={"mc-hrow " + m.status}>
+                  <span className="mc-hwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
+                  <span className="mc-hsub">{m.subject}</span>
+                  <span className={"mc-hst " + m.status}>
+                    {m.status === "pending" ? "waiting"
+                      : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
+                      : m.status === "sending" ? "stuck mid-send"
+                      : m.status}
+                  </span>
+                  {m.status === "pending"
+                    ? <button className="mc-callback" onClick={() => callBack(m.id)}>Call back</button>
+                    : <span className="mc-callback ghost" />}
+                </div>
+              ))}
             </div>
             {hist.rows.some((m) => m.status === "sending") ? (
               /* Deliberately not retried automatically: nobody here can tell
