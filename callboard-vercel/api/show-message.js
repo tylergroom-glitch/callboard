@@ -103,16 +103,37 @@ function schedOut(r, acks, crewNow) {
      Anyone since taken off the show simply is not in `crewNow` and so cannot
      appear here, which is right: a name on a list of people to chase has to be
      somebody who is still on the job. */
+  /* WHO THIS WENT TO, one entry each, with their confirmation on it.
+     This is what the message detail screen renders. The names come from the
+     show's crew list as it stands NOW, filtered by the recipient filter this
+     message stored — the same filter the send itself applied, so the list is
+     who was actually written to rather than who was ticked.
+
+     Anyone since taken off the show is not in `crewNow` and so cannot appear,
+     which is right: a list of people to chase has to be people still on the
+     job. NO EMAIL ADDRESSES — names and positions only, same rule as `to`
+     below. */
+  let people = null;
   let pendingBy = null;
-  if (crewNow && typeof r.ack_required === "boolean" && r.ack_required && r.status === "sent") {
+  if (crewNow) {
     const asked = Array.isArray(r.recipients)
       ? r.recipients.map((e) => String(e || "").trim().toLowerCase())
       : null;
-    const got = new Set((mine || []).map((a) => a.id).filter(Boolean));
-    pendingBy = crewNow
-      .filter((c) => (asked ? asked.includes(c.email) : true))
-      .filter((c) => !got.has(String(c.id)))
-      .map((c) => c.name);
+    const byCrew = new Map((mine || []).filter((a) => a.id).map((a) => [String(a.id), a]));
+    const went = crewNow.filter((c) => (asked ? asked.includes(c.email) : true));
+    people = went.map((c) => {
+      const a = byCrew.get(String(c.id)) || null;
+      return {
+        name: c.name, position: c.position || "",
+        at: a ? a.at : null, via: a ? a.via : "",
+      };
+    });
+    /* The chase list, and only where a confirmation was actually asked for.
+       On a message that did not ask, everybody is "not confirmed" and naming
+       them as outstanding would be a list of people to ring about nothing. */
+    if (typeof r.ack_required === "boolean" && r.ack_required && r.status === "sent") {
+      pendingBy = people.filter((x) => !x.at).map((x) => x.name);
+    }
   }
 
   return {
@@ -138,6 +159,7 @@ function schedOut(r, acks, crewNow) {
        makes Tyler chase two people who were never emailed. */
     confirmed: mine ? mine.length : 0,
     confirmedBy: mine ? mine.map((a) => ({ name: a.name, at: a.at, via: a.via })) : [],
+    ...(people ? { people } : {}),
     ...(pendingBy ? { pendingBy } : {}),
     sentTo: (res && typeof res.sent === "number") ? res.sent
           : (Array.isArray(r.recipients) ? r.recipients.length : null),
