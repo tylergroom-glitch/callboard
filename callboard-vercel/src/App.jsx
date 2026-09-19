@@ -8160,7 +8160,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.56.0";
+const APP_VERSION = "1.57.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -9574,11 +9574,144 @@ function SettingsScreen({ onClose, shows, currentId, onDeleteShow }) {
  * the confident ones" button — a wrong pair does not look wrong afterwards,
  * because the job's money simply sits on another show and nothing says so.
  * ───────────────────────────────────────────────────────────────────────────── */
+/* One imported stub, and every way of choosing what it belongs to.
+ *
+ * Three, in descending order of confidence, and they are kept visibly apart
+ * because they are not equally good: the name match, the near misses (same
+ * client, close dates), and a search over every show. None of them attaches
+ * anything — all three lead to the same preview, which is where the decision
+ * actually gets made.
+ */
+function AttachCard({ x, shows, open, plan, busy, onLook, onGo, onCancel }) {
+  const [q, setQ] = useState("");
+  const [picking, setPicking] = useState(false);
+
+  const needle = q.trim().toLowerCase();
+  const hits = needle
+    ? shows.filter((s) =>
+        String(s.name || "").toLowerCase().indexOf(needle) >= 0 ||
+        String(s.client || "").toLowerCase().indexOf(needle) >= 0).slice(0, 8)
+    : [];
+
+  /* The near misses, minus whatever the name matcher already suggested —
+     offering the same show twice in two different words reads as two
+     candidates. */
+  const near = (x.near || []).filter((n) => !x.match || n.id !== x.match.id);
+  const nameOf = (id) => {
+    if (x.match && x.match.id === id) return x.match.name;
+    const n = near.find((y) => y.id === id);
+    if (n) return n.name;
+    const s = shows.find((y) => y.id === id);
+    return s ? s.name : "that show";
+  };
+
+  const row = (id, name, client, date, why, tone) => (
+    <div key={id} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline",
+                           padding: "5px 0" }}>
+      <span style={{ flex: "1 1 200px", fontSize: 13 }}>
+        {name}
+        <span style={{ color: "var(--dim)" }}>
+          {client ? " · " + client : ""}{date ? " · " + date : ""}
+        </span>
+      </span>
+      {why ? <span style={{ fontSize: 12, color: tone || "var(--dim)" }}>{why}</span> : null}
+      <button className="btn ghost" style={{ padding: "3px 9px", fontSize: 12 }}
+              onClick={() => onLook(x.stub.id, id)}>
+        Check
+      </button>
+    </div>
+  );
+
+  return (
+    <div style={{ border: "1px solid var(--line)", borderRadius: 9,
+                  padding: "10px 12px", marginBottom: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
+        <span style={{ flex: "1 1 220px", fontSize: 13.5 }}>
+          <b>{x.stub.name}</b>
+          <span style={{ color: "var(--dim)" }}>
+            {x.stub.client ? " · " + x.stub.client : ""}
+            {" "}{x.stub.startDate || "no date"}
+            {x.stub.invoiceNo ? " · " + x.stub.invoiceNo : ""}
+          </span>
+        </span>
+      </div>
+
+      {open ? (
+        <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
+          <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 6px" }}>
+            onto <b style={{ color: "var(--fg)" }}>{nameOf(open)}</b>
+          </p>
+          {!plan ? <span style={{ fontSize: 12.5, color: "var(--dim)" }}>Checking&hellip;</span> : null}
+          {plan && !plan.ok ? (
+            <p style={{ color: "#D14343", fontSize: 12.5, margin: 0 }}>{plan.error}</p>
+          ) : null}
+          {plan && plan.ok ? (
+            <>
+              <p style={{ fontSize: 13, margin: "0 0 6px" }}>{plan.summary}</p>
+              {plan.fills && plan.fills.length ? (
+                <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 8px" }}>
+                  Fills in what the kept show is missing: {plan.fills.join(", ")}.
+                  Nothing it already has is changed.
+                </p>
+              ) : null}
+              <button className="btn amber" disabled={busy}
+                      onClick={() => onGo(x.stub.id, open)}>
+                {busy ? "Working…" : "Attach and remove the leftover"}
+              </button>
+            </>
+          ) : null}
+          <button className="btn ghost" onClick={onCancel} style={{ marginLeft: 8 }}>Cancel</button>
+        </div>
+      ) : (
+        <div style={{ marginTop: 6 }}>
+          {x.match
+            ? row(x.match.id, x.match.name, x.match.client, x.match.startDate,
+                  x.match.why, x.match.confident ? "#0B7A3B" : "#B4690E")
+            : null}
+
+          {near.length ? (
+            <>
+              <div style={{ fontSize: 11.5, color: "var(--dim)", textTransform: "uppercase",
+                            letterSpacing: ".6px", margin: "6px 0 1px" }}>
+                {x.match ? "Or" : "Same client or around the same time"}
+              </div>
+              {near.map((n) => row(n.id, n.name, n.client, n.startDate, n.why))}
+            </>
+          ) : null}
+
+          {picking ? (
+            <div style={{ marginTop: 8 }}>
+              <input
+                autoFocus value={q} onChange={(e) => setQ(e.target.value)}
+                placeholder="Find the show by name or client…"
+                style={{ ...ctgInput, width: "100%" }}
+              />
+              {hits.map((s) => row(s.id, s.name, s.client, s.startDate, "", null))}
+              {needle && !hits.length
+                ? <p style={{ ...ctgHint, fontSize: 12.5 }}>Nothing matches that.</p> : null}
+              <button className="btn ghost" style={{ padding: "3px 9px", fontSize: 12, marginTop: 4 }}
+                      onClick={() => { setPicking(false); setQ(""); }}>
+                Never mind
+              </button>
+            </div>
+          ) : (
+            <button className="btn ghost" style={{ padding: "3px 9px", fontSize: 12, marginTop: 4 }}
+                    onClick={() => setPicking(true)}>
+              {x.match || near.length ? "None of those — find it myself" : "Find the show it belongs to"}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SetDuplicateShows() {
   const [d, setD] = useState(null);
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState("");        // stub id being looked at
+  const [openKeep, setOpenKeep] = useState(""); // and the show it is being checked against
   const [plan, setPlan] = useState(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
@@ -9594,11 +9727,18 @@ function SetDuplicateShows() {
   };
   useEffect(() => { load(); }, []);
 
+  /* Which stub is open, and WHICH SHOW it is being checked against.
+     The keeper used to be implied by the stub, because there was only ever one
+     candidate — the name match. Now the same stub can be checked against a
+     suggestion, a near miss or anything found by hand, so the pair has to be
+     held as a pair. */
   const look = async (stub, keep) => {
-    setOpen(stub); setPlan(null); setNote(""); setErr("");
+    setOpen(stub); setOpenKeep(keep); setPlan(null); setNote(""); setErr("");
     try { setPlan(await previewAttach(stub, keep)); }
     catch (e) { setPlan({ ok: false, error: (e && e.message) || "Couldn't check that pair." }); }
   };
+
+  const shut = () => { setOpen(""); setOpenKeep(""); setPlan(null); };
 
   const go = async (stub, keep) => {
     setBusy(true); setErr(""); setNote("");
@@ -9606,7 +9746,7 @@ function SetDuplicateShows() {
       const r = await commitAttach(stub, keep);
       setNote("Attached. " + r.movedQuotes + " quote" + (r.movedQuotes === 1 ? "" : "s") +
               " and " + r.movedItems + " line item" + (r.movedItems === 1 ? "" : "s") + " moved.");
-      setOpen(""); setPlan(null);
+      shut();
       await load();
     } catch (e) { setErr((e && e.message) || "That didn't go through."); }
     setBusy(false);
@@ -9614,10 +9754,21 @@ function SetDuplicateShows() {
 
   const putBack = async (id) => {
     setBusy(true); setErr(""); setNote("");
-    try { const r = await undoAttach(id); setNote("“" + r.restored + "” is back."); await load(); }
+    try { const r = await undoAttach(id); setNote("\u201C" + r.restored + "\u201D is back."); await load(); }
     catch (e) { setErr((e && e.message) || "Couldn't put that back."); }
     setBusy(false);
   };
+
+  const matched = d ? d.pairs.filter((x) => x.match) : [];
+  const loose = d ? d.pairs.filter((x) => !x.match) : [];
+  const card = (x) => (
+    <AttachCard
+      key={x.stub.id} x={x} shows={(d && d.shows) || []}
+      open={open === x.stub.id ? (openKeep || "") : ""}
+      plan={open === x.stub.id ? plan : null}
+      busy={busy} onLook={look} onGo={go} onCancel={shut}
+    />
+  );
 
   return (
     <div style={{ maxWidth: 760 }}>
@@ -9625,86 +9776,54 @@ function SetDuplicateShows() {
       <p style={{ color: "var(--dim)", fontSize: 13, marginTop: 0 }}>
         Importing old quotes creates a show for each one. Where you already had a show
         for that job, this moves the quote onto it and removes the leftover. The show
-        you built — its crew, schedule and everything else — is the one that stays.
+        you built &mdash; its crew, schedule and everything else &mdash; is the one that stays.
       </p>
 
       {err ? <div style={ctgErr}>{err}</div> : null}
       {note ? <p style={{ color: "#0B7A3B", fontSize: 13 }}>{note}</p> : null}
-      {loading ? <p style={ctgHint}>Looking…</p> : null}
+      {loading ? <p style={ctgHint}>Looking&hellip;</p> : null}
 
       {d && !loading ? (
         <>
           <p style={{ fontSize: 13, marginTop: 4 }}>
             <b>{d.stubs}</b> imported {d.stubs === 1 ? "show" : "shows"}, of which{" "}
             <b>{d.matched}</b> look like a show you already had
-            {d.confident ? <> — {d.confident} with the same name and date</> : null}.
+            {d.confident ? <> &mdash; {d.confident} with the same name and date</> : null}.
           </p>
 
-          {d.pairs.filter((x) => x.match).map((x) => (
-            <div key={x.stub.id} style={{ border: "1px solid var(--line)", borderRadius: 9,
-                                          padding: "10px 12px", marginBottom: 8 }}>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "baseline" }}>
-                <span style={{ flex: "1 1 220px", fontSize: 13.5 }}>
-                  <b>{x.stub.name}</b>
-                  <span style={{ color: "var(--dim)" }}>
-                    {" "}{x.stub.startDate || "no date"}
-                    {x.stub.invoiceNo ? " · " + x.stub.invoiceNo : ""}
-                  </span>
-                </span>
-                <span style={{ fontSize: 12.5, color: x.match.confident ? "#0B7A3B" : "#B4690E" }}>
-                  {x.match.why}
-                </span>
-              </div>
-              <div style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 2 }}>
-                onto <b style={{ color: "var(--fg)" }}>{x.match.name}</b>
-                {x.match.startDate ? " · " + x.match.startDate : ""}
-              </div>
-
-              {open === x.stub.id ? (
-                <div style={{ marginTop: 9, paddingTop: 9, borderTop: "1px solid var(--line)" }}>
-                  {!plan ? <span style={{ fontSize: 12.5, color: "var(--dim)" }}>Checking…</span> : null}
-                  {plan && !plan.ok ? (
-                    <p style={{ color: "#D14343", fontSize: 12.5, margin: 0 }}>{plan.error}</p>
-                  ) : null}
-                  {plan && plan.ok ? (
-                    <>
-                      <p style={{ fontSize: 13, margin: "0 0 6px" }}>{plan.summary}</p>
-                      {plan.fills && plan.fills.length ? (
-                        <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 8px" }}>
-                          Fills in what the kept show is missing: {plan.fills.join(", ")}.
-                          Nothing it already has is changed.
-                        </p>
-                      ) : null}
-                      <button className="btn amber" disabled={busy}
-                              onClick={() => go(x.stub.id, x.match.id)}>
-                        {busy ? "Working…" : "Attach and remove the leftover"}
-                      </button>
-                      <button className="btn ghost" onClick={() => { setOpen(""); setPlan(null); }}
-                              style={{ marginLeft: 8 }}>Cancel</button>
-                    </>
-                  ) : null}
-                </div>
-              ) : (
-                <button className="btn ghost" style={{ marginTop: 7, padding: "4px 10px", fontSize: 12.5 }}
-                        onClick={() => look(x.stub.id, x.match.id)}>
-                  Check this pair
-                </button>
-              )}
-            </div>
-          ))}
-
-          {d.pairs.some((x) => !x.match) ? (
-            <p style={{ fontSize: 12.5, color: "var(--dim)", marginTop: 12 }}>
-              {d.pairs.filter((x) => !x.match).length} imported{" "}
-              {d.pairs.filter((x) => !x.match).length === 1 ? "show matches" : "shows match"} nothing
-              you already had, which is what you would expect for a job that was never in the
-              app. Nothing to do with {d.pairs.filter((x) => !x.match).length === 1 ? "it" : "them"}.
-            </p>
+          {matched.length ? (
+            <>
+              <h3 style={{ fontSize: 14, margin: "18px 0 6px" }}>Look like something you already had</h3>
+              {matched.map(card)}
+            </>
           ) : null}
 
-          {!d.matched ? (
+          {/* THE SECTION THAT USED TO BE A FOOTNOTE.
+              These were summarised as "match nothing you already had, which is
+              what you would expect for a job that was never in the app.
+              Nothing to do with them." That is true of most of them and wrong
+              about exactly the ones that matter: a quote written as
+              "Acme Q3 Mtg" against a show built as "Acme Quarterly Meeting" is
+              the same job to a human and nothing alike to a string comparison.
+              Those are the ones needing pairing, and they were the ones
+              hidden. */}
+          {loose.length ? (
+            <>
+              <h3 style={{ fontSize: 14, margin: "22px 0 4px" }}>
+                Matched nothing by name &mdash; {loose.length}
+              </h3>
+              <p style={{ fontSize: 12.5, color: "var(--dim)", margin: "0 0 8px" }}>
+                Most of these are jobs that were never in the app, and there is nothing
+                to do with them. But an import whose name came in wrong lands here too,
+                so each one can be paired by hand. Same preview, same undo.
+              </p>
+              {loose.map(card)}
+            </>
+          ) : null}
+
+          {!d.stubs ? (
             <p style={{ ...ctgHint, padding: 22, textAlign: "center" }}>
-              Nothing here looks like a duplicate.
+              Nothing has been imported, so there is nothing to pair up.
             </p>
           ) : null}
 
@@ -10400,11 +10519,15 @@ function HomeScreen({ event, update, go, copyBrief, dateRange, isAdmin, isSuperA
     <div className="home">
       <header className="hero">
         <div className="hero-main">
+          {/* Renaming a show is typing over this. The title attribute is the
+              other half of making that findable — the underline says it can be
+              touched, this says what happens if you do. */}
           <input
             className="evt-name-input"
             value={event.name}
             onChange={(e) => update((ev) => (ev.name = e.target.value))}
             placeholder="Event name"
+            title="Click to rename this show"
           />
           <div className="evt-meta">
             <span>{event.client || "Client TBD"}</span>
@@ -20104,6 +20227,14 @@ const CSS = `
   background:transparent; border:none; color:var(--ink); width:100%; padding:0;
   border-bottom:2px solid transparent; line-height:1.1;
 }
+/* IT ALWAYS WAS AN INPUT. It saves the name to the show row and the blob
+   together, and has since it was built — but it looks exactly like a heading,
+   so it reads as a label rather than a field and the app appears to have no
+   way to rename a show. A faint underline at rest and one on hover is the
+   whole fix: it costs nothing to anybody who already knew, and it is the
+   difference between a feature existing and a feature being findable. */
+.cb .evt-name-input{border-bottom-color:rgba(255,255,255,.10); cursor:text;}
+.cb .evt-name-input:hover{border-bottom-color:rgba(255,176,32,.45);}
 .cb .evt-name-input:focus{outline:none; border-bottom-color:var(--amber);}
 .cb .evt-meta{display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-top:8px; color:var(--dim); font-size:13.5px; font-weight:500;}
 .cb .evt-meta .dot{color:var(--faint);}
