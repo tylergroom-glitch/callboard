@@ -88,6 +88,64 @@ export const MOVABLE = new Set(["quotes", "show_items"]);
    so the trail follows the job, and never a reason to refuse. */
 export const LOG_ONLY = new Set(["activity"]);
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WHEN THE NAME IS NO HELP
+ *
+ * The matcher above pairs an import with a show by name. That is the right
+ * first move and it handles most of them — but the imports that most need
+ * pairing are precisely the ones it cannot do, because a quote written as
+ * "Acme Q3 Mtg" against a show built as "Acme Quarterly Meeting" is the same
+ * job to a human and nothing alike to a string comparison.
+ *
+ * So for those, this offers the other two things the rows have in common: the
+ * CLIENT and the DATES. Neither is conclusive and neither is offered as a
+ * match — they are ranked hints, shown with the reason in words, and the pair
+ * is still previewed and confirmed by hand before anything moves.
+ *
+ * Deliberately NOT scored on a scale anybody sees. "0.62" on a screen is not
+ * a reason to click yes.
+ * ───────────────────────────────────────────────────────────────────────────── */
+const DAY = 86400000;
+const clientKey = (v) => String(v || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+export function nearby(stub, real, max = 5) {
+  const sc = clientKey(stub.client);
+  const sd = stub.start_date ? Date.parse(stub.start_date + "T00:00:00Z") : NaN;
+
+  const out = [];
+  for (const r of real) {
+    const sameClient = !!sc && clientKey(r.client) === sc;
+    const rd = r.start_date ? Date.parse(r.start_date + "T00:00:00Z") : NaN;
+    const gap = (Number.isFinite(sd) && Number.isFinite(rd)) ? Math.abs(sd - rd) : null;
+
+    /* Client is worth more than dates on its own, because two shows a week
+       apart for different clients are not the same job and two shows for the
+       same client in the same month very often are. */
+    let score = 0;
+    if (sameClient) score += 4;
+    if (gap !== null) {
+      if (gap === 0) score += 3;
+      else if (gap <= 7 * DAY) score += 2;
+      else if (gap <= 31 * DAY) score += 1;
+    }
+    if (!score) continue;
+
+    out.push({
+      id: r.id, name: r.name, client: r.client || "", startDate: r.start_date || "",
+      score,
+      why: sameClient && gap === 0 ? "Same client, same date."
+         : sameClient && gap !== null && gap <= 7 * DAY ? "Same client, within a week."
+         : sameClient && gap !== null && gap <= 31 * DAY ? "Same client, same sort of time."
+         : sameClient ? "Same client."
+         : gap === 0 ? "Same date, different client."
+         : "Around the same time.",
+    });
+  }
+
+  out.sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
+  return out.slice(0, max);
+}
+
 const isStub = (show) => {
   const d = (show && show.data && typeof show.data === "object") ? show.data : {};
   return !!(d._import && d._import.batch);
@@ -215,6 +273,10 @@ export default async function handler(req, res) {
                : "Close name only — check this one.",
             confident: !!(m.exact && sameStart),
           } : null,
+          /* Offered whether or not the name matched. When it did not, this is
+             the only lead there is; when it did, it is how a wrong suggestion
+             gets corrected without hunting through every show in the list. */
+          near: nearby(s, real),
         });
       }
 
@@ -228,6 +290,15 @@ export default async function handler(req, res) {
         matched: pairs.filter((x) => x.match).length,
         confident: pairs.filter((x) => x.match && x.match.confident).length,
         pairs,
+        /* EVERY SHOW THAT COULD BE PAIRED WITH, so the picker can filter as
+           fast as Tyler types rather than going back to the server on every
+           keystroke. Four fields each — this is a list to choose from, not a
+           copy of the shows table, and the attach itself re-reads both rows
+           from the database anyway. */
+        shows: real
+          .map((r) => ({ id: r.id, name: r.name, client: r.client || "",
+                         startDate: r.start_date || "" }))
+          .sort((a, b) => String(b.startDate).localeCompare(String(a.startDate))),
       });
     }
 
