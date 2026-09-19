@@ -117,15 +117,16 @@ export function bodyHtml({ showName, message, sections, stamp, pages, ackUrl }) 
       : "") +
     /* THE CONFIRMATION BUTTON.
        A link, not a form — an email client will not post one. It lands on a
-       page that shows their call and has the actual button on it, because a
-       scanner that pre-fetches this URL must not be able to confirm anything.
-       See the block comment in api/call-ack.js. */
+       page that confirms on arrival, so this is one tap and done; the page
+       still carries a button for anything that cannot run its script. The
+       write is never the GET. See the block comment in api/call-ack.js for why
+       that distinction is the whole design. */
     (ackUrl
       ? '<div style="margin:22px 0 4px"><a href="' + esc(ackUrl) + '" ' +
         'style="display:inline-block;background:#111;color:#fff;text-decoration:none;' +
-        'font-size:16px;font-weight:600;padding:13px 26px;border-radius:9px">Got it</a>' +
+        'font-size:16px;font-weight:600;padding:13px 26px;border-radius:9px">Confirm receipt</a>' +
         '<p style="font-size:12px;color:#888;margin:8px 0 0">' +
-        "Tap to confirm you've seen your call.</p></div>"
+        "One tap &mdash; it confirms as soon as the page opens.</p></div>"
       : "") +
     '<p style="font-size:12px;color:#777;margin:18px 0 0;border-top:1px solid #e5e5e5;padding-top:12px">' +
     "This packet is a snapshot as of " + esc(stamp) +
@@ -185,7 +186,7 @@ export function packetFileName(showName) {
    null for the scheduler, which is why logActivity is told `system` in that
    case rather than being handed a fabricated actor.
 --------------------------------------------------------------------------- */
-export async function deliverMessage({ show, data, subject, message, sections, recipients, p, actorName, system, scheduled }) {
+export async function deliverMessage({ show, data, subject, message, sections, recipients, p, actorName, system, scheduled, msgId, ackRequired }) {
   const showName = str(show.name || data.name, 200) || "Show";
   const stamp = stampNow();
 
@@ -205,19 +206,31 @@ export async function deliverMessage({ show, data, subject, message, sections, r
   const base64 = packet ? Buffer.from(packet.bytes).toString("base64") : null;
   const fileName = packetFileName(showName);
 
-  /* ONE BODY PER PERSON, because the "Got it" button is signed for one crew
-     id. sendBrevoBatch already sends a messageVersion per recipient, each with
-     its own htmlContent, so this costs nothing extra on the wire — the packet
+  /* ONE BODY PER PERSON, because the confirm link is signed for one crew id.
+     sendBrevoBatch already sends a messageVersion per recipient, each with its
+     own htmlContent, so this costs nothing extra on the wire — the packet
      still uploads once, at the top level, for the whole batch.
 
-     Somebody with no crew id on their row gets the email without a button
-     rather than a button that cannot work. That happens on old shows whose
-     crew rows predate ids. */
+     THREE THINGS CAN TAKE THE BUTTON AWAY, and they are not the same thing:
+
+       ackRequired === false — Tyler unticked "Ask for confirmation" on this
+         message. Plenty of sends are an FYI, and a confirm button on one
+         trains people to ignore it on the ones that matter.
+
+       no crew id — an old show whose crew rows predate ids. Better no button
+         than a button that cannot work.
+
+       no msgId — the message row could not be written, usually because the
+         table has not been migrated yet. A link without a message id would
+         still confirm, but it would file against the call rather than against
+         this message, and a confirmation filed under the wrong heading is
+         worse than a missing one. See the comment in api/show-message.js. */
+  const wantAck = ackRequired !== false && !!msgId;
   const bodyFor = (c) => bodyHtml({
     showName, message,
     sections: packet ? packet.sections : [],
     stamp, pages: packet ? packet.pages : 0,
-    ackUrl: c.id ? ackLink(show.id, c.id) : "",
+    ackUrl: (wantAck && c.id) ? ackLink(show.id, c.id, msgId) : "",
   });
 
   const { sent, failed, reason } = await sendBrevoBatch(
@@ -234,6 +247,10 @@ export async function deliverMessage({ show, data, subject, message, sections, r
     ...(reason ? { reason } : {}),
     pages: packet ? packet.pages : 0,
     sections: packet ? packet.sections : [],
+    /* Whether a confirm button actually went out. The composer says so, because
+       "I unticked it" and "the button silently could not be built" look
+       identical from the outside and are not the same problem. */
+    ackRequested: wantAck,
     noEmail: withoutEmail,
     /* Named, not counted. An address that was asked for and not sent to is
        the one thing somebody needs to see. */

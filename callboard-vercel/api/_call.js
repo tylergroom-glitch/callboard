@@ -98,12 +98,19 @@ export function fingerprintFor(crew, data) {
 /* ─────────────────────────────────────────────────────────────────────────────
  * THE "GOT IT" LINK THAT RIDES IN THE EMAILED PACKET
  *
- * One signed link per crew member. It carries WHO, not WHAT: the show and the
- * crew id, never the call time or the fingerprint. That is deliberate — if
+ * One signed link per crew member PER MESSAGE. It carries WHO and WHICH
+ * MESSAGE, never the call time or the fingerprint. That is deliberate — if
  * the call moves after the email goes out, the page shows the call as it
  * stands NOW and confirms that. Baking the old call into the link would have
  * someone confirm a time they were never shown, which is the precise lie the
  * fingerprint exists to prevent.
+ *
+ * The message id is the opposite case, and belongs in the link for the
+ * opposite reason: WHICH MESSAGE THIS IS cannot be looked up later. Two
+ * messages go out on the same show in the same week; a confirmation that only
+ * knew the show would land on whichever one somebody guessed. So the message
+ * is fixed at the moment the email is built and carried in the signed token,
+ * where the crew member cannot change it and neither can anyone else.
  *
  * The token is the credential; these links are unauthenticated by design,
  * exactly like the rundown share links. It grants one thing and one thing
@@ -131,28 +138,38 @@ export const APP_ORIGIN =
   (process.env.APP_ORIGIN || "https://crewcall.touchstonecreativegroup.com")
     .replace(/\/+$/, "");
 
-export function ackToken(showId, crewId) {
+export function ackToken(showId, crewId, msgId) {
   return signToken({
     scope: ACK_SCOPE,
     show: String(showId || ""),
     crew: String(crewId || ""),
+    /* Omitted rather than sent empty, so a link for a message and a link for
+       the call itself are different strings and the shorter one stays short. */
+    ...(msgId ? { msg: String(msgId) } : {}),
     exp: Date.now() + ACK_TTL_MS,
   });
 }
 
-export function ackLink(showId, crewId) {
-  return APP_ORIGIN + "/api/call-ack?t=" + encodeURIComponent(ackToken(showId, crewId));
+export function ackLink(showId, crewId, msgId) {
+  return APP_ORIGIN + "/api/call-ack?t=" + encodeURIComponent(ackToken(showId, crewId, msgId));
 }
 
-/* Returns { show, crew } or null. Null covers a forged signature, a token
+/* Returns { show, crew, msg } or null. Null covers a forged signature, a token
    minted for something else entirely, an expired one, and one missing either
    half of the identity — the caller does not get to tell those apart, and does
-   not need to. */
+   not need to.
+
+   `msg` is "" for a token minted before messages had ids. Those are sitting in
+   inboxes right now with ninety days left on them, and they must keep working:
+   an empty msg files against the call itself, which is what they meant when
+   they were made. It is NOT a reason to reject the token — a crew member
+   tapping a three-week-old email should not be told their link is broken
+   because the app changed underneath them. */
 export function readAckToken(token) {
   const p = verifyToken(token);
   if (!p || p.scope !== ACK_SCOPE) return null;
   const show = String(p.show || "");
   const crew = String(p.crew || "");
   if (!show || !crew) return null;
-  return { show, crew };
+  return { show, crew, msg: String(p.msg || "") };
 }

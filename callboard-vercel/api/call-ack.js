@@ -1,9 +1,25 @@
-// /api/call-ack — "Got it" on the call sheet.
+// /api/call-ack — "Confirm receipt" on the call sheet.
 //
-//   GET  ?show=<id>   who on this show has confirmed their call
+//   GET  ?show=<id>   who on this show has confirmed, and of what
 //   POST ?show=<id>   confirm mine   { crewId, ackOf }
+//   GET  ?t=<token>   the page a crew member lands on from an email
+//   POST ?t=<token>   what that page posts   { via } or { undo: 1 }
 //
-// SETUP: run sql/setup-call-acks.sql.
+// SETUP: run sql/setup-call-acks.sql, then sql/setup-message-acks.sql.
+//
+// ---------------------------------------------------------------------------
+// A CONFIRMATION IS OF A MESSAGE, NOT OF A SHOW
+//
+// It used to be one row per person per show: confirm once and you were
+// confirmed forever, however many messages went out afterwards. Send the
+// schedule change on Tuesday and the parking note on Thursday and Thursday
+// could not be tracked at all, because everyone was already green from
+// Tuesday.
+//
+// Rows now carry `msg_id`. An empty one means "the call itself" — the in-app
+// button, and links minted before messages had ids, which are sitting in
+// inboxes with weeks left on them and still work.
+// ---------------------------------------------------------------------------
 //
 // ---------------------------------------------------------------------------
 // WHY THIS IS NOT A FIELD ON THE CREW ROW
@@ -90,9 +106,39 @@ async function mayOpen(p, showId) {
  *   corporate email, and it would make this feature worse than not having it —
  *   a panel that says everyone has seen their call when nobody has.
  *
- *   So: GET renders a page showing the call and a button. The write is a POST
- *   that the button makes. A scanner following the link sees a page and
- *   records nothing.
+ *   So: GET renders a page and records nothing, ever. The write is a POST.
+ *
+ * WHY THE PAGE NOW CONFIRMS ITSELF, AND WHAT THAT DOES AND DOES NOT GIVE UP
+ *
+ *   Tyler asked for one click: tap in the email, done, no second button on a
+ *   web page. So the page POSTs on load instead of waiting to be pressed. The
+ *   rule above is untouched — the GET still writes nothing; a POST still does
+ *   the writing — but the POST no longer needs a human to press anything.
+ *
+ *   What still stops a scanner is that it has to RUN THE JAVASCRIPT. Scanners
+ *   fetch URLs; the overwhelming majority do not execute scripts and follow
+ *   through with a second request. Three cheap filters narrow the rest:
+ *
+ *     - navigator.webdriver, which Chrome sets when it is being driven by
+ *       Puppeteer or WebDriver. That is most of what the ones that DO render
+ *       are built on.
+ *     - document.visibilityState, because a page rendered into a headless
+ *       background target is frequently not 'visible'.
+ *     - a short delay, because scanners are time-boxed and a page that has to
+ *       still be alive most of a second later is a page somebody is looking at.
+ *
+ *   None of that is a proof, and the honest position is written into the
+ *   schema rather than into a comment nobody reads: every row records HOW it
+ *   was confirmed. If confirmations ever arrive in blocks of twelve in the
+ *   same second, all 'auto', that is a scanner, and the `via` column is how
+ *   anybody would ever find out. The button is still on the page, so anything
+ *   the filters turn away is one tap, exactly as before.
+ *
+ *   The blast radius also shrank. A confirmation is now of one MESSAGE, not of
+ *   the show, so a false one dirties one message's list rather than marking
+ *   somebody permanently seen. And the page offers "that wasn't me", which
+ *   deletes the row — a mistaken confirmation is correctable by the person who
+ *   is actually in a position to notice it.
  *
  * THE PAGE SHOWS THE CALL AS IT STANDS NOW, not as it stood when the email
  * went out, and confirms THAT. Someone opening a three-week-old email sees the
@@ -125,6 +171,12 @@ function page(title, body, opts = {}) {
     "font-weight:600;font-size:16px}" +
     ".err{color:#b00020;font-size:14px;margin:12px 0 0}" +
     ".ft{color:#888;font-size:12px;margin:16px 0 0;text-align:center}" +
+    ".undo{text-align:center;margin:12px 0 0}" +
+    ".undo a{color:#888;font-size:12px}" +
+    ".msg{background:#f3f4f6;border-radius:9px;padding:11px 13px;margin:0 0 16px;" +
+    "font-size:14px;line-height:1.45;color:#333}" +
+    ".msg b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.6px;" +
+    "color:#8a8a8a;font-weight:600;margin:0 0 3px}" +
     "</style></head><body><div class=w>" + body + "</div>" +
     (opts.script ? "<script>" + opts.script + "</script>" : "") +
     "</body></html>";
@@ -132,6 +184,30 @@ function page(title, body, opts = {}) {
 
 const html = (res, code, body) =>
   res.status(code).setHeader("Content-Type", "text/html; charset=utf-8").end(body);
+
+/* How long the page waits before confirming itself, in milliseconds.
+   Long enough that a time-boxed scanner has usually given up and moved on,
+   short enough that a person watching their phone sees "Confirmed" rather
+   than a spinner. */
+const AUTO_DELAY_MS = 900;
+
+/* The subject of the message this link came from, for the page to show.
+   Optional in every sense: no message id, no table, a deleted row, a table
+   that has not been migrated yet — all of them mean "no subject line", never
+   an error. Somebody standing in a loading dock confirming their call does
+   not care why the heading is missing. */
+async function subjectOf(msgId, showId) {
+  if (!msgId) return "";
+  try {
+    const rows = await supabaseRest("GET",
+      "/scheduled_messages?id=eq." + encodeURIComponent(msgId) +
+      "&show_id=eq." + encodeURIComponent(showId) +
+      "&select=subject&limit=1", null);
+    return str(rows && rows[0] && rows[0].subject, 200);
+  } catch (e) {
+    return "";
+  }
+}
 
 async function linkFlow(req, res, token) {
   const t = readAckToken(token);
@@ -158,38 +234,98 @@ async function linkFlow(req, res, token) {
 
   if (req.method === "GET") {
     /* NOTHING IS WRITTEN HERE. See the block comment above. */
+    const subject = await subjectOf(t.msg, t.show);
     const body =
       "<h1>" + esc(show.name || "Your call") + "</h1>" +
       '<p class="sub">' + esc(member.name || "") +
       (member.position ? " &middot; " + esc(member.position) : "") + "</p>" +
+      /* WHICH MESSAGE they are confirming, in their own words rather than
+         mine. "Confirmed" on its own is worth very little to somebody who has
+         had three emails about this show in a week. */
+      (subject ? '<p class="msg"><b>Confirming</b>' + esc(subject) + "</p>" : "") +
       (call
         ? '<p class="lbl">Your call</p><p class="call">' + esc(call) + "</p>"
         : '<p class="sub">No call time is posted for you yet.</p>') +
-      '<div class="row"><button id="b">Got it</button>' +
+      '<div class="row" id="a"><button id="b">Confirm receipt</button>' +
       '<p class="err" id="e" style="display:none"></p></div>' +
-      '<p class="ft">Confirming lets the office know you have seen this.</p>';
+      '<p class="ft" id="f">Confirming lets the office know you have seen this.</p>';
 
-    /* The token is not in here. `location.search` already carries it. */
+    /* The token is not in here. `location.search` already carries it.
+       Written as ES5 on purpose: this runs on whatever browser an email client
+       hands it, which on an older Android mail app is not a browser anybody
+       tests against. */
     const script =
-      "var b=document.getElementById('b'),e=document.getElementById('e');" +
-      "b.onclick=function(){b.disabled=true;b.textContent='Sending...';" +
-      "fetch(location.pathname+location.search,{method:'POST'})" +
+      "var b=document.getElementById('b'),e=document.getElementById('e')," +
+      "a=document.getElementById('a'),f=document.getElementById('f'),busy=false;" +
+      "function post(body,ok,bad){" +
+      "fetch(location.pathname+location.search,{method:'POST'," +
+      "headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})" +
       ".then(function(r){return r.json().then(function(j){return {ok:r.ok,j:j}})})" +
-      ".then(function(x){if(!x.ok)throw new Error(x.j&&x.j.error||'Could not confirm');" +
-      "b.outerHTML='<div class=done>Confirmed<\\/div>';})" +
-      ".catch(function(err){b.disabled=false;b.textContent='Got it';" +
-      "e.style.display='block';e.textContent=err.message;});};";
+      ".then(function(x){if(!x.ok)throw new Error(x.j&&x.j.error||'Could not confirm');ok(x.j);})" +
+      ".catch(bad);}" +
+      /* Confirmed, with a way back out of it. */
+      "function done(){a.innerHTML='<div class=done>Confirmed<\\/div>';" +
+      "f.innerHTML='<span class=undo><a href=\"#\" id=\"u\">That was not me \\u2014 undo<\\/a><\\/span>';" +
+      "document.getElementById('u').onclick=function(ev){ev.preventDefault();" +
+      "post({undo:1},function(){a.innerHTML='<button id=b2>Confirm receipt<\\/button>';" +
+      "f.textContent='Not confirmed. Tap the button if you have seen this.';" +
+      "document.getElementById('b2').onclick=function(){go('click');};}," +
+      "function(){f.textContent='Could not undo that. Call the office.';});};}" +
+      /* One confirmation per page load. `busy` is reset on failure so the
+         button still works when the automatic attempt could not reach us. */
+      "function go(via){if(busy)return;busy=true;" +
+      "var t=document.getElementById('b');if(t){t.disabled=true;t.textContent='Confirming...';}" +
+      "post({via:via},function(){done();},function(err){busy=false;" +
+      "var t2=document.getElementById('b');" +
+      "if(t2){t2.disabled=false;t2.textContent='Confirm receipt';}" +
+      "e.style.display='block';e.textContent=err.message;});}" +
+      "b.onclick=function(){go('click');};" +
+      /* The automatic attempt, and the three things that hold it back. See the
+         block comment at the top of this file — none of these is a proof, and
+         the button below is what anything they turn away falls back to. */
+      "function auto(){if(busy)return;" +
+      "if(navigator.webdriver)return;" +
+      "if(document.visibilityState&&document.visibilityState!=='visible')return;" +
+      "go('auto');}" +
+      "if(document.addEventListener){document.addEventListener('visibilitychange'," +
+      "function(){if(document.visibilityState==='visible')setTimeout(auto," + AUTO_DELAY_MS + ");});}" +
+      "setTimeout(auto," + AUTO_DELAY_MS + ");";
 
     return html(res, 200, page(show.name || "Your call", body, { script }));
   }
 
   if (req.method === "POST") {
+    let b = null;
+    try { b = await readBody(req); } catch { b = null; }
+
+    /* ---- that wasn't me ---------------------------------------------- */
+    if (b && (b.undo === 1 || b.undo === true || b.undo === "1")) {
+      /* Scoped to all three parts of the identity the token carries, so this
+         can delete exactly one row: their own confirmation of this one
+         message. It cannot reach anybody else's and it cannot reach their
+         confirmation of a different message. */
+      await supabaseRest("DELETE",
+        "/call_acks?event_id=eq." + encodeURIComponent(t.show) +
+        "&crew_id=eq." + encodeURIComponent(t.crew) +
+        "&msg_id=eq." + encodeURIComponent(t.msg), null, "return=minimal");
+      return json(res, 200, { ok: true, undone: true });
+    }
+
+    /* Self-reported, and that is fine: this column is a smoke alarm, not a
+       lock. Nothing is permitted or refused on the strength of it. A scanner
+       that got this far by running the page's own script reports 'auto',
+       which is precisely the thing worth being able to see. */
+    const via = str(b && b.via, 10) === "auto" ? "auto" : "click";
+
     const now = new Date().toISOString();
     await supabaseRest(
-      "POST", "/call_acks?on_conflict=event_id,crew_id",
+      "POST", "/call_acks?on_conflict=event_id,crew_id,msg_id",
       {
         event_id: t.show,
         crew_id: t.crew,
+        /* Which message. Empty for a link minted before messages had ids —
+           those file against the call itself, which is what they meant. */
+        msg_id: t.msg,
         /* From the show's own crew row, never from the request. */
         crew_name: str(member.name, 200),
         /* Computed here from the show as it stands, so what gets filed is what
@@ -197,11 +333,12 @@ async function linkFlow(req, res, token) {
            version of this — if the two ever drift, every confirmation made
            from an email reads as stale on the Brief. */
         ack_of: str(fingerprint, 300),
+        via,
         acked_at: now,
         updated_at: now,
       },
       "resolution=merge-duplicates");
-    return json(res, 200, { ok: true, ackedAt: now });
+    return json(res, 200, { ok: true, ackedAt: now, via });
   }
 
   return json(res, 405, { error: "Method not allowed" });
@@ -241,13 +378,21 @@ export default async function handler(req, res) {
     if (!(await mayOpen(p, showId))) return json(res, 403, { error: "Not allowed" });
 
     if (req.method === "GET") {
+      /* Newest first, and a bigger ceiling than before, because there is now a
+         row per person PER MESSAGE rather than one per person. Thirty-five
+         crew and a dozen messages is four hundred rows on a single show, and
+         the old limit of 500 would have started silently dropping the oldest
+         on a long run. Newest-first also means the browser can dedupe to "has
+         this person confirmed anything recent" by taking the first it sees. */
       const rows = await supabaseRest(
         "GET", "/call_acks?event_id=eq." + encodeURIComponent(showId) +
-          "&select=crew_id,crew_name,acked_at,ack_of&limit=500", null);
+          "&select=crew_id,crew_name,acked_at,ack_of,msg_id,via" +
+          "&order=acked_at.desc&limit=2000", null);
       return json(res, 200, {
         acks: (rows || []).map((r) => ({
           crewId: r.crew_id, crewName: r.crew_name || "",
           ackedAt: r.acked_at, ackOf: r.ack_of || "",
+          msgId: r.msg_id || "", via: r.via || "",
         })),
       });
     }
@@ -265,17 +410,24 @@ export default async function handler(req, res) {
       if (!member) return json(res, 400, { error: "That person is not on this show." });
 
       const now = new Date().toISOString();
-      /* Upsert on (event_id, crew_id): tapping twice, or confirming again
-         after the call moved, updates the one row rather than adding another.
-         The unique index is what makes the second tap safe even if it lands
-         before the first has finished. */
+      /* Upsert on (event_id, crew_id, msg_id): tapping twice, or confirming
+         again after the call moved, updates the one row rather than adding
+         another. The unique index is what makes the second tap safe even if it
+         lands before the first has finished.
+
+         msg_id is '' here and always will be. This is the button inside the
+         app, on the call sheet — there is no message involved, the person is
+         confirming the CALL. Filing it against a message would mean guessing
+         which one, and a guess in this column is worse than a blank. */
       await supabaseRest(
-        "POST", "/call_acks?on_conflict=event_id,crew_id",
+        "POST", "/call_acks?on_conflict=event_id,crew_id,msg_id",
         {
           event_id: showId,
           crew_id: crewId,
+          msg_id: "",
           crew_name: str(member.name, 200),
           ack_of: str(b && b.ackOf, 300),
+          via: "app",
           acked_at: now,
           updated_at: now,
         },

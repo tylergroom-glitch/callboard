@@ -51,7 +51,12 @@ import { loadShow, deliverMessage, audience, applyFilter, str, PacketError } fro
    one five minutes later, which is well inside what "scheduled for 9am" means. */
 const BATCH = 5;
 
-const COLS = "id,show_id,subject,message,sections,recipients,send_at,status,created_by";
+/* `*` rather than a named list.
+   A named list has to be edited every time a migration adds a column, and if
+   the files go up before the SQL is run PostgREST answers 400 for a column
+   that does not exist — which would stop this cron sending anything at all
+   until somebody noticed. The rows are small and there are at most five. */
+const COLS = "*";
 
 async function finish(id, patch) {
   try {
@@ -162,6 +167,16 @@ export default async function handler(req, res) {
            recorded as though Tyler sat down and pressed the button. */
         actorName: row.created_by || "",
         p: null, system: true, scheduled: true,
+        /* The row's own id is the message id a confirmation is filed against.
+           It already exists — it was written when the message was scheduled —
+           so unlike Send now there is nothing to create here.
+
+           `ack_required` is absent on rows scheduled before the migration.
+           Absent means true: those were written when every message carried a
+           confirm button, and a message that loses its button on the morning
+           it goes out is a change nobody asked for. */
+        msgId: String(row.id),
+        ackRequired: row.ack_required !== false,
       });
 
       sentCount += result.sent;
