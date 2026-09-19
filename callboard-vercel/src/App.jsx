@@ -8139,7 +8139,7 @@ function QuotesScreen({ onClose, onOpenShow, onShowCreated }) {
    will both quote when working out which build you are looking at.
    Minor tracks the round: 1.21.x is round 21. */
 const APP_NAME = "Touchstone Command";
-const APP_VERSION = "1.54.0";
+const APP_VERSION = "1.55.0";
 
 /* A colour per destination, and every one of them CHECKED against white text
    rather than picked by eye: WCAG AA wants 4.5:1 for text this size. The first
@@ -11838,10 +11838,39 @@ function CrewAckStrip({ showId, event }) {
       .map((day) => event.callTimes && event.callTimes[day.id] && event.callTimes[day.id][c.id])
       .find(Boolean) || "");
 
-  const byId = new Map(st.acks.map((a) => [String(a.crewId), a]));
+  /* The fingerprint each person's confirmation has to match, worked out once
+     rather than per ack row — a show with thirty crew and a dozen messages is
+     a few hundred rows, and this is the string every one of them is compared
+     against. */
+  const byCrew = new Map(named.map((c) => [String(c.id), callFingerprint(callFor(c), event)]));
+
+  /* ONE PERSON CAN NOW HAVE SEVERAL ROWS.
+     A confirmation is filed against the message it came from, so somebody who
+     has answered three emails on this show has three rows. This strip asks a
+     different question from the composer's history panel — not "did they
+     answer Thursday's email" but "has this person seen the call they are
+     working to" — so it folds them down to one.
+
+     Which one it keeps matters. The newest that matches the call AS IT STANDS
+     wins; only if none of them match does the newest overall stand in, so the
+     strip reads "confirmed an older call time" rather than "never confirmed".
+     Taking the newest unconditionally would mark somebody stale who confirmed
+     the current call on Tuesday and an FYI note on Wednesday — Wednesday's row
+     would win, and it was filed against the older call.
+
+     The server hands these back newest first, which is what makes "the first
+     one that matches" the newest one that matches. */
+  const best = new Map();
+  for (const a of st.acks) {
+    const k = String(a.crewId);
+    const cur = best.get(k);
+    if (!cur) { best.set(k, a); continue; }
+    const want = byCrew.get(k);
+    if (want && cur.ackOf !== want && a.ackOf === want) best.set(k, a);
+  }
   const rows = named.map((c) => {
-    const a = byId.get(String(c.id));
-    const want = callFingerprint(callFor(c), event);
+    const a = best.get(String(c.id));
+    const want = byCrew.get(String(c.id)) || "";
     return {
       c,
       state: !a ? "none" : (a.ackOf && a.ackOf !== want ? "stale" : "ok"),
@@ -20828,8 +20857,8 @@ const CSS = `
    ticked section" to the styles, to the tests and to whoever reads this next,
    and one of these two is always on. Reusing the class made "every section
    can be unticked" fail against a composer that was behaving perfectly. */
-.cb .mc-chip, .cb .mc-wchip{display:inline-flex; align-items:center; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer; user-select:none;}
-.cb .mc-chip.on, .cb .mc-wchip.on{border-color:var(--amber); background:rgba(255,176,32,.10);}
+.cb .mc-chip, .cb .mc-wchip, .cb .mc-ackchip{display:inline-flex; align-items:center; gap:7px; background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:7px 13px; font-size:13px; cursor:pointer; user-select:none;}
+.cb .mc-chip.on, .cb .mc-wchip.on, .cb .mc-ackchip.on{border-color:var(--amber); background:rgba(255,176,32,.10);}
 .cb .mc-people{display:flex; flex-direction:column; gap:2px; max-height:220px; overflow-y:auto; margin-bottom:8px;}
 .cb .mc-person{display:flex; align-items:center; gap:9px; padding:6px 4px; border-radius:7px; cursor:pointer; font-size:13.5px;}
 .cb .mc-person:hover{background:var(--panel2);}
@@ -20880,6 +20909,26 @@ const CSS = `
 /* The placeholder keeps the column aligned on rows that cannot be called
    back, so the statuses do not jitter left and right down the list. */
 .cb .mc-callback.ghost{cursor:default;}
+
+/* Confirmations, per message. The group wrapper exists so the row and its
+   confirmation line share one bottom border instead of two. */
+.cb .mc-hgroup{border-bottom:1px solid var(--line); padding-bottom:2px;}
+.cb .mc-hgroup:last-child{border-bottom:0;}
+.cb .mc-hgroup .mc-hrow{border-bottom:0; padding-bottom:2px;}
+.cb .mc-hack{
+  display:block; width:100%; text-align:left; background:none; border:0;
+  padding:1px 2px 6px; font:inherit; font-size:12px; color:var(--dim); cursor:pointer;
+}
+.cb .mc-hack b{color:var(--ink); font-weight:600;}
+.cb .mc-hack.all b{color:var(--green);}
+.cb .mc-hack em{font-style:normal; color:var(--amber); margin-left:7px;}
+.cb .mc-hack:hover em{text-decoration:underline;}
+.cb .mc-hwho{padding:0 2px 8px; font-size:12px; line-height:1.5;}
+.cb .mc-hwait{color:var(--ink);}
+.cb .mc-hwait b{color:var(--amber); font-weight:600;}
+.cb .mc-hwait.done b{color:var(--green);}
+.cb .mc-hgot{margin-top:4px; color:var(--dim); display:flex; flex-wrap:wrap; gap:2px 12px;}
+.cb .mc-hgot em{font-style:normal; color:var(--faint);}
 
 /* ---------- Today dashboard ----------
    No backticks anywhere in this stylesheet: the whole thing is inside a JS
@@ -22250,7 +22299,15 @@ function MessageCrewModal({ event, onClose, flash }) {
      One composer, one set of rules; the only difference between sending now
      and sending Thursday is whether this string is empty. */
   const [when, setWhen] = useState("");
+  /* Whether this message carries a Confirm receipt button. On by default,
+     because the messages that need one are the ones that matter and forgetting
+     to tick it is the expensive mistake; off is for the FYI sends, where a
+     confirm button on every email is how people learn to ignore it. */
+  const [ack, setAck] = useState(true);
   const [hist, setHist] = useState({ st: "load", rows: [], err: "" });
+  /* Which message's confirmations are expanded in the history list. One at a
+     time: this panel sits above the Send button and is not the main event. */
+  const [openAck, setOpenAck] = useState("");
 
   const loadHist = async () => {
     try {
@@ -22294,6 +22351,7 @@ function MessageCrewModal({ event, onClose, flash }) {
        the bare string would make "9am" mean 9am UTC on the server — two
        hours before anyone is awake, in the wrong direction, twice a year. */
     ...(withWhen && when ? { sendAt: new Date(when).toISOString() } : {}),
+    ackRequired: ack,
     actorName: myDisplayName(),
   });
 
@@ -22323,7 +22381,10 @@ function MessageCrewModal({ event, onClose, flash }) {
           ? "Scheduled for " + fmtWhen(r.message && r.message.sendAt)
           : "Sent to " + r.sent + (r.sent === 1 ? " person" : " people"));
       }
-      if (r.scheduled) loadHist();
+      /* Reloaded either way now. A sent-now message is a row in the history
+         too, so not reloading would leave the panel claiming nothing had gone
+         out thirty seconds after it did. */
+      loadHist();
     } catch (e) { setErr((e && e.message) || "Could not send."); }
     setBusy("");
   };
@@ -22369,6 +22430,22 @@ function MessageCrewModal({ event, onClose, flash }) {
             {done.pages ? <> · a {done.pages}-page packet attached</> : null}.</p>
           {done.sections && done.sections.length
             ? <p className="sa-hint">{done.sections.join(" · ")}</p> : null}
+          {/* Three different states, and they are not interchangeable:
+              confirmations are being tracked, they were asked for and cannot
+              be tracked, or they were deliberately not asked for. The middle
+              one is the database update not having been run, and saying so is
+              the difference between a five-minute fix and a feature that looks
+              broken. */}
+          {!ack
+            ? <p className="sa-hint">No confirmation was asked for on this one.</p>
+            : done.ackTracked
+              ? <p className="sa-hint">Confirm receipt buttons went out. Who has confirmed shows
+                  in the history list next time you open this.</p>
+              : <div className="mc-warn"><b>Confirmations are not being tracked yet.</b>
+                  <span className="mc-why">
+                    The email went out without a confirm button. Run
+                    sql/setup-message-acks.sql in Supabase and the next one will have one.
+                  </span></div>}
           {/* Every way this could have reached fewer people than expected,
               said out loud rather than left to be noticed on site. */}
           {done.failed && done.failed.length
@@ -22481,6 +22558,23 @@ function MessageCrewModal({ event, onClose, flash }) {
           ) : null}
         </div>
 
+        <div className="mc-block">
+          <div className="mc-blockhead">Confirmation</div>
+          <label className={"mc-ackchip" + (ack ? " on" : "")}>
+            <input type="checkbox" className="mc-cbx" checked={ack}
+                   onChange={() => setAck(!ack)} />
+            Ask them to confirm receipt
+          </label>
+          <div className="sa-hint">
+            {ack
+              ? "Each person gets their own Confirm receipt button. One tap from the email — " +
+                "it confirms as soon as the page opens. Who has and hasn't shows below, " +
+                "message by message."
+              : "No confirm button on this one. Use this for anything that's just an FYI — " +
+                "a button on every email is how people learn to ignore it."}
+          </div>
+        </div>
+
         {/* What is already queued or gone. Sits inside the composer rather than
             on its own screen because "has this already gone out?" is a question
             you ask with your hand on the Send button. */}
@@ -22488,21 +22582,61 @@ function MessageCrewModal({ event, onClose, flash }) {
           <div className="mc-block">
             <div className="mc-blockhead">Already sent or waiting</div>
             <div className="mc-hist">
-              {hist.rows.slice(0, 6).map((m) => (
-                <div key={m.id} className={"mc-hrow " + m.status}>
-                  <span className="mc-hwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
-                  <span className="mc-hsub">{m.subject}</span>
-                  <span className={"mc-hst " + m.status}>
-                    {m.status === "pending" ? "waiting"
-                      : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
-                      : m.status === "sending" ? "stuck mid-send"
-                      : m.status}
-                  </span>
-                  {m.status === "pending"
-                    ? <button className="mc-callback" onClick={() => callBack(m.id)}>Call back</button>
-                    : <span className="mc-callback ghost" />}
-                </div>
-              ))}
+              {hist.rows.slice(0, 6).map((m) => {
+                /* The confirmation line only appears when this message
+                   actually asked for one. `ackRequired` is undefined on
+                   messages sent before per-message tracking existed — not
+                   false — and showing "0 of 9 confirmed" against one of those
+                   would be a wrong number that looks like a real one. */
+                const tracked = m.ackRequired === true && m.status === "sent";
+                const waiting = m.pendingBy || [];
+                return (
+                  <div key={m.id} className="mc-hgroup">
+                    <div className={"mc-hrow " + m.status}>
+                      <span className="mc-hwhen">{fmtWhen(m.sentAt || m.sendAt)}</span>
+                      <span className="mc-hsub">{m.subject}</span>
+                      <span className={"mc-hst " + m.status}>
+                        {m.status === "pending" ? "waiting"
+                          : m.status === "sent" ? ((m.result && m.result.sent) || 0) + " sent"
+                          : m.status === "sending" ? "stuck mid-send"
+                          : m.status}
+                      </span>
+                      {m.status === "pending"
+                        ? <button className="mc-callback" onClick={() => callBack(m.id)}>Call back</button>
+                        : <span className="mc-callback ghost" />}
+                    </div>
+                    {tracked ? (
+                      <button
+                        className={"mc-hack" + (m.sentTo && m.confirmed >= m.sentTo ? " all" : "")}
+                        onClick={() => setOpenAck(openAck === m.id ? "" : m.id)}
+                      >
+                        <b>{m.confirmed}</b> of {m.sentTo == null ? "?" : m.sentTo} confirmed
+                        {waiting.length ? <em>{openAck === m.id ? "hide" : "who?"}</em> : null}
+                      </button>
+                    ) : null}
+                    {tracked && openAck === m.id ? (
+                      <div className="mc-hwho">
+                        {waiting.length ? (
+                          <div className="mc-hwait">
+                            <b>Still waiting on</b> {waiting.join(", ")}
+                          </div>
+                        ) : (
+                          <div className="mc-hwait done"><b>Everyone confirmed.</b></div>
+                        )}
+                        {m.confirmedBy && m.confirmedBy.length ? (
+                          <div className="mc-hgot">
+                            {m.confirmedBy.map((c, i) => (
+                              <span key={i}>
+                                {c.name || "Someone"} <em>{fmtWhen(c.at)}</em>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
             {hist.rows.some((m) => m.status === "sending") ? (
               /* Deliberately not retried automatically: nobody here can tell
